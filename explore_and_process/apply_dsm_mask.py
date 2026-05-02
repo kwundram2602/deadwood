@@ -82,6 +82,30 @@ def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
     return float(centers[int(np.argmax(sigma_b))])
 
 
+def detect_ground_local_min(
+    dsm: np.ndarray, windows: list[int], height_threshold: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """DTM approximation via multi-scale minimum filter.
+
+    Returns:
+        binary:     bool array, True where pixel is ground
+        confidence: float32 [0,1], higher = more likely ground
+        ndsm:       raw nDSM (m) for diagnostics and nDSM output
+    """
+    dsm_filled = np.where(np.isnan(dsm), np.nanmax(dsm), dsm)
+    local_mins = [minimum_filter(dsm_filled, size=w) for w in windows]
+    local_min = np.minimum.reduce(local_mins) if len(local_mins) > 1 else local_mins[0]
+    ndsm = dsm - local_min
+
+    valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
+    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else height_threshold * 5
+    confidence = (1.0 - np.clip(ndsm / p95, 0.0, 1.0)).astype(np.float32)
+    confidence[np.isnan(dsm)] = 0.0
+
+    binary = (ndsm < height_threshold) & ~np.isnan(dsm)
+    return binary, confidence, ndsm
+
+
 def _save_diagnostic(ndsm: np.ndarray, out_path: str, used_ht: float, suggested_ht: float) -> None:
     """Save nDSM histogram with threshold markers as PNG."""
     valid = ndsm[~np.isnan(ndsm) & (ndsm >= 0) & (ndsm <= 20)]
