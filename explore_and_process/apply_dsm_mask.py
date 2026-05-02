@@ -5,7 +5,7 @@ Refine the soft crown mask by labelling confirmed ground pixels using the DSM.
 
 Ground detection uses a local-minimum approximation of the terrain surface:
   nDSM_approx = DSM - minimum_filter(DSM, window)
-  pixels where nDSM_approx < height_threshold  →  ground = 0.0
+  pixels where nDSM_approx < height_threshold  =>  ground = 0.0
 
 Ground pixels overwrite both noData (255) and any existing crown label,
 since a pixel at ground height cannot be a tree crown.
@@ -228,7 +228,7 @@ def main(args):
     n_ground = int(np.sum(mask == 0.0))
     n_nodata = int(np.sum(mask == 255.0))
     print(f"Ground pixels forced to 0: {int(ground.sum()):,}")
-    print(f"Final  →  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
+    print(f"Final  =>  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     profile.update(dtype="float32", count=1, nodata=255.0)
@@ -266,7 +266,7 @@ if __name__ == "__main__":
                    help="How to merge methods when --method both (default: or)")
     p.add_argument("--windows", type=int, nargs="+", default=[700],
                    help="Window size(s) in px for local-min filter — element-wise min used "
-                        "when multiple given (default: [700] → 35 m at 5 cm GSD)")
+                        "when multiple given (default: [700] = 35 m at 5 cm GSD)")
     p.add_argument("--height_threshold", type=float, default=2.0,
                    help="nDSM threshold (m) below which pixel is ground (default: 2.0)")
     p.add_argument("--gradient_sigma", type=float, default=3.0,
