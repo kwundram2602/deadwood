@@ -106,6 +106,37 @@ def detect_ground_local_min(
     return binary, confidence, ndsm
 
 
+def detect_ground_gradient(
+    dsm: np.ndarray, gradient_sigma: float, gradient_threshold: float | None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Slope/edge filter: flat DSM regions are classified as ground.
+
+    Computes Sobel gradient magnitude, smooths with Gaussian, then classifies
+    flat pixels (low gradient) as ground.
+
+    Returns:
+        binary:      bool array, True where pixel is ground
+        confidence:  float32 [0,1], higher = more likely ground
+        grad_smooth: smoothed gradient magnitude (for diagnostics)
+    """
+    dsm_filled = np.where(np.isnan(dsm), 0.0, dsm)
+    gx = sobel(dsm_filled, axis=1)
+    gy = sobel(dsm_filled, axis=0)
+    grad_mag = np.sqrt(gx ** 2 + gy ** 2).astype(np.float32)
+    grad_smooth = gaussian_filter(grad_mag, sigma=gradient_sigma)
+
+    threshold = gradient_threshold if gradient_threshold is not None else _otsu_threshold(grad_smooth)
+    print(f"  Gradient threshold: {threshold:.4f}  ({'manual' if gradient_threshold is not None else 'Otsu'})")
+
+    valid_pos = grad_smooth[grad_smooth > 0]
+    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else float(grad_smooth.max())
+    confidence = (1.0 - np.clip(grad_smooth / max(p95, 1e-8), 0.0, 1.0)).astype(np.float32)
+    confidence[np.isnan(dsm)] = 0.0
+
+    binary = (grad_smooth < threshold) & ~np.isnan(dsm)
+    return binary, confidence, grad_smooth
+
+
 def _save_diagnostic(ndsm: np.ndarray, out_path: str, used_ht: float, suggested_ht: float) -> None:
     """Save nDSM histogram with threshold markers as PNG."""
     valid = ndsm[~np.isnan(ndsm) & (ndsm >= 0) & (ndsm <= 20)]
