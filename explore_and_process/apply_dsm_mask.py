@@ -188,11 +188,29 @@ def _save_diagnostic(
 
 
 def main(args):
+    # --- Build output filename suffix ----------------------------------------
     w_tag = "-".join(str(w) for w in args.windows)
-    args.out = _embed_params(args.out, f"_w{w_tag}_ht{args.height_threshold}")
+    lm_tag = f"_lm_w{w_tag}_ht{args.height_threshold}"
+    gr_tag = f"_gr_s{args.gradient_sigma}"
+
+    if args.method == "local_min":
+        mask_suffix = lm_tag
+    elif args.method == "gradient":
+        mask_suffix = gr_tag
+    else:  # both
+        mask_suffix = f"{lm_tag}{gr_tag}_{args.combine}"
+
+    args.out = _embed_params(args.out, mask_suffix)
     if args.out_dsm:
         args.out_dsm = _embed_params(args.out_dsm, f"_w{w_tag}")
 
+    # Derive confidence output path (sibling dir of masks/)
+    process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(args.out)))
+    conf_dir = os.path.join(process_out_dir, "gradient_crown_conf")
+    conf_stem = os.path.splitext(os.path.basename(args.out))[0] + "_conf.tif"
+    conf_path = os.path.join(conf_dir, conf_stem)
+
+    # --- Load mask + DSM -----------------------------------------------------
     with rasterio.open(args.mask) as src:
         mask = src.read(1).astype(np.float32)
         h, w = src.height, src.width
@@ -201,54 +219,91 @@ def main(args):
         profile = src.profile.copy()
 
     print(f"Mask grid: {h} x {w}")
-
     print("Resampling DSM to mask grid...")
     dsm = resample_dsm(args.dsm, h, w, transform, crs)
 
-    # Replace NaN with local max so the filter doesn't suppress nearby valid values
-    dsm_filled = np.where(np.isnan(dsm), np.nanmax(dsm), dsm)
+    # --- Run detection method(s) ---------------------------------------------
+    lm_bin = lm_conf = ndsm = None
+    gr_bin = gr_conf = grad_smooth = None
 
-    print(f"Computing local minimum (windows={args.windows} px)...")
-    local_mins = [minimum_filter(dsm_filled, size=w) for w in args.windows]
-    local_min = np.minimum.reduce(local_mins) if len(local_mins) > 1 else local_mins[0]
-    ndsm = dsm - local_min  # approximate height above local terrain
-    # if the threshold is higher,
-    # more pixels are labelled ground, which may include low vegetation or crown edges;
-    suggested_ht = _find_valley_threshold(ndsm)
-    print(f"\nnDSM stats (valid pixels):")
-    valid_ndsm = ndsm[~np.isnan(ndsm)]
-    print(f"  Median: {np.median(valid_ndsm):.2f} m  |  5th pct: {np.percentile(valid_ndsm, 5):.2f} m  |  95th pct: {np.percentile(valid_ndsm, 95):.2f} m")
-    print(f"  Suggested threshold (histogram valley): {suggested_ht:.2f} m  (used: {args.height_threshold} m)")
-    _save_diagnostic(ndsm, args.out, args.height_threshold, suggested_ht)
+    if args.method in ("local_min", "both"):
+        print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m")
+        lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold)
+        valid_ndsm = ndsm[~np.isnan(ndsm)]
+        suggested_ht = _find_valley_threshold(ndsm)
+        print(f"  nDSM  median={np.median(valid_ndsm):.2f} m  "
+              f"p5={np.percentile(valid_ndsm, 5):.2f} m  "
+              f"p95={np.percentile(valid_ndsm, 95):.2f} m")
+        print(f"  Suggested threshold (valley): {suggested_ht:.2f} m  (used: {args.height_threshold} m)")
+        _save_diagnostic(
+            ndsm, args.out, label="lm",
+            used_threshold=args.height_threshold,
+            suggested_threshold=suggested_ht,
+            xlabel="nDSM [m]",
+            title="local_min — nDSM distribution",
+        )
 
-    ground = (ndsm < args.height_threshold) & ~np.isnan(dsm)
-    mask[ground] = 0.0
+    if args.method in ("gradient", "both"):
+        print(f"\n[gradient] sigma={args.gradient_sigma} px")
+        gr_bin, gr_conf, grad_smooth = detect_ground_gradient(
+            dsm, args.gradient_sigma, args.gradient_threshold
+        )
+        used_gr_threshold = (args.gradient_threshold if args.gradient_threshold is not None
+                             else _otsu_threshold(grad_smooth))
+        _save_diagnostic(
+            grad_smooth, args.out, label="gr",
+            used_threshold=used_gr_threshold,
+            xlabel="gradient magnitude",
+            title="gradient — slope distribution",
+        )
+
+    # --- Combine -------------------------------------------------------------
+    if args.method == "local_min":
+        ground_bin, ground_conf = lm_bin, lm_conf
+    elif args.method == "gradient":
+        ground_bin, ground_conf = gr_bin, gr_conf
+    else:
+        print(f"\n[combine] mode={args.combine}")
+        ground_bin, ground_conf = combine(lm_bin, lm_conf, gr_bin, gr_conf, mode=args.combine)
+
+    # --- Apply ground mask to crown mask -------------------------------------
+    mask[ground_bin] = 0.0
 
     n_crown  = int(np.sum((mask > 0) & (mask < 255)))
     n_ground = int(np.sum(mask == 0.0))
     n_nodata = int(np.sum(mask == 255.0))
-    print(f"Ground pixels forced to 0: {int(ground.sum()):,}")
+    print(f"\nGround pixels forced to 0: {int(ground_bin.sum()):,}")
     print(f"Final  =>  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
 
+    # --- Write binary mask ---------------------------------------------------
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     profile.update(dtype="float32", count=1, nodata=255.0)
     with rasterio.open(args.out, "w", **profile) as dst:
         dst.write(mask[np.newaxis])
-    print(f"Saved: {args.out}")
+    print(f"Saved mask: {args.out}")
 
-    if args.out_dsm:
+    # --- Write confidence raster ---------------------------------------------
+    os.makedirs(conf_dir, exist_ok=True)
+    conf_profile = profile.copy()
+    conf_profile.update(dtype="float32", count=1, nodata=None)
+    with rasterio.open(conf_path, "w", **conf_profile) as dst:
+        dst.write(ground_conf[np.newaxis])
+    print(f"Saved confidence: {conf_path}")
+
+    # --- Write normalised nDSM (local_min method only) -----------------------
+    if args.out_dsm and ndsm is not None:
         valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
         p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else args.max_ndsm_height
         ceiling = min(p95, args.max_ndsm_height)
-        print(f"nDSM normalisation ceiling: {ceiling:.2f} m  (95th pct={p95:.2f} m, cap={args.max_ndsm_height} m)")
+        print(f"nDSM ceiling: {ceiling:.2f} m  (p95={p95:.2f} m, cap={args.max_ndsm_height} m)")
         ndsm_norm = np.clip(ndsm, 0.0, ceiling) / ceiling
-        ndsm_norm[np.isnan(dsm)] = 0.0  # fill DSM voids with 0
+        ndsm_norm[np.isnan(dsm)] = 0.0
         dsm_profile = profile.copy()
         dsm_profile.update(dtype="float32", count=1, nodata=None)
         os.makedirs(os.path.dirname(os.path.abspath(args.out_dsm)), exist_ok=True)
         with rasterio.open(args.out_dsm, "w", **dsm_profile) as dst:
             dst.write(ndsm_norm[np.newaxis].astype(np.float32))
-        print(f"nDSM saved: {args.out_dsm}  (range [0,1])")
+        print(f"Saved nDSM: {args.out_dsm}  (range [0,1])")
 
 
 if __name__ == "__main__":
