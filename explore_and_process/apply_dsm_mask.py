@@ -137,23 +137,54 @@ def detect_ground_gradient(
     return binary, confidence, grad_smooth
 
 
-def _save_diagnostic(ndsm: np.ndarray, out_path: str, used_ht: float, suggested_ht: float) -> None:
-    """Save nDSM histogram with threshold markers as PNG."""
-    valid = ndsm[~np.isnan(ndsm) & (ndsm >= 0) & (ndsm <= 20)]
-    diag_path = os.path.splitext(out_path)[0] + "_diag.png"
+def combine(
+    a_bin: np.ndarray, a_conf: np.ndarray,
+    b_bin: np.ndarray, b_conf: np.ndarray,
+    mode: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Merge two (binary, confidence) ground-detection results.
 
+    mode='or':  ground if EITHER method agrees; confidence = max
+    mode='and': ground if BOTH methods agree;   confidence = min
+    """
+    if mode == "or":
+        return a_bin | b_bin, np.maximum(a_conf, b_conf)
+    return a_bin & b_bin, np.minimum(a_conf, b_conf)
+
+
+def _save_diagnostic(
+    values: np.ndarray,
+    out_mask_path: str,
+    label: str,
+    used_threshold: float,
+    suggested_threshold: float | None = None,
+    xlabel: str = "value",
+    title: str = "distribution",
+) -> None:
+    """Save a histogram diagnostic PNG to diag_graphs/ sibling of the masks/ dir."""
+    process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(out_mask_path)))
+    diag_dir = os.path.join(process_out_dir, "diag_graphs")
+    os.makedirs(diag_dir, exist_ok=True)
+
+    stem = os.path.splitext(os.path.basename(out_mask_path))[0]
+    diag_path = os.path.join(diag_dir, f"{stem}_{label}_diag.png")
+
+    valid = values[np.isfinite(values) & (values >= 0)]
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.hist(valid.ravel(), bins=300, color="steelblue", alpha=0.7, log=True)
-    ax.axvline(used_ht,      color="red",    linestyle="--", linewidth=1.5, label=f"used threshold  {used_ht:.1f} m")
-    ax.axvline(suggested_ht, color="orange", linestyle=":",  linewidth=1.5, label=f"suggested valley {suggested_ht:.2f} m")
-    ax.set_xlabel("nDSM [m]")
+    ax.axvline(used_threshold, color="red", linestyle="--", linewidth=1.5,
+               label=f"used  {used_threshold:.3f}")
+    if suggested_threshold is not None:
+        ax.axvline(suggested_threshold, color="orange", linestyle=":", linewidth=1.5,
+                   label=f"suggested  {suggested_threshold:.3f}")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("pixel count (log)")
-    ax.set_title("nDSM distribution — ground/vegetation separation")
+    ax.set_title(title)
     ax.legend()
     fig.tight_layout()
     fig.savefig(diag_path, dpi=120)
     plt.close(fig)
-    print(f"Diagnostic plot: {diag_path}")
+    print(f"  Diagnostic plot: {diag_path}")
 
 
 def main(args):
@@ -225,21 +256,25 @@ if __name__ == "__main__":
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mask", required=True,
                    help="Soft crown mask from rasterize_crowns.py")
-    p.add_argument("--dsm",  required=True,
+    p.add_argument("--dsm", required=True,
                    help="DSM raster (.tif)")
-    p.add_argument("--out",  required=True,
-                   help="Output final mask path (.tif)")
+    p.add_argument("--out", required=True,
+                   help="Base output path for binary mask (.tif) — params embedded automatically")
+    p.add_argument("--method", default="local_min", choices=["local_min", "gradient", "both"],
+                   help="Ground detection method (default: local_min)")
+    p.add_argument("--combine", default="or", choices=["or", "and"],
+                   help="How to merge methods when --method both (default: or)")
     p.add_argument("--windows", type=int, nargs="+", default=[700],
-                   help="Local-minimum filter window(s) in pixels — one or more values. "
-                        "Multiple windows are combined via element-wise minimum (most conservative DTM). "
-                        "Each should exceed the diameter of the crown feature it targets. "
-                        "(default: [700] → 35 m at 5 cm GSD)")
+                   help="Window size(s) in px for local-min filter — element-wise min used "
+                        "when multiple given (default: [700] → 35 m at 5 cm GSD)")
     p.add_argument("--height_threshold", type=float, default=2.0,
-                   help="Height above local minimum (m) below which a pixel "
-                        "is labelled ground (default: 2.0 m)")
+                   help="nDSM threshold (m) below which pixel is ground (default: 2.0)")
+    p.add_argument("--gradient_sigma", type=float, default=3.0,
+                   help="Gaussian smoothing sigma (px) before gradient computation (default: 3)")
+    p.add_argument("--gradient_threshold", type=float, default=None,
+                   help="Gradient magnitude threshold for ground; auto-Otsu if omitted")
     p.add_argument("--out_dsm", default=None,
-                   help="Optional: save normalised nDSM for model input (.tif). "
-                        "nDSM is clipped to --max_ndsm_height and divided to [0,1].")
+                   help="Save normalised nDSM [0,1] here (local_min method only)")
     p.add_argument("--max_ndsm_height", type=float, default=50.0,
-                   help="nDSM value (m) that maps to 1.0 (default: 50.0 m)")
+                   help="nDSM cap (m) for normalisation — overrides p95 ceiling if lower (default: 50)")
     main(p.parse_args())
