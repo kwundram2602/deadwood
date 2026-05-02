@@ -68,6 +68,8 @@ def _find_valley_threshold(ndsm: np.ndarray, lo: float = 0.3, hi: float = 8.0, b
 def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
     """Return Otsu's threshold for a 1-D float array."""
     valid = arr[np.isfinite(arr)]
+    if valid.size == 0:
+        raise ValueError("_otsu_threshold: no finite values in input array")
     counts, edges = np.histogram(valid, bins=bins)
     centers = (edges[:-1] + edges[1:]) / 2
     total = counts.sum()
@@ -75,7 +77,7 @@ def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
     w1 = 1.0 - w0
     mu0 = np.cumsum(counts * centers) / np.maximum(np.cumsum(counts), 1)
     mu_total = float((counts * centers).sum() / total)
-    mu1 = np.where(w1 > 0, (mu_total - w0 * mu0) / w1, 0.0)
+    mu1 = np.where(w1 > 1e-8, (mu_total - w0 * mu0) / w1, 0.0)
     sigma_b = w0 * w1 * (mu0 - mu1) ** 2
     return float(centers[int(np.argmax(sigma_b))])
 
