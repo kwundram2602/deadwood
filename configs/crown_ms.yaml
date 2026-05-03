@@ -1,0 +1,41 @@
+model_name: crown_ms
+output_dir: out  # relative to --working_dir (deadwood/)
+
+dataset:
+  path: out/crown_ms     # relative to --working_dir (deadwood/)
+  batch_size: 8
+  num_workers: 4
+
+model:
+  type: unet
+  in_channels: 5          # R, G, RedEdge, NIR, nDSM
+  num_classes: 1          # binary crown segmentation → BCEWithLogitsLoss
+  weights_name: null      # TorchGeo pretrained weight enum name, e.g. OPENAIRMAP_RGB_RESNET50
+  weights_path: null      # path to a local .pt checkpoint (overrides weights_name)
+
+# Transfer Learning phase — encoder frozen, decoder + head only
+transfer:
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw        # adam | adamw | sgd
+  scheduler: cos          # cos | step | multistep | anneal
+  patience: 10
+
+# Fine-tuning phase — partial encoder unfreeze
+fine_tune:
+  enabled: true
+  epochs: 30
+  lr: 0.00005
+  weight_decay: 0.0001
+  unfreeze_blocks: 2      # how many ResNet encoder blocks to unfreeze from the top
+  optimizer: adamw
+  scheduler: cos
+  patience: 10
+
+# W&B experiment tracking (set use_wandb: true to enable)
+logging:
+  use_wandb: false
+  project: deadwood
+  run_name: null
+  log_every_n_steps: 50
