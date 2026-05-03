@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+info_and_notes
+out
+.python-version
+*.ps1
+# Virtual environments
+.venv
+
+# Training outputs
+checkpoints/
+data/raw/
+notes/
+.vscode/
+datafiles/
+configs/user/

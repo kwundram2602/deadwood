@@ -77,7 +77,7 @@ def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
     w1 = 1.0 - w0
     mu0 = np.cumsum(counts * centers) / np.maximum(np.cumsum(counts), 1)
     mu_total = float((counts * centers).sum() / total)
-    mu1 = np.where(w1 > 1e-8, (mu_total - w0 * mu0) / w1, 0.0)
+    mu1 = (mu_total - w0 * mu0) / np.maximum(w1, 1e-8)
     sigma_b = w0 * w1 * (mu0 - mu1) ** 2
     return float(centers[int(np.argmax(sigma_b))])
 
@@ -94,7 +94,7 @@ def detect_ground_local_min(
     """
     dsm_filled = np.where(np.isnan(dsm), np.nanmax(dsm), dsm)
     local_mins = [minimum_filter(dsm_filled, size=w) for w in windows]
-    local_min = np.minimum.reduce(local_mins) if len(local_mins) > 1 else local_mins[0]
+    local_min = np.mean(local_mins, axis=0) if len(local_mins) > 1 else local_mins[0]
     ndsm = dsm - local_min
 
     valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
@@ -231,9 +231,13 @@ def main(args):
         lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold)
         valid_ndsm = ndsm[~np.isnan(ndsm)]
         suggested_ht = _find_valley_threshold(ndsm)
-        print(f"  nDSM  median={np.median(valid_ndsm):.2f} m  "
+        print(f"  nDSM  min={np.min(valid_ndsm):.2f} m  "
               f"p5={np.percentile(valid_ndsm, 5):.2f} m  "
-              f"p95={np.percentile(valid_ndsm, 95):.2f} m")
+              f"p25={np.percentile(valid_ndsm, 25):.2f} m  "
+              f"median={np.median(valid_ndsm):.2f} m  "
+              f"p75={np.percentile(valid_ndsm, 75):.2f} m  "
+              f"p95={np.percentile(valid_ndsm, 95):.2f} m  "
+              f"max={np.max(valid_ndsm):.2f} m")
         print(f"  Suggested threshold (valley): {suggested_ht:.2f} m  (used: {args.height_threshold} m)")
         _save_diagnostic(
             ndsm, args.out, label="lm",
@@ -304,6 +308,20 @@ def main(args):
         with rasterio.open(args.out_dsm, "w", **dsm_profile) as dst:
             dst.write(ndsm_norm[np.newaxis].astype(np.float32))
         print(f"Saved nDSM: {args.out_dsm}  (range [0,1])")
+
+    # --- Write raw nDSM in metres ---------------------------------------------
+    if ndsm is not None:
+        ndsm_m_dir = os.path.join(process_out_dir, "ndsm_in_m")
+        os.makedirs(ndsm_m_dir, exist_ok=True)
+        ndsm_stem = os.path.splitext(os.path.basename(args.out_dsm))[0] if args.out_dsm else os.path.splitext(os.path.basename(args.out))[0]
+        ndsm_m_path = os.path.join(ndsm_m_dir, f"{ndsm_stem}_raw_m.tif")
+        dsm_profile_m = profile.copy()
+        dsm_profile_m.update(dtype="float32", count=1, nodata=float("nan"))
+        ndsm_out = ndsm.astype(np.float32)
+        ndsm_out[np.isnan(dsm)] = float("nan")
+        with rasterio.open(ndsm_m_path, "w", **dsm_profile_m) as dst:
+            dst.write(ndsm_out[np.newaxis])
+        print(f"Saved raw nDSM (m): {ndsm_m_path}")
 
 
 if __name__ == "__main__":
