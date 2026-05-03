@@ -35,5 +35,11 @@ uv sync
 uv run python scripts/train.py \
     --config "$CONFIG" \
     --working_dir .
+echo "Training finished at $(date +%Y.%m.%d-%H:%M:%S)"
+echo "---------------------------------------"
+uv run python scripts/evaluate.py \
+  --config "$CONFIG" \
+  --weights out/crown_ms/ft_best.pt \
+  --working_dir .
 
 echo "Job $SLURM_JOB_ID finished at $(date +%Y.%m.%d-%H:%M:%S)"
