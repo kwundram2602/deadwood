@@ -32,9 +32,7 @@ cd "$CODE"
 uv sync
 
 # Run training
-uv run python scripts/train.py \
-    --config "$CONFIG" \
-    --working_dir .
+uv run python scripts/train.py --config "$CONFIG" --working_dir .
 echo "Training finished at $(date +%Y.%m.%d-%H:%M:%S)"
 echo "---------------------------------------"
 uv run python scripts/evaluate.py \

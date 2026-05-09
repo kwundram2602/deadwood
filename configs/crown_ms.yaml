@@ -10,7 +10,7 @@ model:
   type: unet
   in_channels: 5          # R, G, RedEdge, NIR, nDSM
   num_classes: 1          # binary crown segmentation → BCEWithLogitsLoss
-  weights_name: null      # TorchGeo pretrained weight enum name, e.g. OPENAIRMAP_RGB_RESNET50
+  weights_name: OAM_RGB_RESNET50_TCD      # TorchGeo pretrained weight enum name, e.g. OAM_RGB_RESNET50_TCD,OAM_RGB_RESNET34_TCD
   weights_path: null      # path to a local .pt checkpoint (overrides weights_name)
 
 # Transfer Learning phase — encoder frozen, decoder + head only

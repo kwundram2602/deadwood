@@ -7,8 +7,9 @@ Ground detection uses a local-minimum approximation of the terrain surface:
   nDSM_approx = DSM - minimum_filter(DSM, window)
   pixels where nDSM_approx < height_threshold  =>  ground = 0.0
 
-Ground pixels overwrite both noData (255) and any existing crown label,
-since a pixel at ground height cannot be a tree crown.
+Ground pixels soft-blend into the crown mask: crown pixels (0–1) are
+multiplied by (1 − ground_conf); noData pixels are resolved to ground
+only when ground_conf exceeds --nodata_resolve_threshold.
 
 Remaining noData pixels (255) — no crown polygon, not confirmed ground —
 are excluded from the loss during training.
@@ -152,6 +153,27 @@ def combine(
     return a_bin & b_bin, np.minimum(a_conf, b_conf)
 
 
+def apply_soft_blend(
+    mask: np.ndarray,
+    ground_conf: np.ndarray,
+    nodata_resolve_threshold: float,
+) -> np.ndarray:
+    """Soft-blend ground confidence into the crown mask.
+
+    Crown pixels (0–1): multiplied by (1 - ground_conf).
+    noData pixels (255): resolved to (1 - ground_conf) only when
+      ground_conf > nodata_resolve_threshold, otherwise kept at 255.
+    """
+    result = mask.copy()
+    crown = (mask >= 0.0) & (mask < 255.0)
+    result[crown] = mask[crown] * (1.0 - ground_conf[crown])
+
+    nodata = mask == 255.0
+    resolve = nodata & (ground_conf > nodata_resolve_threshold)
+    result[resolve] = 1.0 - ground_conf[resolve]
+    return result
+
+
 def _save_diagnostic(
     values: np.ndarray,
     out_mask_path: str,
@@ -187,6 +209,16 @@ def _save_diagnostic(
     print(f"  Diagnostic plot: {diag_path}")
 
 
+def _save_conf_tif(arr: np.ndarray, path: str, profile: dict) -> None:
+    """Write a float32 confidence raster [0,1] to disk."""
+    conf_profile = profile.copy()
+    conf_profile.update(dtype="float32", count=1, nodata=None)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with rasterio.open(path, "w", **conf_profile) as dst:
+        dst.write(arr[np.newaxis])
+    print(f"  Saved confidence: {path}")
+
+
 def main(args):
     # --- Build output filename suffix ----------------------------------------
     w_tag = "-".join(str(w) for w in args.windows)
@@ -206,7 +238,7 @@ def main(args):
 
     # Derive confidence output path (sibling dir of masks/)
     process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(args.out)))
-    conf_dir = os.path.join(process_out_dir, "gradient_crown_conf")
+    conf_dir = os.path.join(process_out_dir, "ground_confidence")
     conf_stem = os.path.splitext(os.path.basename(args.out))[0] + "_conf.tif"
     conf_path = os.path.join(conf_dir, conf_stem)
 
@@ -252,6 +284,7 @@ def main(args):
         gr_bin, gr_conf, grad_smooth = detect_ground_gradient(
             dsm, args.gradient_sigma, args.gradient_threshold
         )
+        # NOTE: _otsu_threshold is also called inside detect_ground_gradient when gradient_threshold is None
         used_gr_threshold = (args.gradient_threshold if args.gradient_threshold is not None
                              else _otsu_threshold(grad_smooth))
         _save_diagnostic(
@@ -260,6 +293,13 @@ def main(args):
             xlabel="gradient magnitude",
             title="gradient — slope distribution",
         )
+
+    # --- Save individual confidences -----------------------------------------
+    mask_stem = os.path.splitext(os.path.basename(args.out))[0]
+    if lm_conf is not None:
+        _save_conf_tif(lm_conf, os.path.join(conf_dir, f"{mask_stem}_lm_conf.tif"), profile)
+    if gr_conf is not None:
+        _save_conf_tif(gr_conf, os.path.join(conf_dir, f"{mask_stem}_gr_conf.tif"), profile)
 
     # --- Combine -------------------------------------------------------------
     if args.method == "local_min":
@@ -270,13 +310,16 @@ def main(args):
         print(f"\n[combine] mode={args.combine}")
         ground_bin, ground_conf = combine(lm_bin, lm_conf, gr_bin, gr_conf, mode=args.combine)
 
-    # --- Apply ground mask to crown mask -------------------------------------
-    mask[ground_bin] = 0.0
-
+    # --- Apply soft ground blend to crown mask --------------------------------
+    n_crown_dampened = int(np.sum((mask >= 0.0) & (mask < 255.0) & (ground_conf > 0.0)))
+    n_nodata_before = int(np.sum(mask == 255.0))
+    mask = apply_soft_blend(mask, ground_conf, args.nodata_resolve_threshold)
+    n_nodata_resolved = n_nodata_before - int(np.sum(mask == 255.0))
     n_crown  = int(np.sum((mask > 0) & (mask < 255)))
     n_ground = int(np.sum(mask == 0.0))
     n_nodata = int(np.sum(mask == 255.0))
-    print(f"\nGround pixels forced to 0: {int(ground_bin.sum()):,}")
+    print(f"\nCrown pixels dampened by DSM:     {n_crown_dampened:,}  (multiplicative blend)")
+    print(f"noData pixels resolved to ground: {n_nodata_resolved:,}  (ground_conf > {args.nodata_resolve_threshold:.2f})")
     print(f"Final  =>  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
 
     # --- Write binary mask ---------------------------------------------------
@@ -286,13 +329,8 @@ def main(args):
         dst.write(mask[np.newaxis])
     print(f"Saved mask: {args.out}")
 
-    # --- Write confidence raster ---------------------------------------------
-    os.makedirs(conf_dir, exist_ok=True)
-    conf_profile = profile.copy()
-    conf_profile.update(dtype="float32", count=1, nodata=None)
-    with rasterio.open(conf_path, "w", **conf_profile) as dst:
-        dst.write(ground_conf[np.newaxis])
-    print(f"Saved confidence: {conf_path}")
+    # --- Write combined confidence raster ------------------------------------
+    _save_conf_tif(ground_conf, conf_path, profile)
 
     # --- Write normalised nDSM (local_min method only) -----------------------
     if args.out_dsm and ndsm is not None:
@@ -332,7 +370,7 @@ if __name__ == "__main__":
     p.add_argument("--dsm", required=True,
                    help="DSM raster (.tif)")
     p.add_argument("--out", required=True,
-                   help="Base output path for binary mask (.tif) — params embedded automatically")
+                   help="Base output path for soft confidence mask (.tif) — params embedded automatically")
     p.add_argument("--method", default="local_min", choices=["local_min", "gradient", "both"],
                    help="Ground detection method (default: local_min)")
     p.add_argument("--combine", default="or", choices=["or", "and"],
@@ -350,4 +388,6 @@ if __name__ == "__main__":
                    help="Save normalised nDSM [0,1] here (local_min method only)")
     p.add_argument("--max_ndsm_height", type=float, default=50.0,
                    help="nDSM cap (m) for normalisation — overrides p95 ceiling if lower (default: 50)")
+    p.add_argument("--nodata_resolve_threshold", type=float, default=0.7,
+                   help="ground_conf must exceed this to resolve a noData pixel (default: 0.7)")
     main(p.parse_args())
