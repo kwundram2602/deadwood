@@ -11,7 +11,7 @@ def build_model(cfg: DictConfig, device: torch.device) -> nn.Module:
         weights = getattr(Unet_Weights, cfg.model.weights_name)
 
     # Build with pretrained 3-channel encoder, then adapt to in_channels
-    model = unet(weights=weights, num_classes=cfg.model.num_classes)
+    model = unet(weights=weights, classes=cfg.model.num_classes)
 
     if cfg.model.in_channels != 3:
         _adapt_first_conv(model.encoder, from_ch=3, to_ch=cfg.model.in_channels)

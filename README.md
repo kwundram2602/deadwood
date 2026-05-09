@@ -10,7 +10,6 @@ uv run python explore_and_process/rasterize_crowns.py --crowns datafiles/crown_p
 ```
 ### 1b)
 ```bash
-# local_min only (default, multi-scale)
 uv run python explore_and_process/apply_dsm_mask.py --mask datafiles/process_out/masks/crown_mask.tif --dsm datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_DSM_shift.tif --out datafiles/process_out/masks/crown_mask_final.tif --out_dsm datafiles/process_out/ndsm/dsm_ndsm.tif --method  both --gradient_sigma 1 --combine and --windows 150 350 700 --height_threshold 2.0 
 ```
 
@@ -25,3 +24,8 @@ uv run python explore_and_process/tile_patches.py --image datafiles\process_out\
 ```bash
 uv run python data_utils/data_split.py
 ```
+
+### Training
+
+##### Local training (from deadwood/)
+uv run python scripts/train.py --config configs/crown_ms.yaml --working_dir .
