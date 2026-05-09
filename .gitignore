@@ -11,7 +11,7 @@ out
 *.ps1
 # Virtual environments
 .venv
-
+docs/
 # Training outputs
 checkpoints/
 data/raw/
@@ -19,3 +19,4 @@ notes/
 .vscode/
 datafiles/
 configs/user/
+configs/**/user/

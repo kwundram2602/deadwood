@@ -23,14 +23,19 @@ Usage:
 """
 
 import argparse
+import logging
 import os
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
+from omegaconf import OmegaConf
 from scipy.ndimage import gaussian_filter, minimum_filter, sobel, uniform_filter1d
+
+logger = logging.getLogger(__name__)
 
 
 def resample_dsm(dsm_path, h, w, transform, crs):
@@ -83,6 +88,17 @@ def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
     return float(centers[int(np.argmax(sigma_b))])
 
 
+def _smoothstep_confidence(ndsm: np.ndarray, threshold: float) -> np.ndarray:
+    """Ground confidence based on height threshold.
+
+    Returns 1.0 for nDSM <= threshold, smoothly falls to 0.0 at 2*threshold.
+    Uses the smoothstep curve (3t^2 - 2t^3) for a C1-continuous transition.
+    NaN handling: caller is responsible for zeroing NaN pixels after this call.
+    """
+    t = np.clip((ndsm - threshold) / threshold, 0.0, 1.0)
+    return (1.0 - (3 * t**2 - 2 * t**3)).astype(np.float32)
+
+
 def detect_ground_local_min(
     dsm: np.ndarray, windows: list[int], height_threshold: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -98,9 +114,7 @@ def detect_ground_local_min(
     local_min = np.mean(local_mins, axis=0) if len(local_mins) > 1 else local_mins[0]
     ndsm = dsm - local_min
 
-    valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
-    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else height_threshold * 5
-    confidence = (1.0 - np.clip(ndsm / p95, 0.0, 1.0)).astype(np.float32)
+    confidence = _smoothstep_confidence(ndsm, height_threshold)
     confidence[np.isnan(dsm)] = 0.0
 
     binary = (ndsm < height_threshold) & ~np.isnan(dsm)
@@ -131,6 +145,7 @@ def detect_ground_gradient(
 
     valid_pos = grad_smooth[grad_smooth > 0]
     p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else float(grad_smooth.max())
+    # normiert auf [0, p95]; 1e-8 verhindert Division durch 0; invertiert: niedriger Gradient → hohe Boden-Confidence
     confidence = (1.0 - np.clip(grad_smooth / max(p95, 1e-8), 0.0, 1.0)).astype(np.float32)
     confidence[np.isnan(dsm)] = 0.0
 
@@ -176,20 +191,20 @@ def apply_soft_blend(
 
 def _save_diagnostic(
     values: np.ndarray,
-    out_mask_path: str,
+    process_out_dir: str,
+    run_id: str,
+    mask_stem: str,
     label: str,
     used_threshold: float,
     suggested_threshold: float | None = None,
     xlabel: str = "value",
     title: str = "distribution",
 ) -> None:
-    """Save a histogram diagnostic PNG to diag_graphs/ sibling of the masks/ dir."""
-    process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(out_mask_path)))
-    diag_dir = os.path.join(process_out_dir, "diag_graphs")
+    """Save a histogram diagnostic PNG to diag_graphs/<run_id>/ under process_out_dir."""
+    diag_dir = os.path.join(process_out_dir, "diag_graphs", run_id)
     os.makedirs(diag_dir, exist_ok=True)
 
-    stem = os.path.splitext(os.path.basename(out_mask_path))[0]
-    diag_path = os.path.join(diag_dir, f"{stem}_{label}_diag.png")
+    diag_path = os.path.join(diag_dir, f"{mask_stem}_{label}_diag.png")
 
     valid = values[np.isfinite(values) & (values >= 0)]
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -220,6 +235,12 @@ def _save_conf_tif(arr: np.ndarray, path: str, profile: dict) -> None:
 
 
 def main(args):
+    logger.info("Config:\n%s", OmegaConf.to_yaml(args))
+
+    # --- Run ID (timestamp) groups all outputs of this run -------------------
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(args.out)))
+
     # --- Build output filename suffix ----------------------------------------
     w_tag = "-".join(str(w) for w in args.windows)
     lm_tag = f"_lm_w{w_tag}_ht{args.height_threshold}"
@@ -233,12 +254,16 @@ def main(args):
         mask_suffix = f"{lm_tag}{gr_tag}_{args.combine}"
 
     args.out = _embed_params(args.out, mask_suffix)
+    mask_dir, mask_file = os.path.dirname(args.out), os.path.basename(args.out)
+    args.out = os.path.join(mask_dir, run_id, mask_file)
+
     if args.out_dsm:
         args.out_dsm = _embed_params(args.out_dsm, f"_w{w_tag}")
+        dsm_dir, dsm_file = os.path.dirname(args.out_dsm), os.path.basename(args.out_dsm)
+        args.out_dsm = os.path.join(dsm_dir, run_id, dsm_file)
 
-    # Derive confidence output path (sibling dir of masks/)
-    process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(args.out)))
-    conf_dir = os.path.join(process_out_dir, "ground_confidence")
+    # Derive confidence output path
+    conf_dir = os.path.join(process_out_dir, "ground_confidence", run_id)
     conf_stem = os.path.splitext(os.path.basename(args.out))[0] + "_conf.tif"
     conf_path = os.path.join(conf_dir, conf_stem)
 
@@ -258,6 +283,8 @@ def main(args):
     lm_bin = lm_conf = ndsm = None
     gr_bin = gr_conf = grad_smooth = None
 
+    mask_stem = os.path.splitext(os.path.basename(args.out))[0]
+
     if args.method in ("local_min", "both"):
         print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m")
         lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold)
@@ -272,7 +299,7 @@ def main(args):
               f"max={np.max(valid_ndsm):.2f} m")
         print(f"  Suggested threshold (valley): {suggested_ht:.2f} m  (used: {args.height_threshold} m)")
         _save_diagnostic(
-            ndsm, args.out, label="lm",
+            ndsm, process_out_dir, run_id, mask_stem, label="lm",
             used_threshold=args.height_threshold,
             suggested_threshold=suggested_ht,
             xlabel="nDSM [m]",
@@ -288,14 +315,13 @@ def main(args):
         used_gr_threshold = (args.gradient_threshold if args.gradient_threshold is not None
                              else _otsu_threshold(grad_smooth))
         _save_diagnostic(
-            grad_smooth, args.out, label="gr",
+            grad_smooth, process_out_dir, run_id, mask_stem, label="gr",
             used_threshold=used_gr_threshold,
             xlabel="gradient magnitude",
             title="gradient — slope distribution",
         )
 
     # --- Save individual confidences -----------------------------------------
-    mask_stem = os.path.splitext(os.path.basename(args.out))[0]
     if lm_conf is not None:
         _save_conf_tif(lm_conf, os.path.join(conf_dir, f"{mask_stem}_lm_conf.tif"), profile)
     if gr_conf is not None:
@@ -349,7 +375,7 @@ def main(args):
 
     # --- Write raw nDSM in metres ---------------------------------------------
     if ndsm is not None:
-        ndsm_m_dir = os.path.join(process_out_dir, "ndsm_in_m")
+        ndsm_m_dir = os.path.join(process_out_dir, "ndsm_in_m", run_id)
         os.makedirs(ndsm_m_dir, exist_ok=True)
         ndsm_stem = os.path.splitext(os.path.basename(args.out_dsm))[0] if args.out_dsm else os.path.splitext(os.path.basename(args.out))[0]
         ndsm_m_path = os.path.join(ndsm_m_dir, f"{ndsm_stem}_raw_m.tif")
@@ -363,31 +389,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mask", required=True,
-                   help="Soft crown mask from rasterize_crowns.py")
-    p.add_argument("--dsm", required=True,
-                   help="DSM raster (.tif)")
-    p.add_argument("--out", required=True,
-                   help="Base output path for soft confidence mask (.tif) — params embedded automatically")
-    p.add_argument("--method", default="local_min", choices=["local_min", "gradient", "both"],
-                   help="Ground detection method (default: local_min)")
-    p.add_argument("--combine", default="or", choices=["or", "and"],
-                   help="How to merge methods when --method both (default: or)")
-    p.add_argument("--windows", type=int, nargs="+", default=[700],
-                   help="Window size(s) in px for local-min filter — element-wise min used "
-                        "when multiple given (default: [700] = 35 m at 5 cm GSD)")
-    p.add_argument("--height_threshold", type=float, default=2.0,
-                   help="nDSM threshold (m) below which pixel is ground (default: 2.0)")
-    p.add_argument("--gradient_sigma", type=float, default=3.0,
-                   help="Gaussian smoothing sigma (px) before gradient computation (default: 3)")
-    p.add_argument("--gradient_threshold", type=float, default=None,
-                   help="Gradient magnitude threshold for ground; auto-Otsu if omitted")
-    p.add_argument("--out_dsm", default=None,
-                   help="Save normalised nDSM [0,1] here (local_min method only)")
-    p.add_argument("--max_ndsm_height", type=float, default=50.0,
-                   help="nDSM cap (m) for normalisation — overrides p95 ceiling if lower (default: 50)")
-    p.add_argument("--nodata_resolve_threshold", type=float, default=0.7,
-                   help="ground_conf must exceed this to resolve a noData pixel (default: 0.7)")
-    main(p.parse_args())
+    logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
+    p = argparse.ArgumentParser(description="Stage 1b: apply DSM ground mask.")
+    p.add_argument("--config", required=True, help="Path to preprocess.yaml")
+    cfg = OmegaConf.load(p.parse_args().config)
+    main(cfg.dsm_mask)

@@ -1,0 +1,59 @@
+# Preprocessing pipeline config.
+# Run from deadwood/ as working directory.
+# All paths are relative to deadwood/.
+#
+# Usage (full pipeline):
+#   uv run python scripts/preprocess.py --config configs/preprocess.yaml --working_dir .
+#
+# Usage (individual stages):
+#   uv run python explore_and_process/rasterize_crowns.py --config configs/preprocess.yaml
+#   uv run python explore_and_process/apply_dsm_mask.py   --config configs/preprocess.yaml
+#   uv run python explore_and_process/tile_patches.py     --config configs/preprocess.yaml
+#
+rasterize:
+# crowns: field datasets to rasterize (vector → raster mask)
+  crowns:
+    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
+    - datafiles/crown_poly/2_crown_neighbour_20260409_editLP.gpkg
+# reference raster: to match for geotransform, CRS
+# reads Transform and , h, w from this raster.
+# Is also used as the main source for the training pipeline's input image
+  reference: datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_OM_shift.tif
+  out_mask: datafiles/process_out/masks/crown_mask.tif
+  out_image_dir: datafiles/process_out/images
+  # raster_dir : if set, images in raster_dir
+  # overwrite the reference raster as the target for resampling 
+  raster_dir: null
+  # target_gsd: if specified, will resample to this GSD (m) during rasterization;
+  target_gsd: 0.05
+  # sigma
+  sigma: 10.0
+  nodata_threshold: 0.05
+  bands: [5, 4, 6, 7]
+
+dsm_mask:
+  mask: datafiles/process_out/masks/crown_mask.tif
+  dsm: datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_DSM_shift.tif
+  out: datafiles/process_out/masks/crown_mask_final.tif
+  out_dsm: datafiles/process_out/ndsm/dsm_ndsm.tif
+  method: both          # Erkennungsmethode: local_min (Höhe), gradient (Hangneigung), both (beide kombiniert)
+  combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
+  windows: [600]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
+  height_threshold: 1.2 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten
+  gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert
+  max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
+  nodata_resolve_threshold: 0.4  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
+
+tiling:
+  # image: exact path produced by rasterize stage ({out_image_dir}/{raster_stem}_ms4.tif)
+  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_OM_shift_ms4.tif
+  # mask/dsm: when running via preprocess.py, these are overwritten automatically with the
+  # param-embedded paths produced by apply_dsm_mask (e.g. crown_mask_final_lm_w150-350-700_ht2.0.tif).
+  # When running tile_patches.py standalone, set these to the actual param-embedded paths manually.
+  mask: datafiles/process_out/masks/crown_mask_final_lm_w150-350-700_ht2.0.tif
+  dsm: datafiles/process_out/ndsm/dsm_ndsm_w150-350-700.tif
+  out: out/crown_ms_patches
+  size: 512
+  # skip patches with > this fraction of noData pixels in the image; 0.9 = skip if >90% noData
+  nodata_thresh: 0.9
