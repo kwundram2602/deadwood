@@ -6,11 +6,11 @@
 
 ### 1a)
 ```bash
-uv run python explore_and_process/rasterize_crowns.py --crowns datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg datafiles/crown_poly/2_crown_neighbour_20260409_editLP.gpkg --reference datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_OM_shift.tif --out_mask datafiles/process_out/masks/crown_mask.tif --out_image_dir datafiles/process_out/images
+uv run python explore_and_process/rasterize_crowns.py --config D:\EAGLE\InnoLab_DL\deadwood\configs\preprocess.yaml
 ```
 ### 1b)
 ```bash
-uv run python explore_and_process/apply_dsm_mask.py --mask datafiles/process_out/masks/crown_mask.tif --dsm datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_DSM_shift.tif --out datafiles/process_out/masks/crown_mask_final.tif --out_dsm datafiles/process_out/ndsm/dsm_ndsm.tif --method  both --gradient_sigma 1 --combine and --windows 150 350 700 --height_threshold 2.0 
+uv run python explore_and_process/apply_dsm_mask.py --config D:\EAGLE\InnoLab_DL\deadwood\configs\preprocess.yaml
 ```
 
 ### Stage 2 — Tile full-res outputs into 512×512 patches

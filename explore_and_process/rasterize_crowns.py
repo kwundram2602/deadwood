@@ -26,6 +26,7 @@ Usage:
 """
 # python explore_and_process/rasterize_crowns.py \\     --crowns  datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg --reference datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_OM_shift.tif --out_mask  datafiles/process_out/crown_mask.tif --raster_dir    data/raster --out_image_dir explore_and_process/out/images --target_gsd 0.05
 import argparse
+import logging
 import os
 
 import geopandas as gpd
@@ -35,7 +36,10 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_bounds
+from omegaconf import OmegaConf
 from scipy.ndimage import gaussian_filter
+
+logger = logging.getLogger(__name__)
 
 # Only these crown categories map to class=1; everything else is excluded
 INCLUDE_CATEGORIES = {"son", "soff"}
@@ -115,6 +119,8 @@ def resample_image(om_path, bands, h, w, transform, crs, out_path):
 # ---------------------------------------------------------------------------
 
 def main(args):
+    logger.info("Config:\n%s", OmegaConf.to_yaml(args))
+
     with rasterio.open(args.reference) as ref:
         crs = ref.crs
         h, w, transform = target_grid(ref, args.target_gsd)
@@ -147,21 +153,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--crowns", required=True, nargs="+", help="Crown polygon GPKG(s) — one or more files")
-    p.add_argument("--reference", required=True, help="Reference OM raster (.tif)")
-    p.add_argument("--out_mask",  required=True, help="Output mask path (.tif)")
-    p.add_argument("--raster_dir",    default=None,
-                   help="Dir containing all OM tifs for batch image export")
-    p.add_argument("--out_image_dir", default=None,
-                   help="Output dir for resampled 4-band images")
-    p.add_argument("--target_gsd", type=float, default=0.05,
-                   help="Target GSD in metres (default: 0.05 = 5 cm)")
-    p.add_argument("--sigma", type=float, default=10.0,
-                   help="Gaussian blur sigma in pixels at target GSD (default: 10 → 50 cm)")
-    p.add_argument("--nodata_threshold", type=float, default=0.05,
-                   help="Soft-label values below this (outside crowns) become noData=255")
-    p.add_argument("--bands", type=int, nargs="+", default=MS_BANDS_DEFAULT,
-                   help="1-indexed band numbers to select (default: 5 4 6 7 = R,G,RE,NIR)")
-    main(p.parse_args())
+    logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
+    p = argparse.ArgumentParser(description="Stage 1a: rasterize crown polygons to soft mask.")
+    p.add_argument("--config", required=True, help="Path to preprocess.yaml")
+    cfg = OmegaConf.load(p.parse_args().config)
+    main(cfg.rasterize)

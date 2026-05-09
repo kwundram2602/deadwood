@@ -22,11 +22,15 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 
 import numpy as np
 import rasterio
+from omegaconf import OmegaConf
 from rasterio.transform import from_bounds
+
+logger = logging.getLogger(__name__)
 
 
 def tile_raster(src, row_off, col_off, size):
@@ -65,6 +69,8 @@ def write_patch(path, data, transform, crs, nodata=None):
 
 
 def main(args):
+    logger.info("Config:\n%s", OmegaConf.to_yaml(args))
+
     with rasterio.open(args.image) as img_src, \
          rasterio.open(args.mask)  as mask_src, \
          rasterio.open(args.dsm)   as dsm_src:
@@ -108,13 +114,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--image", required=True, help="4-band MS image (.tif)")
-    p.add_argument("--mask",  required=True, help="Final crown mask (.tif)")
-    p.add_argument("--dsm",   required=True, help="Normalised nDSM (.tif)")
-    p.add_argument("--out",   required=True, help="Output directory for patches")
-    p.add_argument("--size",  type=int, default=512, help="Patch size in pixels (default: 512)")
-    p.add_argument("--nodata_thresh", type=float, default=0.9,
-                   help="Skip patches where noData fraction exceeds this (default: 0.9)")
-    main(p.parse_args())
+    logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
+    p = argparse.ArgumentParser(description="Stage 2: tile full-res outputs into patches.")
+    p.add_argument("--config", required=True, help="Path to preprocess.yaml")
+    cfg = OmegaConf.load(p.parse_args().config)
+    main(cfg.tiling)

@@ -70,3 +70,38 @@ def test_mixed_array():
     assert result[1] == pytest.approx(1.0 - 0.9, abs=1e-6)   # noData resolved
     assert result[2] == pytest.approx(255.0, abs=1e-6)        # noData stays
     assert result[3] == pytest.approx(0.0, abs=1e-6)          # zero stays zero
+
+
+from explore_and_process.apply_dsm_mask import _smoothstep_confidence
+
+
+def test_smoothstep_below_threshold_is_one():
+    ndsm = _arr(0.0, 1.0, 2.0)
+    result = _smoothstep_confidence(ndsm, threshold=2.0)
+    np.testing.assert_allclose(result, [1.0, 1.0, 1.0], atol=1e-6)
+
+
+def test_smoothstep_at_double_threshold_is_zero():
+    ndsm = _arr(4.0)
+    result = _smoothstep_confidence(ndsm, threshold=2.0)
+    np.testing.assert_allclose(result, [0.0], atol=1e-6)
+
+
+def test_smoothstep_above_double_threshold_is_zero():
+    ndsm = _arr(10.0)
+    result = _smoothstep_confidence(ndsm, threshold=2.0)
+    np.testing.assert_allclose(result, [0.0], atol=1e-6)
+
+
+def test_smoothstep_midpoint_is_half():
+    # t=0.5 → smoothstep = 3(0.25) - 2(0.125) = 0.5 → confidence = 0.5
+    ndsm = _arr(3.0)  # = 1.5 × threshold
+    result = _smoothstep_confidence(ndsm, threshold=2.0)
+    np.testing.assert_allclose(result, [0.5], atol=1e-6)
+
+
+def test_smoothstep_finite_for_finite_inputs():
+    ndsm = _arr(0.0, 4.0)
+    result = _smoothstep_confidence(ndsm, threshold=2.0)
+    assert np.isfinite(result[0])
+    assert np.isfinite(result[1])
