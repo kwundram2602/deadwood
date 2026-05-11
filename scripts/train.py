@@ -1,13 +1,14 @@
 """Crown segmentation training script.
 
 Usage (local):
-    uv run --active python deadwood/scripts/train.py \
-        --config deadwood/configs/crown_ms.yaml \
+    uv run --active python deadwood/scripts/train.py \\
+        --config deadwood/configs/train_config/crown_ms.yaml \\
         --working_dir D:/EAGLE/InnoLab_DL
 
 Usage (HPC via sbatch):
     see deadwood/hpc/train_torch.sh
 """
+
 import argparse
 import copy
 import sys
@@ -15,12 +16,12 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-# Make all deadwood modules importable when running from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.dataset import make_loaders
 from models.model import build_model
 from training.learning_configurator import LearningConfigurator
+from training.losses import CombinedLoss
 from training.trainer import train
 from utils.device import get_device
 from utils.logging import init_wandb
@@ -41,19 +42,19 @@ def main() -> None:
     out_dir = root / cfg.output_dir / cfg.model_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve optional local checkpoint path
     if cfg.model.weights_path is not None:
         cfg.model.weights_path = str((root / cfg.model.weights_path).resolve())
 
-    # Save config snapshot next to outputs for reproducibility
     OmegaConf.save(cfg, out_dir / f"{cfg.model_name}.yaml")
     print(OmegaConf.to_yaml(cfg))
 
     device = get_device()
-    train_loader, val_loader, test_loader = make_loaders(cfg, data_root)
+    train_loader, val_loader, _ = make_loaders(cfg, data_root)
 
     model = build_model(cfg, device)
     lc = LearningConfigurator()
+    criterion = CombinedLoss(cfg.loss)
+    threshold = float(cfg.metrics.threshold)
 
     if cfg.logging.use_wandb:
         init_wandb(cfg, model)
@@ -65,7 +66,17 @@ def main() -> None:
     print("Phase 1: Transfer Learning")
     print("=" * 60)
     lc.prepare_model_for_transfer_learning(model)
-    tl_result = train(model, train_loader, val_loader, cfg.transfer, out_dir, "tl", device)
+    tl_result = train(
+        model,
+        train_loader,
+        val_loader,
+        cfg.transfer,
+        out_dir,
+        "tl",
+        device,
+        criterion=criterion,
+        threshold=threshold,
+    )
     model = copy.deepcopy(tl_result["best_model"])
 
     # ------------------------------------------------------------------
@@ -77,7 +88,15 @@ def main() -> None:
         print("=" * 60)
         lc.prepare_model_for_fine_tuning(model, cfg.fine_tune.unfreeze_blocks)
         ft_result = train(
-            model, train_loader, val_loader, cfg.fine_tune, out_dir, "ft", device
+            model,
+            train_loader,
+            val_loader,
+            cfg.fine_tune,
+            out_dir,
+            "ft",
+            device,
+            criterion=criterion,
+            threshold=threshold,
         )
         model = copy.deepcopy(ft_result["best_model"])
 
