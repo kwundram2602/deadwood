@@ -39,3 +39,15 @@ logging:
   project: deadwood
   run_name: null
   log_every_n_steps: 50
+
+# Loss function — weighted sum of active terms (weight 0.0 = term disabled)
+loss:
+  bce: 0.0
+  dice: 0.5
+  dice_squared: false   # true -> squared denominator variant (p^2+t^2)
+  iou: 0.3
+  mae: 0.2
+
+# Evaluation metrics
+metrics:
+  threshold: 0.5        # sigmoid threshold for binary metrics (precision/recall/F1/IoU)
