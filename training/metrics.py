@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from sklearn.metrics import auc, precision_recall_curve
+from sklearn.metrics import average_precision_score
 
 NODATA: int = 255
 
@@ -16,7 +16,7 @@ def pixel_metrics(
         threshold: sigmoid threshold for positive class
     """
     valid = (target != NODATA).squeeze(1)
-    preds = torch.sigmoid(logits.squeeze(1)) >= threshold
+    preds = torch.sigmoid(logits.squeeze(1).detach()) >= threshold
     tgt = target.squeeze(1) > 0.5
 
     p = preds[valid]
@@ -77,8 +77,12 @@ class MetricAccumulator:
         if not valid.any():
             return {
                 "loss": self._loss_sum / self._n if self._n > 0 else 0.0,
-                "acc": 0.0, "prec": 0.0, "rec": 0.0,
-                "f1": 0.0, "iou": 0.0, "auc_pr": 0.0,
+                "acc": 0.0,
+                "prec": 0.0,
+                "rec": 0.0,
+                "f1": 0.0,
+                "iou": 0.0,
+                "auc_pr": 0.0,
             }
 
         probs_v = probs[valid]
@@ -100,18 +104,20 @@ class MetricAccumulator:
 
         has_pos = t_bin.sum() > 0
         has_neg = (~t_bin).sum() > 0
-        if has_pos and has_neg:
-            prec_curve, rec_curve, _ = precision_recall_curve(
-                t_bin.astype(int), probs_v
-            )
-            auc_pr = float(auc(rec_curve, prec_curve))
-        else:
-            auc_pr = 0.0
+        auc_pr = (
+            float(average_precision_score(t_bin.astype(int), probs_v))
+            if has_pos and has_neg
+            else 0.0
+        )
 
         return {
             "loss": self._loss_sum / self._n if self._n > 0 else 0.0,
-            "acc": acc, "prec": prec, "rec": rec,
-            "f1": f1, "iou": iou, "auc_pr": auc_pr,
+            "acc": acc,
+            "prec": prec,
+            "rec": rec,
+            "f1": f1,
+            "iou": iou,
+            "auc_pr": auc_pr,
         }
 
     def reset(self) -> None:

@@ -83,13 +83,15 @@ def test_accumulator_auc_pr_perfect():
 
 
 def test_accumulator_auc_pr_worst():
+    # 1 positive, 15 negatives — worst predictor scores near baseline (1/16 ≈ 0.06)
     target = torch.zeros(1, 1, 4, 4)
-    target[0, 0, :2, :] = 1.0
+    target[0, 0, 0, 0] = 1.0
+    # inverted: high score for negative, low score for the one positive
     logits = torch.where(target == 1, torch.tensor(-5.0), torch.tensor(5.0))
     acc = MetricAccumulator()
     acc.update(logits, target, 0.0, 1)
     result = acc.compute()
-    assert result["auc_pr"] < 0.5
+    assert result["auc_pr"] < 0.2
 
 
 def test_accumulator_loss_averaged():
