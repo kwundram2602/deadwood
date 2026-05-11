@@ -10,7 +10,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 from omegaconf import OmegaConf
 
@@ -21,7 +20,6 @@ from models.model import build_model
 from training.losses import MaskedBCELoss
 from training.metrics import pixel_metrics
 from utils.device import get_device
-from utils.viz import plot_training_curves
 
 
 def evaluate(model: torch.nn.Module, loader, device: torch.device) -> dict[str, float]:

@@ -1,11 +1,15 @@
 # tests/test_apply_dsm_mask.py
+import os
+import sys
+
 import numpy as np
 import pytest
-import sys
-import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from explore_and_process.apply_dsm_mask import apply_soft_blend
+from explore_and_process.apply_dsm_mask import (  # noqa: E402
+    _smoothstep_confidence,
+    apply_soft_blend,
+)
 
 
 def _arr(*values):
@@ -70,9 +74,6 @@ def test_mixed_array():
     assert result[1] == pytest.approx(1.0 - 0.9, abs=1e-6)   # noData resolved
     assert result[2] == pytest.approx(255.0, abs=1e-6)        # noData stays
     assert result[3] == pytest.approx(0.0, abs=1e-6)          # zero stays zero
-
-
-from explore_and_process.apply_dsm_mask import _smoothstep_confidence
 
 
 def test_smoothstep_below_threshold_is_one():
