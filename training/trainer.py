@@ -90,7 +90,7 @@ def train(
             f"loss={t_m['loss']:.4f} auc_pr={t_m['auc_pr']:.3f} "
             f"f1={t_m['f1']:.3f} iou={t_m['iou']:.3f}  "
             f"val_loss={v_m['loss']:.4f} val_auc_pr={v_m['auc_pr']:.3f} "
-            f"val_f1={v_m['f1']:.3f}  "
+            f"val_f1={v_m['f1']:.3f} val_iou={v_m['iou']:.3f}  "
             f"lr={opt.param_groups[0]['lr']:.2e}"
         )
 
