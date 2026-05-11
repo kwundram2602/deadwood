@@ -7,7 +7,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from training.losses import MaskedBCELoss
-from training.metrics import pixel_metrics
+from training.metrics import MetricAccumulator
 
 
 def train(
@@ -18,52 +18,84 @@ def train(
     out_dir: Path,
     prefix: str,
     device: torch.device,
+    criterion: torch.nn.Module | None = None,
+    threshold: float = 0.5,
 ) -> dict:
     """Run one training phase (transfer learning or fine-tuning).
 
     Args:
-        model:       model with frozen/unfrozen params already configured
+        model:        model with frozen/unfrozen params already configured
         train_loader / val_loader: DataLoaders
-        phase_cfg:   OmegaConf node with epochs, lr, weight_decay, optimizer,
-                     scheduler, patience
-        out_dir:     directory to write checkpoints
-        prefix:      filename prefix for saved checkpoints (e.g. "tl", "ft")
-        device:      training device
+        phase_cfg:    OmegaConf node with epochs, lr, weight_decay, optimizer,
+                      scheduler, patience
+        out_dir:      directory to write checkpoints and plots
+        prefix:       filename prefix for saved files (e.g. "tl", "ft")
+        device:       training device
+        criterion:    loss function; defaults to MaskedBCELoss if None
+        threshold:    sigmoid threshold for binary metrics
 
     Returns:
-        dict with keys "history" (loss/acc lists) and "best_model" (deepcopy)
+        dict with keys "history" (metric lists) and "best_model" (deepcopy)
     """
-    criterion = MaskedBCELoss()
+    if criterion is None:
+        criterion = MaskedBCELoss()
+
     opt, sched = _build_optimizer(phase_cfg, model)
 
-    history: dict[str, list] = {"loss": [], "val_loss": [], "acc": [], "val_acc": []}
+    history: dict[str, list] = {
+        "loss": [],
+        "val_loss": [],
+        "auc_pr": [],
+        "val_auc_pr": [],
+        "f1": [],
+        "val_f1": [],
+        "iou": [],
+        "val_iou": [],
+        "prec": [],
+        "val_prec": [],
+        "rec": [],
+        "val_rec": [],
+    }
     best_val_loss = float("inf")
     best_model: torch.nn.Module | None = None
     patience_counter = 0
 
     for epoch in range(phase_cfg.epochs):
-        t_loss, t_acc = _run_epoch(
-            model, train_loader, criterion, opt, device, train=True
+        t_m = _run_epoch(
+            model,
+            train_loader,
+            criterion,
+            opt,
+            device,
+            train=True,
+            threshold=threshold,
         )
         sched.step()
-        v_loss, v_acc = _run_epoch(
-            model, val_loader, criterion, None, device, train=False
+        v_m = _run_epoch(
+            model,
+            val_loader,
+            criterion,
+            None,
+            device,
+            train=False,
+            threshold=threshold,
         )
 
-        history["loss"].append(t_loss)
-        history["val_loss"].append(v_loss)
-        history["acc"].append(t_acc)
-        history["val_acc"].append(v_acc)
+        for key in ("loss", "auc_pr", "f1", "iou", "prec", "rec"):
+            history[key].append(t_m[key])
+            history[f"val_{key}"].append(v_m[key])
 
         print(
             f"[{prefix}] {epoch + 1}/{phase_cfg.epochs}  "
-            f"loss={t_loss:.4f} acc={t_acc:.3f}  "
-            f"val_loss={v_loss:.4f} val_acc={v_acc:.3f}  "
+            f"loss={t_m['loss']:.4f} auc_pr={t_m['auc_pr']:.3f} "
+            f"f1={t_m['f1']:.3f} iou={t_m['iou']:.3f}  "
+            f"val_loss={v_m['loss']:.4f} val_auc_pr={v_m['auc_pr']:.3f} "
+            f"val_f1={v_m['f1']:.3f}  "
             f"lr={opt.param_groups[0]['lr']:.2e}"
         )
 
-        if v_loss < best_val_loss:
-            best_val_loss = v_loss
+        if v_m["loss"] < best_val_loss:
+            best_val_loss = v_m["loss"]
             patience_counter = 0
             best_model = copy.deepcopy(model)
             ckpt_path = out_dir / f"{prefix}_best.pt"
@@ -75,16 +107,36 @@ def train(
                 print(f"Early stopping at epoch {epoch + 1}")
                 break
 
+    _save_dashboard(history, out_dir / f"{prefix}_dashboard.png")
     return {"history": history, "best_model": best_model}
 
 
-def _run_epoch(model, loader, criterion, optimizer, device, *, train: bool):
+def _save_dashboard(history: dict, save_path: Path) -> None:
+    try:
+        from utils.viz import plot_dashboard
+
+        plot_dashboard(history, save_path)
+    except Exception as e:
+        print(f"Warning: could not save dashboard: {e}")
+
+
+def _run_epoch(
+    model,
+    loader,
+    criterion,
+    optimizer,
+    device,
+    *,
+    train: bool,
+    threshold: float = 0.5,
+) -> dict[str, float]:
     model.train(train)
-    total_loss, total_acc, n = 0.0, 0.0, 0
+    accumulator = MetricAccumulator()
 
     ctx = torch.enable_grad if train else torch.no_grad
     with ctx():
-        for images, masks in tqdm(loader, desc="train" if train else "val", leave=False):
+        desc = "train" if train else "val"
+        for images, masks in tqdm(loader, desc=desc, leave=False):
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
 
@@ -98,13 +150,9 @@ def _run_epoch(model, loader, criterion, optimizer, device, *, train: bool):
                 loss.backward()
                 optimizer.step()
 
-            m = pixel_metrics(logits.detach(), masks)
-            bs = images.size(0)
-            total_loss += loss.item() * bs
-            total_acc += m["acc"] * bs
-            n += bs
+            accumulator.update(logits.detach(), masks, loss.item(), images.size(0))
 
-    return total_loss / n, total_acc / n
+    return accumulator.compute(threshold=threshold)
 
 
 def _build_optimizer(cfg: DictConfig, model: torch.nn.Module):
