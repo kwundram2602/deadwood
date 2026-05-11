@@ -66,6 +66,9 @@ class SoftIoULoss(nn.Module):
 class MaskedMAELoss(nn.Module):
     """Mean absolute error between sigmoid(logits) and soft target, noData masked."""
 
+    def __init__(self) -> None:
+        super().__init__()
+
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         valid = target != NODATA
         if not valid.any():
@@ -84,19 +87,25 @@ class CombinedLoss(nn.Module):
 
     def __init__(self, cfg_loss) -> None:
         super().__init__()
-        terms: list[tuple[float, nn.Module]] = []
+        weights: list[float] = []
+        losses: list[nn.Module] = []
         if float(cfg_loss.get("bce", 0.0)) > 0:
-            terms.append((float(cfg_loss.bce), MaskedBCELoss()))
+            weights.append(float(cfg_loss.bce))
+            losses.append(MaskedBCELoss())
         if float(cfg_loss.get("dice", 0.0)) > 0:
             squared = bool(cfg_loss.get("dice_squared", False))
-            terms.append((float(cfg_loss.dice), SoftDiceLoss(squared=squared)))
+            weights.append(float(cfg_loss.dice))
+            losses.append(SoftDiceLoss(squared=squared))
         if float(cfg_loss.get("iou", 0.0)) > 0:
-            terms.append((float(cfg_loss.iou), SoftIoULoss()))
+            weights.append(float(cfg_loss.iou))
+            losses.append(SoftIoULoss())
         if float(cfg_loss.get("mae", 0.0)) > 0:
-            terms.append((float(cfg_loss.mae), MaskedMAELoss()))
-        if not terms:
+            weights.append(float(cfg_loss.mae))
+            losses.append(MaskedMAELoss())
+        if not losses:
             raise ValueError("CombinedLoss: all loss weights are 0")
-        self._terms = terms
+        self._weights = weights
+        self._losses = nn.ModuleList(losses)
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return sum(w * loss_fn(logits, target) for w, loss_fn in self._terms)
+        return sum(w * fn(logits, target) for w, fn in zip(self._weights, self._losses))
