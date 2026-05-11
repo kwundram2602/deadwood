@@ -1,11 +1,16 @@
 """Standalone evaluation script.
 
 Usage:
-    uv run --active python deadwood/scripts/evaluate.py \
-        --config deadwood/configs/crown_ms.yaml \
-        --weights deadwood/out/crown_ms/ft_best.pt \
+    uv run --active python deadwood/scripts/evaluate.py \\
+        --config deadwood/configs/train_config/crown_ms.yaml \\
+        --weights deadwood/out/crown_ms/ft_best.pt \\
         --working_dir D:/EAGLE/InnoLab_DL
+
+Optional flags:
+    --threshold  float  (default from cfg.metrics.threshold)
+    --n_samples  int    (default 6)
 """
+
 import argparse
 import sys
 from pathlib import Path
@@ -17,52 +22,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.dataset import make_loaders
 from models.model import build_model
-from training.losses import MaskedBCELoss
-from training.metrics import pixel_metrics
+from training.losses import CombinedLoss
+from training.metrics import MetricAccumulator
 from utils.device import get_device
+from utils.viz import plot_final_bars, plot_samples
 
 
-def evaluate(model: torch.nn.Module, loader, device: torch.device) -> dict[str, float]:
-    criterion = MaskedBCELoss()
+def _evaluate_split(
+    model: torch.nn.Module,
+    loader,
+    device: torch.device,
+    criterion: torch.nn.Module,
+    threshold: float,
+) -> dict[str, float]:
+    accumulator = MetricAccumulator()
     model.eval()
-
-    total_loss = 0.0
-    agg = {"acc": 0.0, "prec": 0.0, "rec": 0.0, "f1": 0.0}
-    n = 0
-
     with torch.no_grad():
         for images, masks in loader:
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
-
             logits = model(images)
             loss = criterion(logits, masks)
-            m = pixel_metrics(logits, masks)
-
-            bs = images.size(0)
-            total_loss += loss.item() * bs
-            for k in agg:
-                agg[k] += m[k] * bs
-            n += bs
-
-    results = {k: v / n for k, v in agg.items()}
-    results["loss"] = total_loss / n
-    return results
+            accumulator.update(logits.detach(), masks, loss.item(), images.size(0))
+    return accumulator.compute(threshold=threshold)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained crown segmentation model")
-    parser.add_argument("--config", required=True, help="Path to YAML config")
-    parser.add_argument("--weights", required=True, help="Path to .pt state dict")
-    parser.add_argument("--working_dir", default=".", help="Root for relative paths")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--weights", required=True)
+    parser.add_argument("--working_dir", default=".")
+    parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument("--n_samples", type=int, default=6)
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
     root = Path(args.working_dir).resolve()
     data_root = root / cfg.dataset.path
+    threshold = args.threshold if args.threshold is not None else float(cfg.metrics.threshold)
 
     device = get_device()
-    _, _, test_loader = make_loaders(cfg, data_root)
+    train_loader, val_loader, test_loader = make_loaders(cfg, data_root)
 
     model = build_model(cfg, device)
     weights_path = Path(args.weights)
@@ -70,22 +70,51 @@ def main() -> None:
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
     model.load_state_dict(state, strict=False)
-    # Unfreeze all params for evaluation
     for p in model.parameters():
         p.requires_grad = False
 
-    results = evaluate(model, test_loader, device)
+    criterion = CombinedLoss(cfg.loss)
+    out_dir = weights_path.parent
 
-    print("\n=== Test Results ===")
-    for k, v in results.items():
-        print(f"  {k:>8}: {v:.4f}")
+    train_m = _evaluate_split(model, train_loader, device, criterion, threshold)
+    val_m = _evaluate_split(model, val_loader, device, criterion, threshold)
+    test_m = _evaluate_split(model, test_loader, device, criterion, threshold)
 
-    # Save results next to the weights file
-    out_path = weights_path.parent / f"{weights_path.stem}_eval.txt"
-    with open(out_path, "w") as f:
-        for k, v in results.items():
-            f.write(f"{k}: {v:.4f}\n")
-    print(f"\nSaved to {out_path}")
+    print("\n=== Evaluation Results ===")
+    header = f"{'metric':>10}  {'train':>8}  {'val':>8}  {'test':>8}"
+    print(header)
+    print("-" * len(header))
+    for k in ("loss", "auc_pr", "f1", "iou", "prec", "rec", "acc"):
+        print(
+            f"{k:>10}  {train_m.get(k, 0):>8.4f}  {val_m.get(k, 0):>8.4f}  {test_m.get(k, 0):>8.4f}"
+        )
+
+    bars_path = out_dir / f"{weights_path.stem}_eval_bars.png"
+    plot_final_bars(train_m, val_m, test_m, bars_path)
+
+    val_samples_path = out_dir / f"{weights_path.stem}_val_samples.png"
+    plot_samples(
+        model, val_loader, device, n=args.n_samples, threshold=threshold, save_path=val_samples_path
+    )
+
+    test_samples_path = out_dir / f"{weights_path.stem}_test_samples.png"
+    plot_samples(
+        model,
+        test_loader,
+        device,
+        n=args.n_samples,
+        threshold=threshold,
+        save_path=test_samples_path,
+    )
+
+    txt_path = out_dir / f"{weights_path.stem}_eval.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"threshold: {threshold}\n\n")
+        for split, m in (("train", train_m), ("val", val_m), ("test", test_m)):
+            f.write(f"[{split}]\n")
+            for k, v in m.items():
+                f.write(f"  {k}: {v:.4f}\n")
+    print(f"\nSaved results to {txt_path}")
 
 
 if __name__ == "__main__":
