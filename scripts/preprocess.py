@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from omegaconf import OmegaConf
 
-from explore_and_process.rasterize_crowns import main as rasterize_main
 from explore_and_process.apply_dsm_mask import main as dsm_main
+from explore_and_process.rasterize_crowns import main as rasterize_main
 from explore_and_process.tile_patches import main as tile_main
 
 logger = logging.getLogger(__name__)

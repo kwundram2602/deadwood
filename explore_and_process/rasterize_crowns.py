@@ -33,10 +33,10 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+from omegaconf import OmegaConf
 from rasterio.enums import Resampling
 from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_bounds
-from omegaconf import OmegaConf
 from scipy.ndimage import gaussian_filter
 
 logger = logging.getLogger(__name__)
