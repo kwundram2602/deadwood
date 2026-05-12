@@ -25,6 +25,7 @@ class MetricAccumulator:
         self._probs: list[np.ndarray] = []
         self._targets: list[np.ndarray] = []
         self._loss_sum: float = 0.0
+        self._parts_sum: dict[str, float] = {}
         self._n_valid: int = 0
 
     def update(
@@ -33,6 +34,7 @@ class MetricAccumulator:
         target: torch.Tensor,
         loss_val: float,
         n_valid_pixels: int,
+        loss_parts: dict[str, float] | None = None,
     ) -> None:
         if n_valid_pixels <= 0:
             return
@@ -40,6 +42,9 @@ class MetricAccumulator:
         self._targets.append(target.detach().cpu().numpy().ravel())
         self._loss_sum += loss_val * n_valid_pixels
         self._n_valid += n_valid_pixels
+        if loss_parts:
+            for name, val in loss_parts.items():
+                self._parts_sum[name] = self._parts_sum.get(name, 0.0) + val * n_valid_pixels
 
     def compute(self, threshold: float = 0.5, target_threshold: float = 0.5) -> dict[str, float]:
         _zero = {
@@ -92,7 +97,7 @@ class MetricAccumulator:
             else 0.0
         )
 
-        return {
+        result = {
             "loss": self._loss_sum / self._n_valid if self._n_valid > 0 else 0.0,
             "acc": acc,
             "prec": prec,
@@ -102,9 +107,13 @@ class MetricAccumulator:
             "soft_iou": soft_iou,
             "auc_pr": auc_pr,
         }
+        for name, total in self._parts_sum.items():
+            result[f"loss_{name}"] = total / self._n_valid if self._n_valid > 0 else 0.0
+        return result
 
     def reset(self) -> None:
         self._probs.clear()
         self._targets.clear()
         self._loss_sum = 0.0
+        self._parts_sum.clear()
         self._n_valid = 0
