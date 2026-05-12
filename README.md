@@ -26,3 +26,8 @@ uv run python scripts/preprocess.py --config \configs/preprocess.yaml
 
 ##### Local training (from deadwood/)
 uv run python scripts/train.py --config configs/train_config/crown_ms.yaml --working_dir .
+
+
+### Evaluation
+
+uv run python scripts/evaluate.py --config configs/train_config/crown_ms.yaml --working_dir .
