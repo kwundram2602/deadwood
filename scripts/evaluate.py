@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.dataset import make_loaders
 from models.model import build_model
+from scripts.train import _make_experiment_id
 from training.losses import CombinedLoss
 from training.metrics import MetricAccumulator
 from utils.device import get_device
@@ -66,10 +67,14 @@ def main() -> None:
     threshold = args.threshold if args.threshold is not None else float(cfg.metrics.threshold)
 
     eval_cfg = cfg.get("evaluate", OmegaConf.create({}))
+    n_samples = args.n_samples if args.n_samples is not None else int(eval_cfg.get("n_samples", 6))
+
     weights_str = args.weights or eval_cfg.get("weights", None)
     if not weights_str:
-        parser.error("Provide --weights or set evaluate.weights in the config.")
-    n_samples = args.n_samples if args.n_samples is not None else int(eval_cfg.get("n_samples", 6))
+        experiment_id = _make_experiment_id(cfg)
+        ckpt_name = "ft_best.pt" if cfg.fine_tune.get("enabled", True) else "tl_best.pt"
+        weights_str = str(Path(cfg.output_dir) / experiment_id / ckpt_name)
+        print(f"Weights inferred: {weights_str}")
 
     device = get_device()
     train_loader, val_loader, test_loader = make_loaders(cfg, data_root)

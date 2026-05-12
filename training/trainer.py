@@ -5,8 +5,9 @@ import torch.optim as optim
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from training.losses import MaskedBCELoss
+from training.losses import CombinedLoss, MaskedBCELoss
 from training.metrics import MetricAccumulator
+from utils.history import plot_history, save_history_csv
 
 NODATA: int = 255
 
@@ -60,6 +61,12 @@ def train(
         "rec": [],
         "val_rec": [],
     }
+    part_keys: list[str] = []
+    if isinstance(criterion, CombinedLoss):
+        part_keys = [f"loss_{n}" for n in criterion.names]
+        for k in part_keys:
+            history[k] = []
+            history[f"val_{k}"] = []
     best_val_loss = float("inf")
     best_ckpt_path: Path | None = None
     patience_counter = 0
@@ -90,6 +97,11 @@ def train(
         for key in ("loss", "auc_pr", "f1", "iou", "soft_iou", "prec", "rec"):
             history[key].append(t_m[key])
             history[f"val_{key}"].append(v_m[key])
+        for key in part_keys:
+            history[key].append(t_m.get(key, 0.0))
+            history[f"val_{key}"].append(v_m.get(key, 0.0))
+
+        save_history_csv(history, out_dir / f"{prefix}_history.csv")
 
         print(
             f"[{prefix}] {epoch + 1}/{phase_cfg.epochs}  "
@@ -114,17 +126,11 @@ def train(
                 print(f"Early stopping at epoch {epoch + 1}")
                 break
 
-    _save_dashboard(history, out_dir / f"{prefix}_dashboard.png")
-    return {"history": history, "ckpt_path": best_ckpt_path}
-
-
-def _save_dashboard(history: dict, save_path: Path) -> None:
     try:
-        from utils.viz import plot_dashboard
-
-        plot_dashboard(history, save_path)
+        plot_history(history, out_dir, prefix)
     except Exception as e:
         print(f"Warning: could not save dashboard: {e}")
+    return {"history": history, "ckpt_path": best_ckpt_path}
 
 
 def _run_epoch(
@@ -152,14 +158,19 @@ def _run_epoch(
                 optimizer.zero_grad()
 
             logits = model(images)
-            loss = criterion(logits, masks)
+            if isinstance(criterion, CombinedLoss):
+                loss, parts = criterion.forward_with_parts(logits, masks)
+                parts_float: dict[str, float] | None = {k: v.item() for k, v in parts.items()}
+            else:
+                loss = criterion(logits, masks)
+                parts_float = None
 
             if train:
                 loss.backward()
                 optimizer.step()
 
             n_valid = int((masks != NODATA).sum().item())
-            accumulator.update(logits.detach(), masks, loss.item(), n_valid)
+            accumulator.update(logits.detach(), masks, loss.item(), n_valid, parts_float)
 
     return accumulator.compute(threshold=threshold, target_threshold=target_threshold)
 
