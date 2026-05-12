@@ -44,6 +44,10 @@ def _make_experiment_id(cfg) -> str:
     if loss_parts:
         parts.append("_".join(loss_parts))
 
+    tag = cfg.get("run_tag")
+    if tag:
+        parts.append(str(tag))
+
     return "__".join(parts)
 
 
