@@ -29,12 +29,12 @@ fine_tune:
   enabled: true
   epochs: 30
   lr: 0.00005
-  weight_decay: 0.0001
-  unfreeze_blocks: 2      # how many ResNet encoder blocks to unfreeze from the top
+  weight_decay: 0.001     # stronger regularisation for small dataset (was 0.0001)
+  unfreeze_blocks: 1      # only layer4 — was 2 (layer4+layer3 = 23M params, too much)
   encoder_lr_scale: 0.1   # encoder LR = lr * encoder_lr_scale (differential learning rates)
   optimizer: adamw
-  scheduler: cos          # cos | step | multistep | anneal
-  step_gamma: 0.3         # only used when scheduler: step
+  scheduler: step         # stable decay; cos restarts spike LR mid-finetuning
+  step_gamma: 0.5         # halve every 7 epochs
   warmup_epochs: 3        # linear LR warmup after encoder unfreeze (0 = disabled)
   patience: 10
 

@@ -5,6 +5,7 @@ description = "Crown segmentation from multispectral aerial imagery"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "albumentations>=2.0.8",
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
     "omegaconf>=2.3",
