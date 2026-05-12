@@ -30,4 +30,4 @@ uv run python scripts/train.py --config configs/train_config/crown_ms.yaml --wor
 
 ### Evaluation
 
-uv run python scripts/evaluate.py --config configs/train_config/crown_ms.yaml --working_dir .
+uv run python scripts/evaluate.py --config configs/train_config/user/crown_ms_bce_dice.yaml --working_dir .
