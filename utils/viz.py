@@ -64,18 +64,23 @@ def plot_dashboard(
         ("rec", "Recall"),
         ("iou", "IoU"),
     ]
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    lines, labels = [], []
     for ax, (key, label) in zip(axes.flat, panels):
         if key in history:
-            ax.plot(history[key], label="train")
+            (l,) = ax.plot(history[key], label="train")
+            if not labels:
+                lines.append(l); labels.append("train")
         if f"val_{key}" in history:
-            ax.plot(history[f"val_{key}"], label="val", linestyle="--")
+            (l,) = ax.plot(history[f"val_{key}"], label="val", linestyle="--")
+            if len(labels) < 2:
+                lines.append(l); labels.append("val")
         ax.set_title(label)
         ax.set_xlabel("Epoch")
-        ax.legend()
         ax.grid(alpha=0.3)
-    fig.suptitle(f"pred_thresh={threshold}  target_thresh={target_threshold}", fontsize=9, y=1.01)
-    fig.tight_layout()
+    fig.legend(lines, labels, loc="lower center", ncol=2, fontsize=9, framealpha=0.9)
+    fig.suptitle(f"pred_thresh={threshold}  target_thresh={target_threshold}", fontsize=9)
+    fig.tight_layout(rect=[0, 0.06, 1, 0.97])
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
     print(f"Saved dashboard -> {save_path}")
@@ -170,9 +175,14 @@ def plot_final_bars_multi(
                 ax.set_ylim(0, 1.15)
                 ax.grid(alpha=0.3, axis="y")
                 if r == 0 and c == n_cols - 1:
-                    ax.legend(fontsize=7)
+                    ax.legend(
+                        fontsize=7,
+                        loc="upper left",
+                        bbox_to_anchor=(1.04, 1),
+                        borderaxespad=0,
+                    )
 
-        fig.tight_layout()
+        fig.tight_layout(rect=[0, 0, 0.93, 1])
         save_path = Path(out_dir) / f"{stem}_{metric_key}.png"
         fig.savefig(save_path, dpi=150)
         plt.close(fig)
