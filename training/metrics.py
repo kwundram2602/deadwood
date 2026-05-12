@@ -3,38 +3,7 @@ import torch
 from sklearn.metrics import average_precision_score
 
 NODATA: int = 255
-
-
-def pixel_metrics(
-    logits: torch.Tensor, target: torch.Tensor, threshold: float = 0.5
-) -> dict[str, float]:
-    """Accuracy, precision, recall, F1, IoU over valid (non-noData) pixels.
-
-    Args:
-        logits: raw model output (N, 1, H, W)
-        target: soft mask (N, 1, H, W), 255 = noData
-        threshold: sigmoid threshold for positive class
-    """
-    valid = (target != NODATA).squeeze(1)
-    preds = torch.sigmoid(logits.squeeze(1).detach()) >= threshold
-    tgt = target.squeeze(1) > 0.5
-
-    p = preds[valid]
-    t = tgt[valid]
-
-    tp = (p & t).sum().item()
-    fp = (p & ~t).sum().item()
-    fn = (~p & t).sum().item()
-    tn = (~p & ~t).sum().item()
-    total = tp + fp + fn + tn
-
-    acc = (tp + tn) / total if total > 0 else 0.0
-    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
-    iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
-
-    return {"acc": acc, "prec": prec, "rec": rec, "f1": f1, "iou": iou}
+_EPS: float = 1e-6
 
 
 class MetricAccumulator:
@@ -46,7 +15,8 @@ class MetricAccumulator:
             logits = model(images)
             loss = criterion(logits, masks)
             loss.backward(); optimizer.step()
-            acc.update(logits.detach(), masks, loss.item(), images.size(0))
+            n_valid = (masks != 255).sum().item()
+            acc.update(logits.detach(), masks, loss.item(), n_valid)
         scores = acc.compute(threshold=0.5)
         acc.reset()
     """
@@ -55,35 +25,43 @@ class MetricAccumulator:
         self._probs: list[np.ndarray] = []
         self._targets: list[np.ndarray] = []
         self._loss_sum: float = 0.0
-        self._n: int = 0
+        self._n_valid: int = 0
 
     def update(
         self,
         logits: torch.Tensor,
         target: torch.Tensor,
         loss_val: float,
-        batch_size: int,
+        n_valid_pixels: int,
     ) -> None:
+        if n_valid_pixels <= 0:
+            return
         self._probs.append(torch.sigmoid(logits).detach().cpu().numpy().ravel())
         self._targets.append(target.detach().cpu().numpy().ravel())
-        self._loss_sum += loss_val * batch_size
-        self._n += batch_size
+        self._loss_sum += loss_val * n_valid_pixels
+        self._n_valid += n_valid_pixels
 
     def compute(self, threshold: float = 0.5) -> dict[str, float]:
+        _zero = {
+            "loss": self._loss_sum / self._n_valid if self._n_valid > 0 else 0.0,
+            "acc": 0.0,
+            "prec": 0.0,
+            "rec": 0.0,
+            "f1": 0.0,
+            "iou": 0.0,
+            "soft_iou": 0.0,
+            "auc_pr": 0.0,
+        }
+
+        if not self._probs:
+            return _zero
+
         probs = np.concatenate(self._probs)
         tgts = np.concatenate(self._targets)
         valid = tgts != NODATA
 
         if not valid.any():
-            return {
-                "loss": self._loss_sum / self._n if self._n > 0 else 0.0,
-                "acc": 0.0,
-                "prec": 0.0,
-                "rec": 0.0,
-                "f1": 0.0,
-                "iou": 0.0,
-                "auc_pr": 0.0,
-            }
+            return _zero
 
         probs_v = probs[valid]
         tgts_v = tgts[valid]
@@ -102,6 +80,10 @@ class MetricAccumulator:
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
         iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
 
+        inter = float((probs_v * tgts_v).sum())
+        union = float((probs_v + tgts_v - probs_v * tgts_v).sum())
+        soft_iou = (inter + _EPS) / (union + _EPS)
+
         has_pos = t_bin.sum() > 0
         has_neg = (~t_bin).sum() > 0
         auc_pr = (
@@ -111,12 +93,13 @@ class MetricAccumulator:
         )
 
         return {
-            "loss": self._loss_sum / self._n if self._n > 0 else 0.0,
+            "loss": self._loss_sum / self._n_valid if self._n_valid > 0 else 0.0,
             "acc": acc,
             "prec": prec,
             "rec": rec,
             "f1": f1,
             "iou": iou,
+            "soft_iou": soft_iou,
             "auc_pr": auc_pr,
         }
 
@@ -124,4 +107,4 @@ class MetricAccumulator:
         self._probs.clear()
         self._targets.clear()
         self._loss_sum = 0.0
-        self._n = 0
+        self._n_valid = 0
