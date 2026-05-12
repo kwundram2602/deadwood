@@ -57,3 +57,11 @@ tiling:
   size: 512
   # skip patches with > this fraction of noData pixels in the image; 0.9 = skip if >90% noData
   nodata_thresh: 0.9
+
+split:
+  input: out/crown_ms_patches   # output of tiling stage
+  output: out/crown_ms          # train/val/test split destination; train_stats.json written here
+  train_ratio: 0.7
+  val_ratio: 0.2
+  seed: 42
+  mode: copy                    # "copy" or "symlink"

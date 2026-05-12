@@ -18,10 +18,10 @@ def build_model(cfg: DictConfig, device: torch.device) -> nn.Module:
 
     if cfg.model.weights_path is not None:
         print(f"Loading checkpoint: {cfg.model.weights_path}")
-        state = torch.load(cfg.model.weights_path, map_location="cpu")
+        state = torch.load(cfg.model.weights_path, map_location="cpu", weights_only=True)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
-        model.load_state_dict(state, strict=False)
+        model.load_state_dict(state, strict=True)
 
     # Freeze all params — LearningConfigurator will selectively unfreeze
     for p in model.parameters():

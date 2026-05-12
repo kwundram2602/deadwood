@@ -10,10 +10,10 @@ Usage (HPC via sbatch):
 """
 
 import argparse
-import copy
 import sys
 from pathlib import Path
 
+import torch
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,6 +25,13 @@ from training.losses import CombinedLoss
 from training.trainer import train
 from utils.device import get_device
 from utils.logging import init_wandb
+
+
+def _reload_best(model: torch.nn.Module, ckpt_path: Path, device: torch.device) -> None:
+    """Load best-checkpoint weights back into model in-place (strips DataParallel prefix)."""
+    state = torch.load(ckpt_path, map_location=device, weights_only=True)
+    m = model.module if hasattr(model, "module") else model
+    m.load_state_dict(state, strict=True)
 
 
 def _make_experiment_id(cfg) -> str:
@@ -107,7 +114,7 @@ def main() -> None:
         threshold=threshold,
         target_threshold=target_threshold,
     )
-    model = copy.deepcopy(tl_result["best_model"])
+    _reload_best(model, tl_result["ckpt_path"], device)
 
     # ------------------------------------------------------------------
     # Phase 2: Fine-tuning — partial encoder unfreeze
@@ -129,7 +136,7 @@ def main() -> None:
             threshold=threshold,
             target_threshold=target_threshold,
         )
-        model = copy.deepcopy(ft_result["best_model"])
+        _reload_best(model, ft_result["ckpt_path"], device)
 
     print(f"\nTraining complete.")
     print(f"Experiment : {experiment_id}")
