@@ -40,7 +40,7 @@ fine_tune:
 
 # W&B experiment tracking (set use_wandb: true to enable)
 logging:
-  use_wandb: false
+  use_wandb: true
   project: deadwood
   run_name: null
   log_every_n_steps: 50
