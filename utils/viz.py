@@ -221,7 +221,7 @@ def plot_samples(
                 break
 
     n_actual = len(images_list)
-    fig, axes = plt.subplots(n_actual, 5, figsize=(15, 3 * n_actual))
+    fig, axes = plt.subplots(n_actual, 5, figsize=(15, 3 * n_actual), constrained_layout=True)
     if n_actual == 1:
         axes = axes[np.newaxis, :]
 
@@ -269,8 +269,7 @@ def plot_samples(
                 axes[row, col].set_title(col_titles[col], fontsize=10)
 
     if im_pred is not None:
-        fig.colorbar(im_pred, ax=axes, shrink=0.6, pad=0.02, label="probability")
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        fig.colorbar(im_pred, ax=axes, shrink=0.6, label="probability")
+    fig.savefig(save_path, dpi=150)
     plt.close(fig)
     print(f"Saved samples -> {save_path}")
