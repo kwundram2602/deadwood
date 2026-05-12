@@ -1,4 +1,5 @@
 model_name: crown_ms
+run_tag: null       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
 output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_exp   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 
 dataset:
