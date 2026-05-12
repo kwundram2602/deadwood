@@ -1,5 +1,5 @@
 model_name: crown_ms
-output_dir: /absolute/path/to/out   # absolute output root; outputs go to <output_dir>/<experiment_id>/
+output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_exp   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 
 dataset:
   path: out/crown_ms     # relative to --working_dir (deadwood/)
@@ -15,12 +15,12 @@ model:
 
 # Transfer Learning phase — encoder frozen, decoder + head only
 transfer:
-  epochs: 20
+  epochs: 50
   lr: 0.001
   weight_decay: 0.0001
   optimizer: adamw        # adam | adamw | sgd
   scheduler: cos          # cos | step | multistep | anneal
-  patience: 10
+  patience: 20
 
 # Fine-tuning phase — partial encoder unfreeze
 fine_tune:
@@ -28,26 +28,26 @@ fine_tune:
   epochs: 30
   lr: 0.00005
   weight_decay: 0.0001
-  unfreeze_blocks: 2      # how many ResNet encoder blocks to unfreeze from the top
+  unfreeze_blocks: 3      # how many ResNet encoder blocks to unfreeze from the top
   optimizer: adamw
   scheduler: cos
-  patience: 10
+  patience: 20
 
 # W&B experiment tracking (set use_wandb: true to enable)
 logging:
-  use_wandb: true
+  use_wandb: false
   project: deadwood
   run_name: null
   log_every_n_steps: 50
 
 # Loss function — weighted sum of active terms (weight 0.0 = term disabled)
 loss:
-  bce: 0.0
-  dice: 0.5
+  bce: 0.3
+  dice: 0.6
   dice_squared: false   # true -> squared denominator variant (p^2+t^2)
-  iou: 0.3
-  mae: 0.2
+  iou: 0.0
+  mae: 0.3
 
 # Evaluation metrics
 metrics:
-  threshold: 0.5        # sigmoid threshold for binary metrics (precision/recall/F1/IoU)
+  threshold: 0.7        # sigmoid threshold for binary metrics (precision/recall/F1/IoU)
