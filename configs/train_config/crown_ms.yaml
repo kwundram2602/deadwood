@@ -56,3 +56,4 @@ loss:
 # Evaluation metrics
 metrics:
   threshold: 0.7        # sigmoid threshold for binary metrics (precision/recall/F1/IoU)
+  target_threshold: 0.5 # GT binarisation threshold — pixels above this count as crown

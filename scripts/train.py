@@ -79,6 +79,7 @@ def main() -> None:
     lc = LearningConfigurator()
     criterion = CombinedLoss(cfg.loss)
     threshold = float(cfg.metrics.threshold)
+    target_threshold = float(cfg.metrics.get("target_threshold", 0.5))
 
     if cfg.logging.use_wandb:
         init_wandb(cfg, model)
@@ -100,6 +101,7 @@ def main() -> None:
         device,
         criterion=criterion,
         threshold=threshold,
+        target_threshold=target_threshold,
     )
     model = copy.deepcopy(tl_result["best_model"])
 
@@ -121,6 +123,7 @@ def main() -> None:
             device,
             criterion=criterion,
             threshold=threshold,
+            target_threshold=target_threshold,
         )
         model = copy.deepcopy(ft_result["best_model"])
 
