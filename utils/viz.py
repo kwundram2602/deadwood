@@ -182,9 +182,9 @@ def plot_final_bars_multi(
                         borderaxespad=0,
                     )
 
-        fig.tight_layout(rect=[0, 0, 0.93, 1])
+        fig.tight_layout(rect=[0, 0, 0.85, 1])
         save_path = Path(out_dir) / f"{stem}_{metric_key}.png"
-        fig.savefig(save_path, dpi=150)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         print(f"Saved {metric_label} plot -> {save_path}")
 
