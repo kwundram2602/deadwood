@@ -174,15 +174,12 @@ def plot_final_bars_multi(
                 ax.set_xticklabels(["train", "val", "test"], fontsize=8)
                 ax.set_ylim(0, 1.15)
                 ax.grid(alpha=0.3, axis="y")
-                if r == 0 and c == n_cols - 1:
-                    ax.legend(
-                        fontsize=7,
-                        loc="upper left",
-                        bbox_to_anchor=(1.04, 1),
-                        borderaxespad=0,
-                    )
 
-        fig.tight_layout(rect=[0, 0, 0.85, 1])
+        handles, leg_labels = axes[0, 0].get_legend_handles_labels()
+        fig.legend(handles, leg_labels, loc="center left",
+                   bbox_to_anchor=(1.01, 0.5), fontsize=8, borderaxespad=0)
+        fig.tight_layout()
+        fig.subplots_adjust(right=0.88)
         save_path = Path(out_dir) / f"{stem}_{metric_key}.png"
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
