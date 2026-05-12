@@ -99,7 +99,8 @@ def main() -> None:
         p.requires_grad = False
 
     criterion = CombinedLoss(cfg.loss)
-    out_dir = weights_path.parent
+    out_dir = weights_path.parent / "eval"
+    out_dir.mkdir(exist_ok=True)
 
     # Run each split once, then compute metrics for every (tt, t) combo
     print("Collecting train split...")
