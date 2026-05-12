@@ -20,3 +20,4 @@ notes/
 datafiles/
 configs/user/
 configs/**/user/
+wandb
