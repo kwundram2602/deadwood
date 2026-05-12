@@ -187,12 +187,11 @@ def plot_samples(
     threshold: float = 0.5,
     save_path: str | Path = "samples.png",
 ) -> None:
-    """5-panel per-sample visualization: Pseudo-RGB | CIR | nDSM | GT Mask | Model sigma.
+    """4-panel per-sample visualization: Pseudo-RGB | nDSM | GT Mask | Model sigma.
 
     Band layout of the 5-channel input tensor:
         0=R, 1=G, 2=RedEdge, 3=NIR, 4=nDSM
     Pseudo-RGB: bands [0,1,2] -> R,G,B (RedEdge fills the missing blue channel)
-    CIR:        bands [3,0,1] -> R,G,B (NIR,R,G -- standard vegetation false-colour)
     """
     model.eval()
     images_list: list[torch.Tensor] = []
@@ -218,14 +217,11 @@ def plot_samples(
     if n_actual == 1:
         axes = axes[np.newaxis, :]
 
-    col_titles = ["Pseudo-RGB", "CIR", "nDSM", "GT Mask", "Model sigma"]
+    col_titles = ["Pseudo-RGB", "nDSM", "GT Mask", "Model sigma (masked)", "Model sigma (full)"]
     im_pred = None
     for row, (img, mask, pred) in enumerate(zip(images_list, masks_list, preds_list)):
         rgb = img[[0, 1, 2]].permute(1, 2, 0).numpy()
         rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
-
-        cir = img[[3, 0, 1]].permute(1, 2, 0).numpy()
-        cir = (cir - cir.min()) / (cir.max() - cir.min() + 1e-8)
 
         ndsm = img[4].numpy()
 
@@ -237,10 +233,18 @@ def plot_samples(
         pred_display = np.where(nodata_mask, np.nan, pred_np)
 
         axes[row, 0].imshow(rgb)
-        axes[row, 1].imshow(cir)
-        axes[row, 2].imshow(ndsm, cmap="gray")
+        axes[row, 1].imshow(ndsm, cmap="gray")
 
-        axes[row, 3].imshow(gt_display, cmap="viridis", vmin=0, vmax=1)
+        axes[row, 2].imshow(gt_display, cmap="viridis", vmin=0, vmax=1)
+        axes[row, 2].imshow(
+            np.where(nodata_mask, 1.0, np.nan),
+            cmap="gray",
+            vmin=0,
+            vmax=1,
+            alpha=0.4,
+        )
+
+        im_pred = axes[row, 3].imshow(pred_display, cmap="viridis", vmin=0, vmax=1)
         axes[row, 3].imshow(
             np.where(nodata_mask, 1.0, np.nan),
             cmap="gray",
@@ -249,14 +253,7 @@ def plot_samples(
             alpha=0.4,
         )
 
-        im_pred = axes[row, 4].imshow(pred_display, cmap="viridis", vmin=0, vmax=1)
-        axes[row, 4].imshow(
-            np.where(nodata_mask, 1.0, np.nan),
-            cmap="gray",
-            vmin=0,
-            vmax=1,
-            alpha=0.4,
-        )
+        axes[row, 4].imshow(pred_np, cmap="viridis", vmin=0, vmax=1)
 
         for col in range(5):
             axes[row, col].axis("off")
@@ -264,7 +261,7 @@ def plot_samples(
                 axes[row, col].set_title(col_titles[col], fontsize=10)
 
     if im_pred is not None:
-        fig.colorbar(im_pred, ax=axes[:, 3:], shrink=0.6, label="probability")
+        fig.colorbar(im_pred, ax=axes[:, 2:4], shrink=0.6, label="probability")
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
