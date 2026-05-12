@@ -27,11 +27,31 @@ from utils.device import get_device
 from utils.logging import init_wandb
 
 
+def _make_experiment_id(cfg) -> str:
+    parts = [cfg.model_name]
+
+    weights = cfg.model.get("weights_name") or cfg.model.get("weights_path")
+    if weights:
+        w = str(weights)
+        parts.append(Path(w).stem if ("/" in w or "\\" in w) else w)
+
+    loss = cfg.loss
+    loss_parts = [
+        f"{term}{float(getattr(loss, term, 0.0)):g}"
+        for term in ("bce", "dice", "iou", "mae")
+        if float(getattr(loss, term, 0.0)) > 0
+    ]
+    if loss_parts:
+        parts.append("_".join(loss_parts))
+
+    return "__".join(parts)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Crown segmentation training")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
     parser.add_argument(
-        "--working_dir", default=".", help="Root directory for relative paths in config"
+        "--working_dir", default=".", help="Root directory for dataset.path in config"
     )
     args = parser.parse_args()
 
@@ -39,13 +59,17 @@ def main() -> None:
     root = Path(args.working_dir).resolve()
 
     data_root = root / cfg.dataset.path
-    out_dir = root / cfg.output_dir / cfg.model_name
+
+    experiment_id = _make_experiment_id(cfg)
+    out_dir = Path(cfg.output_dir) / experiment_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Experiment: {experiment_id}")
+    print(f"Output dir: {out_dir}")
 
     if cfg.model.weights_path is not None:
         cfg.model.weights_path = str((root / cfg.model.weights_path).resolve())
 
-    OmegaConf.save(cfg, out_dir / f"{cfg.model_name}.yaml")
+    OmegaConf.save(cfg, out_dir / "config.yaml")
     print(OmegaConf.to_yaml(cfg))
 
     device = get_device()
@@ -100,7 +124,9 @@ def main() -> None:
         )
         model = copy.deepcopy(ft_result["best_model"])
 
-    print(f"\nTraining complete. Outputs in: {out_dir}")
+    print(f"\nTraining complete.")
+    print(f"Experiment : {experiment_id}")
+    print(f"Output dir : {out_dir}")
 
 
 if __name__ == "__main__":
