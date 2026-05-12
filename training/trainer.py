@@ -9,6 +9,8 @@ from tqdm import tqdm
 from training.losses import MaskedBCELoss
 from training.metrics import MetricAccumulator
 
+NODATA: int = 255
+
 
 def train(
     model: torch.nn.Module,
@@ -27,7 +29,7 @@ def train(
         model:        model with frozen/unfrozen params already configured
         train_loader / val_loader: DataLoaders
         phase_cfg:    OmegaConf node with epochs, lr, weight_decay, optimizer,
-                      scheduler, patience
+                      scheduler, patience, warmup_epochs, encoder_lr_scale, step_gamma
         out_dir:      directory to write checkpoints and plots
         prefix:       filename prefix for saved files (e.g. "tl", "ft")
         device:       training device
@@ -51,6 +53,8 @@ def train(
         "val_f1": [],
         "iou": [],
         "val_iou": [],
+        "soft_iou": [],
+        "val_soft_iou": [],
         "prec": [],
         "val_prec": [],
         "rec": [],
@@ -81,16 +85,16 @@ def train(
             threshold=threshold,
         )
 
-        for key in ("loss", "auc_pr", "f1", "iou", "prec", "rec"):
+        for key in ("loss", "auc_pr", "f1", "iou", "soft_iou", "prec", "rec"):
             history[key].append(t_m[key])
             history[f"val_{key}"].append(v_m[key])
 
         print(
             f"[{prefix}] {epoch + 1}/{phase_cfg.epochs}  "
             f"loss={t_m['loss']:.4f} auc_pr={t_m['auc_pr']:.3f} "
-            f"f1={t_m['f1']:.3f} iou={t_m['iou']:.3f}  "
+            f"f1={t_m['f1']:.3f} iou={t_m['iou']:.3f} siou={t_m['soft_iou']:.3f}  "
             f"val_loss={v_m['loss']:.4f} val_auc_pr={v_m['auc_pr']:.3f} "
-            f"val_f1={v_m['f1']:.3f} val_iou={v_m['iou']:.3f}  "
+            f"val_f1={v_m['f1']:.3f} val_iou={v_m['iou']:.3f} val_siou={v_m['soft_iou']:.3f}  "
             f"lr={opt.param_groups[0]['lr']:.2e}"
         )
 
@@ -150,40 +154,73 @@ def _run_epoch(
                 loss.backward()
                 optimizer.step()
 
-            accumulator.update(logits.detach(), masks, loss.item(), images.size(0))
+            n_valid = int((masks != NODATA).sum().item())
+            accumulator.update(logits.detach(), masks, loss.item(), n_valid)
 
     return accumulator.compute(threshold=threshold)
 
 
 def _build_optimizer(cfg: DictConfig, model: torch.nn.Module):
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    if not trainable:
+    lr = float(cfg.lr)
+    wd = float(cfg.weight_decay)
+    encoder_lr_scale = float(cfg.get("encoder_lr_scale", 1.0))
+    warmup_epochs = int(cfg.get("warmup_epochs", 0))
+    step_gamma = float(cfg.get("step_gamma", 0.3))
+
+    m = model.module if hasattr(model, "module") else model
+    trainable_all = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_all:
         raise ValueError(
             "No trainable parameters — check LearningConfigurator freeze/unfreeze."
         )
 
-    lr, wd = cfg.lr, cfg.weight_decay
+    # Differential LRs: encoder params get lr * encoder_lr_scale
+    encoder_param_ids = (
+        {id(p) for p in m.encoder.parameters()} if hasattr(m, "encoder") else set()
+    )
+    encoder_trainable = [p for p in trainable_all if id(p) in encoder_param_ids]
+
+    if encoder_trainable and encoder_lr_scale != 1.0:
+        other_trainable = [p for p in trainable_all if id(p) not in encoder_param_ids]
+        param_groups = [
+            {"params": other_trainable, "lr": lr, "weight_decay": wd},
+            {"params": encoder_trainable, "lr": lr * encoder_lr_scale, "weight_decay": wd},
+        ]
+    else:
+        param_groups = [{"params": trainable_all, "lr": lr, "weight_decay": wd}]
 
     if cfg.optimizer == "adam":
-        opt = optim.Adam(trainable, lr=lr, weight_decay=wd)
+        opt = optim.Adam(param_groups)
     elif cfg.optimizer == "adamw":
-        opt = optim.AdamW(trainable, lr=lr, weight_decay=wd)
+        opt = optim.AdamW(param_groups)
     elif cfg.optimizer == "sgd":
-        opt = optim.SGD(trainable, lr=lr, momentum=0.9, nesterov=True, weight_decay=wd)
+        opt = optim.SGD(param_groups, momentum=0.9, nesterov=True)
     else:
         raise ValueError(f"Unknown optimizer: {cfg.optimizer}")
 
+    # Main scheduler
     if cfg.scheduler == "cos":
-        sched = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            opt, T_0=1, T_mult=2, eta_min=lr * 0.01
+        main_sched = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            opt, T_0=5, T_mult=2, eta_min=lr * 0.01
         )
     elif cfg.scheduler == "step":
-        sched = optim.lr_scheduler.StepLR(opt, step_size=7, gamma=0.1)
+        main_sched = optim.lr_scheduler.StepLR(opt, step_size=7, gamma=step_gamma)
     elif cfg.scheduler == "multistep":
-        sched = optim.lr_scheduler.MultiStepLR(opt, list(range(5, 26)), gamma=0.85)
+        main_sched = optim.lr_scheduler.MultiStepLR(opt, list(range(5, 26)), gamma=0.85)
     elif cfg.scheduler == "anneal":
-        sched = optim.lr_scheduler.ExponentialLR(opt, 1 / 1.1)
+        main_sched = optim.lr_scheduler.ExponentialLR(opt, 1 / 1.1)
     else:
         raise ValueError(f"Unknown scheduler: {cfg.scheduler}")
+
+    # Wrap with linear warmup if requested
+    if warmup_epochs > 0:
+        warmup = optim.lr_scheduler.LinearLR(
+            opt, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
+        )
+        sched = optim.lr_scheduler.SequentialLR(
+            opt, schedulers=[warmup, main_sched], milestones=[warmup_epochs]
+        )
+    else:
+        sched = main_sched
 
     return opt, sched

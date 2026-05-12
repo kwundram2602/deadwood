@@ -20,7 +20,9 @@ transfer:
   weight_decay: 0.0001
   optimizer: adamw        # adam | adamw | sgd
   scheduler: cos          # cos | step | multistep | anneal
-  patience: 20
+  step_gamma: 0.3         # only used when scheduler: step (gamma per step_size epochs)
+  warmup_epochs: 3        # linear LR warmup before main scheduler kicks in (0 = disabled)
+  patience: 10
 
 # Fine-tuning phase — partial encoder unfreeze
 fine_tune:
@@ -28,10 +30,13 @@ fine_tune:
   epochs: 30
   lr: 0.00005
   weight_decay: 0.0001
-  unfreeze_blocks: 3      # how many ResNet encoder blocks to unfreeze from the top
+  unfreeze_blocks: 2      # how many ResNet encoder blocks to unfreeze from the top
+  encoder_lr_scale: 0.1   # encoder LR = lr * encoder_lr_scale (differential learning rates)
   optimizer: adamw
-  scheduler: cos
-  patience: 20
+  scheduler: cos          # cos | step | multistep | anneal
+  step_gamma: 0.3         # only used when scheduler: step
+  warmup_epochs: 3        # linear LR warmup after encoder unfreeze (0 = disabled)
+  patience: 10
 
 # W&B experiment tracking (set use_wandb: true to enable)
 logging:
