@@ -89,8 +89,11 @@ def main() -> None:
     model = build_model(cfg, device)
     lc = LearningConfigurator()
     criterion = CombinedLoss(cfg.loss)
-    threshold = float(cfg.metrics.threshold)
-    target_threshold = float(cfg.metrics.get("target_threshold", 0.5))
+    metrics_cfg = cfg.get("metrics", {})
+    thresholds = list(metrics_cfg.get("thresholds", [metrics_cfg.get("threshold", 0.5)]))
+    target_thresholds = list(metrics_cfg.get("target_thresholds", [metrics_cfg.get("target_threshold", 0.5)]))
+    threshold = float(thresholds[0])
+    target_threshold = float(target_thresholds[0])
 
     if cfg.logging.use_wandb:
         init_wandb(cfg, model)

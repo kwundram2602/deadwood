@@ -107,51 +107,76 @@ def plot_loss_parts(
     print(f"Saved loss parts -> {save_path}")
 
 
-def plot_final_bars(
-    train_m: dict[str, float],
-    val_m: dict[str, float],
-    test_m: dict[str, float],
-    save_path: str | Path = "eval_bars.png",
+def plot_final_bars_multi(
+    results: dict[tuple[float, float], dict[str, dict[str, float]]],
+    thresholds: list[float],
+    target_thresholds: list[float],
+    out_dir: Path,
+    stem: str = "eval",
 ) -> None:
-    """Grouped bar chart: one group per metric, three bars (train/val/test)."""
-    keys = ["auc_pr", "f1", "iou", "prec", "rec"]
-    labels = ["AUC-PR", "F1", "IoU", "Precision", "Recall"]
-    x = np.arange(len(keys))
-    width = 0.25
+    """One figure per metric; subplots arranged as rows=target_thresholds × cols=thresholds.
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bar_groups = [
-        (x - width, train_m, "train"),
-        (x, val_m, "val"),
-        (x + width, test_m, "test"),
+    Args:
+        results: keyed by (target_threshold, threshold) → {"train": metrics, "val": metrics, "test": metrics}
+        thresholds: ordered list of prediction thresholds (columns)
+        target_thresholds: ordered list of GT binarisation thresholds (rows)
+        out_dir: directory to write <stem>_<metric>.png files
+        stem: filename prefix
+    """
+    metrics_cfg = [
+        ("auc_pr", "AUC-PR"),
+        ("f1", "F1"),
+        ("iou", "IoU"),
+        ("prec", "Precision"),
+        ("rec", "Recall"),
+        ("acc", "Accuracy"),
     ]
-    for positions, metrics, split_label in bar_groups:
-        bars = ax.bar(
-            positions,
-            [metrics.get(k, 0.0) for k in keys],
-            width,
-            label=split_label,
-        )
-        for bar in bars:
-            h = bar.get_height()
-            ax.annotate(
-                f"{h:.3f}",
-                xy=(bar.get_x() + bar.get_width() / 2, h),
-                xytext=(0, 3),
-                textcoords="offset points",
-                ha="center",
-                fontsize=7,
-            )
+    n_rows = len(target_thresholds)
+    n_cols = len(thresholds)
+    width = 0.25
+    x = np.arange(3)  # train / val / test
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.set_ylim(0, 1.15)
-    ax.legend()
-    ax.grid(alpha=0.3, axis="y")
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=150)
-    plt.close(fig)
-    print(f"Saved final bars -> {save_path}")
+    for metric_key, metric_label in metrics_cfg:
+        fig, axes = plt.subplots(
+            n_rows, n_cols,
+            figsize=(4 * n_cols, 3.5 * n_rows),
+            squeeze=False,
+        )
+        fig.suptitle(metric_label, fontsize=13, y=1.01)
+
+        for r, tt in enumerate(target_thresholds):
+            for c, t in enumerate(thresholds):
+                ax = axes[r, c]
+                split_data = results.get((tt, t), {})
+                values = [
+                    split_data.get("train", {}).get(metric_key, 0.0),
+                    split_data.get("val", {}).get(metric_key, 0.0),
+                    split_data.get("test", {}).get(metric_key, 0.0),
+                ]
+                colors = ["#4c72b0", "#dd8452", "#55a868"]
+                for i, (v, color) in enumerate(zip(values, colors)):
+                    bar = ax.bar(x[i], v, width * 2.5, color=color, label=["train", "val", "test"][i])
+                    ax.annotate(
+                        f"{v:.3f}",
+                        xy=(x[i], v),
+                        xytext=(0, 3),
+                        textcoords="offset points",
+                        ha="center",
+                        fontsize=7,
+                    )
+                ax.set_title(f"tgt≥{tt}  pred≥{t}", fontsize=9)
+                ax.set_xticks(x)
+                ax.set_xticklabels(["train", "val", "test"], fontsize=8)
+                ax.set_ylim(0, 1.15)
+                ax.grid(alpha=0.3, axis="y")
+                if r == 0 and c == n_cols - 1:
+                    ax.legend(fontsize=7)
+
+        fig.tight_layout()
+        save_path = Path(out_dir) / f"{stem}_{metric_key}.png"
+        fig.savefig(save_path, dpi=150)
+        plt.close(fig)
+        print(f"Saved {metric_label} plot -> {save_path}")
 
 
 def plot_samples(
