@@ -78,6 +78,32 @@ def plot_dashboard(
     print(f"Saved dashboard -> {save_path}")
 
 
+def plot_loss_parts(
+    history: dict[str, list],
+    save_path: str | Path = "loss_parts.png",
+) -> None:
+    """One panel per active loss term, showing weighted train + val curves."""
+    part_keys = [k for k in history if k.startswith("loss_") and k != "loss"]
+    if not part_keys:
+        return
+    n = len(part_keys)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4), squeeze=False)
+    for ax, key in zip(axes[0], part_keys):
+        name = key[len("loss_"):]
+        ax.plot(history[key], label="train")
+        val_key = f"val_{key}"
+        if val_key in history:
+            ax.plot(history[val_key], label="val", linestyle="--")
+        ax.set_title(f"{name} (weighted)")
+        ax.set_xlabel("Epoch")
+        ax.legend()
+        ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved loss parts -> {save_path}")
+
+
 def plot_final_bars(
     train_m: dict[str, float],
     val_m: dict[str, float],
