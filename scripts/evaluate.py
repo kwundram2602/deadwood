@@ -1,14 +1,14 @@
 """Standalone evaluation script.
 
 Usage:
-    uv run --active python deadwood/scripts/evaluate.py \\
-        --config deadwood/configs/train_config/crown_ms.yaml \\
-        --weights deadwood/out/crown_ms/ft_best.pt \\
-        --working_dir D:/EAGLE/InnoLab_DL
+    uv run python scripts/evaluate.py \\
+        --config configs/train_config/crown_ms.yaml \\
+        --working_dir .
 
-Optional flags:
-    --threshold  float  (default from cfg.metrics.threshold)
-    --n_samples  int    (default 6)
+CLI flags override config values when provided:
+    --weights    path to .pt checkpoint  (falls back to cfg.evaluate.weights)
+    --threshold  float                   (falls back to cfg.metrics.threshold)
+    --n_samples  int                     (falls back to cfg.evaluate.n_samples)
 """
 
 import argparse
@@ -54,10 +54,10 @@ def _evaluate_split(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained crown segmentation model")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--weights", required=True)
+    parser.add_argument("--weights", default=None)
     parser.add_argument("--working_dir", default=".")
     parser.add_argument("--threshold", type=float, default=None)
-    parser.add_argument("--n_samples", type=int, default=6)
+    parser.add_argument("--n_samples", type=int, default=None)
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -65,11 +65,17 @@ def main() -> None:
     data_root = root / cfg.dataset.path
     threshold = args.threshold if args.threshold is not None else float(cfg.metrics.threshold)
 
+    eval_cfg = cfg.get("evaluate", OmegaConf.create({}))
+    weights_str = args.weights or eval_cfg.get("weights", None)
+    if not weights_str:
+        parser.error("Provide --weights or set evaluate.weights in the config.")
+    n_samples = args.n_samples if args.n_samples is not None else int(eval_cfg.get("n_samples", 6))
+
     device = get_device()
     train_loader, val_loader, test_loader = make_loaders(cfg, data_root)
 
     model = build_model(cfg, device)
-    weights_path = Path(args.weights)
+    weights_path = Path(weights_str)
     state = torch.load(weights_path, map_location=device, weights_only=True)
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
@@ -100,7 +106,7 @@ def main() -> None:
 
     val_samples_path = out_dir / f"{weights_path.stem}_val_samples.png"
     plot_samples(
-        model, val_loader, device, n=args.n_samples, threshold=threshold, save_path=val_samples_path
+        model, val_loader, device, n=n_samples, threshold=threshold, save_path=val_samples_path
     )
 
     test_samples_path = out_dir / f"{weights_path.stem}_test_samples.png"
@@ -108,7 +114,7 @@ def main() -> None:
         model,
         test_loader,
         device,
-        n=args.n_samples,
+        n=n_samples,
         threshold=threshold,
         save_path=test_samples_path,
     )

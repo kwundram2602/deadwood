@@ -58,3 +58,8 @@ loss:
 metrics:
   threshold: 0.7        # sigmoid threshold for binary metrics (precision/recall/F1/IoU)
   target_threshold: 0.5 # GT binarisation threshold — pixels above this count as crown
+
+# Standalone evaluation (scripts/evaluate.py)
+evaluate:
+  weights: null         # path to .pt checkpoint, e.g. out/experiments/my_run/ft_best.pt
+  n_samples: 6          # number of sample tiles to visualise per split
