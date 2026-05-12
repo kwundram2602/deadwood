@@ -42,11 +42,13 @@ def plot_history(
     history: dict[str, list],
     out_dir: Path | str,
     prefix: str,
+    threshold: float = 0.5,
+    target_threshold: float = 0.5,
 ) -> None:
     """Save dashboard PNG + optional loss-parts PNG from history."""
     from utils.viz import plot_dashboard, plot_loss_parts
 
     out_dir = Path(out_dir)
-    plot_dashboard(history, out_dir / f"{prefix}_dashboard.png")
+    plot_dashboard(history, out_dir / f"{prefix}_dashboard.png", threshold=threshold, target_threshold=target_threshold)
     if any(k.startswith("loss_") and k != "loss" for k in history):
         plot_loss_parts(history, out_dir / f"{prefix}_loss_parts.png")

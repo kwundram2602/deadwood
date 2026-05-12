@@ -127,7 +127,7 @@ def train(
                 break
 
     try:
-        plot_history(history, out_dir, prefix)
+        plot_history(history, out_dir, prefix, threshold=threshold, target_threshold=target_threshold)
     except Exception as e:
         print(f"Warning: could not save dashboard: {e}")
     return {"history": history, "ckpt_path": best_ckpt_path}

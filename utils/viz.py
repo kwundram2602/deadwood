@@ -52,6 +52,8 @@ def show_batch(
 def plot_dashboard(
     history: dict[str, list],
     save_path: str | Path = "dashboard.png",
+    threshold: float = 0.5,
+    target_threshold: float = 0.5,
 ) -> None:
     """2x3 dashboard: Loss, AUC-PR, F1, Precision, Recall, IoU (train + val per panel)."""
     panels = [
@@ -72,6 +74,7 @@ def plot_dashboard(
         ax.set_xlabel("Epoch")
         ax.legend()
         ax.grid(alpha=0.3)
+    fig.suptitle(f"pred_thresh={threshold}  target_thresh={target_threshold}", fontsize=9, y=1.01)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
