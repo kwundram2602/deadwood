@@ -22,6 +22,7 @@ def train(
     device: torch.device,
     criterion: torch.nn.Module | None = None,
     threshold: float = 0.5,
+    target_threshold: float = 0.5,
 ) -> dict:
     """Run one training phase (transfer learning or fine-tuning).
 
@@ -73,6 +74,7 @@ def train(
             device,
             train=True,
             threshold=threshold,
+            target_threshold=target_threshold,
         )
         sched.step()
         v_m = _run_epoch(
@@ -83,6 +85,7 @@ def train(
             device,
             train=False,
             threshold=threshold,
+            target_threshold=target_threshold,
         )
 
         for key in ("loss", "auc_pr", "f1", "iou", "soft_iou", "prec", "rec"):
@@ -133,6 +136,7 @@ def _run_epoch(
     *,
     train: bool,
     threshold: float = 0.5,
+    target_threshold: float = 0.5,
 ) -> dict[str, float]:
     model.train(train)
     accumulator = MetricAccumulator()
@@ -157,7 +161,7 @@ def _run_epoch(
             n_valid = int((masks != NODATA).sum().item())
             accumulator.update(logits.detach(), masks, loss.item(), n_valid)
 
-    return accumulator.compute(threshold=threshold)
+    return accumulator.compute(threshold=threshold, target_threshold=target_threshold)
 
 
 def _build_optimizer(cfg: DictConfig, model: torch.nn.Module):

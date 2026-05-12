@@ -41,7 +41,7 @@ class MetricAccumulator:
         self._loss_sum += loss_val * n_valid_pixels
         self._n_valid += n_valid_pixels
 
-    def compute(self, threshold: float = 0.5) -> dict[str, float]:
+    def compute(self, threshold: float = 0.5, target_threshold: float = 0.5) -> dict[str, float]:
         _zero = {
             "loss": self._loss_sum / self._n_valid if self._n_valid > 0 else 0.0,
             "acc": 0.0,
@@ -65,7 +65,7 @@ class MetricAccumulator:
 
         probs_v = probs[valid]
         tgts_v = tgts[valid]
-        t_bin = tgts_v > 0.5
+        t_bin = tgts_v > target_threshold
         preds = probs_v >= threshold
 
         tp = int((preds & t_bin).sum())
