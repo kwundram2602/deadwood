@@ -89,23 +89,45 @@ class CombinedLoss(nn.Module):
         super().__init__()
         weights: list[float] = []
         losses: list[nn.Module] = []
+        names: list[str] = []
         if float(cfg_loss.get("bce", 0.0)) > 0:
             weights.append(float(cfg_loss.bce))
             losses.append(MaskedBCELoss())
+            names.append("bce")
         if float(cfg_loss.get("dice", 0.0)) > 0:
             squared = bool(cfg_loss.get("dice_squared", False))
             weights.append(float(cfg_loss.dice))
             losses.append(SoftDiceLoss(squared=squared))
+            names.append("dice")
         if float(cfg_loss.get("iou", 0.0)) > 0:
             weights.append(float(cfg_loss.iou))
             losses.append(SoftIoULoss())
+            names.append("iou")
         if float(cfg_loss.get("mae", 0.0)) > 0:
             weights.append(float(cfg_loss.mae))
             losses.append(MaskedMAELoss())
+            names.append("mae")
         if not losses:
             raise ValueError("CombinedLoss: all loss weights are 0")
         self._weights = weights
         self._losses = nn.ModuleList(losses)
+        self._names = names
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._names)
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return sum(w * fn(logits, target) for w, fn in zip(self._weights, self._losses))
+
+    def forward_with_parts(
+        self, logits: torch.Tensor, target: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Return (combined_loss, {name: weighted_partial_loss})."""
+        parts: dict[str, torch.Tensor] = {}
+        total: torch.Tensor | None = None
+        for w, fn, name in zip(self._weights, self._losses, self._names):
+            term = w * fn(logits, target)
+            parts[name] = term
+            total = term if total is None else total + term
+        return total, parts
