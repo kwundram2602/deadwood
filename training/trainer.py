@@ -1,4 +1,3 @@
-import copy
 from pathlib import Path
 
 import torch
@@ -38,7 +37,7 @@ def train(
         threshold:    sigmoid threshold for binary metrics
 
     Returns:
-        dict with keys "history" (metric lists) and "best_model" (deepcopy)
+        dict with keys "history" (metric lists) and "ckpt_path" (Path to best checkpoint)
     """
     if criterion is None:
         criterion = MaskedBCELoss()
@@ -62,7 +61,7 @@ def train(
         "val_rec": [],
     }
     best_val_loss = float("inf")
-    best_model: torch.nn.Module | None = None
+    best_ckpt_path: Path | None = None
     patience_counter = 0
 
     for epoch in range(phase_cfg.epochs):
@@ -104,10 +103,11 @@ def train(
         if v_m["loss"] < best_val_loss:
             best_val_loss = v_m["loss"]
             patience_counter = 0
-            best_model = copy.deepcopy(model)
-            ckpt_path = out_dir / f"{prefix}_best.pt"
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"  -> saved {ckpt_path.name} (epoch {epoch + 1})")
+            best_ckpt_path = out_dir / f"{prefix}_best.pt"
+            # Always save without DataParallel 'module.' prefix for portability
+            state = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+            torch.save(state, best_ckpt_path)
+            print(f"  -> saved {best_ckpt_path.name} (epoch {epoch + 1})")
         else:
             patience_counter += 1
             if patience_counter >= phase_cfg.patience:
@@ -115,7 +115,7 @@ def train(
                 break
 
     _save_dashboard(history, out_dir / f"{prefix}_dashboard.png")
-    return {"history": history, "best_model": best_model}
+    return {"history": history, "ckpt_path": best_ckpt_path}
 
 
 def _save_dashboard(history: dict, save_path: Path) -> None:

@@ -4,9 +4,11 @@ Usage:
     uv run python scripts/preprocess.py --config configs/preprocess.yaml --working_dir .
 """
 import argparse
+import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -15,6 +17,7 @@ from omegaconf import OmegaConf
 from explore_and_process.apply_dsm_mask import main as dsm_main
 from explore_and_process.rasterize_crowns import main as rasterize_main
 from explore_and_process.tile_patches import main as tile_main
+from utils.data import compute_channel_stats, split_patches
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,26 @@ def run(config_path: str) -> None:
 
     print("\n=== Stage 2: tile_patches ===")
     tile_main(cfg.tiling)
+
+    print("\n=== Stage 3: split patches ===")
+    sp = cfg.split
+    split_patches(
+        Path(sp.input),
+        Path(sp.output),
+        train_ratio=float(sp.train_ratio),
+        val_ratio=float(sp.val_ratio),
+        seed=int(sp.seed),
+        mode=str(sp.mode),
+    )
+
+    print("[INFO] Computing per-channel normalisation stats from training split …")
+    stats = compute_channel_stats(Path(sp.output) / "train")
+    stats_path = Path(sp.output) / "train_stats.json"
+    stats_path.write_text(json.dumps(stats, indent=2))
+    ch_names = ["R", "G", "RE", "NIR", "nDSM"]
+    for i, name in enumerate(ch_names):
+        print(f"  {name:5s}  mean={stats['mean'][i]:.4f}  std={stats['std'][i]:.4f}")
+    print(f"[DONE] Stats saved to {stats_path}")
 
 
 if __name__ == "__main__":

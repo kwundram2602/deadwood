@@ -27,6 +27,8 @@ from training.metrics import MetricAccumulator
 from utils.device import get_device
 from utils.viz import plot_final_bars, plot_samples
 
+_NODATA: int = 255
+
 
 def _evaluate_split(
     model: torch.nn.Module,
@@ -34,6 +36,7 @@ def _evaluate_split(
     device: torch.device,
     criterion: torch.nn.Module,
     threshold: float,
+    target_threshold: float = 0.5,
 ) -> dict[str, float]:
     accumulator = MetricAccumulator()
     model.eval()
@@ -43,7 +46,8 @@ def _evaluate_split(
             masks = masks.to(device, non_blocking=True)
             logits = model(images)
             loss = criterion(logits, masks)
-            accumulator.update(logits.detach(), masks, loss.item(), images.size(0))
+            n_valid = int((masks != _NODATA).sum().item())
+            accumulator.update(logits.detach(), masks, loss.item(), n_valid)
     return accumulator.compute(threshold=threshold)
 
 
@@ -66,19 +70,21 @@ def main() -> None:
 
     model = build_model(cfg, device)
     weights_path = Path(args.weights)
-    state = torch.load(weights_path, map_location=device)
+    state = torch.load(weights_path, map_location=device, weights_only=True)
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
-    model.load_state_dict(state, strict=False)
+    m = model.module if hasattr(model, "module") else model
+    m.load_state_dict(state, strict=True)
     for p in model.parameters():
         p.requires_grad = False
 
     criterion = CombinedLoss(cfg.loss)
+    target_threshold = float(cfg.metrics.get("target_threshold", 0.5))
     out_dir = weights_path.parent
 
-    train_m = _evaluate_split(model, train_loader, device, criterion, threshold)
-    val_m = _evaluate_split(model, val_loader, device, criterion, threshold)
-    test_m = _evaluate_split(model, test_loader, device, criterion, threshold)
+    train_m = _evaluate_split(model, train_loader, device, criterion, threshold, target_threshold)
+    val_m = _evaluate_split(model, val_loader, device, criterion, threshold, target_threshold)
+    test_m = _evaluate_split(model, test_loader, device, criterion, threshold, target_threshold)
 
     print("\n=== Evaluation Results ===")
     header = f"{'metric':>10}  {'train':>8}  {'val':>8}  {'test':>8}"

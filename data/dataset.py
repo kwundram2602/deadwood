@@ -1,3 +1,4 @@
+import json
 import random
 from pathlib import Path
 
@@ -12,11 +13,22 @@ class CrownDataset(Dataset):
     """5-band (MS + nDSM) segmentation dataset.
 
     Expects split_dir/{images,masks,dsm}/ layout produced by tile_patches.py
-    and data_split.py.  Masks contain soft crown probability [0,1] and the
-    noData sentinel 255 for pixels to ignore in training loss.
+    and data_split via scripts/preprocess.py.  Masks contain soft crown
+    probability [0,1] and the noData sentinel 255 for pixels to ignore in loss.
+
+    If *norm_stats* is provided ({"mean": [...5], "std": [...5]}), each image
+    channel is z-score normalised before being returned as a tensor.  Compute
+    stats from the training split with utils.data.compute_channel_stats and
+    store them in <data_root>/train_stats.json — preprocess.py does this
+    automatically as part of Stage 3.
     """
 
-    def __init__(self, split_dir: Path, transform=None):
+    def __init__(
+        self,
+        split_dir: Path,
+        transform=None,
+        norm_stats: dict | None = None,
+    ):
         self.image_dir = split_dir / "images"
         self.mask_dir = split_dir / "masks"
         self.dsm_dir = split_dir / "dsm"
@@ -24,6 +36,13 @@ class CrownDataset(Dataset):
         self.stems = sorted(
             f.stem for f in self.image_dir.iterdir() if f.suffix == ".tif"
         )
+
+        if norm_stats is not None:
+            self._norm_mean = torch.tensor(norm_stats["mean"], dtype=torch.float32).view(-1, 1, 1)
+            self._norm_std = torch.tensor(norm_stats["std"], dtype=torch.float32).view(-1, 1, 1)
+        else:
+            self._norm_mean = None
+            self._norm_std = None
 
     def __len__(self):
         return len(self.stems)
@@ -52,9 +71,14 @@ class CrownDataset(Dataset):
             image = aug["image"].transpose(2, 0, 1)
             mask = aug["mask"]
 
+        img_tensor = torch.from_numpy(np.ascontiguousarray(image))  # (5, H, W)
+
+        if self._norm_mean is not None:
+            img_tensor = (img_tensor - self._norm_mean) / self._norm_std
+
         return (
-            torch.from_numpy(np.ascontiguousarray(image)),  # (5, H, W)
-            torch.from_numpy(mask).unsqueeze(0),            # (1, H, W)
+            img_tensor,
+            torch.from_numpy(mask).unsqueeze(0),  # (1, H, W)
         )
 
 
@@ -67,12 +91,21 @@ def _seed_worker(worker_id):
 def make_loaders(
     cfg: DictConfig, data_root: Path
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
-    """Build train/val/test DataLoaders from a DictConfig dataset section."""
+    """Build train/val/test DataLoaders.
+
+    Looks for <data_root>/train_stats.json (written by Stage 3 of preprocess.py)
+    and applies per-channel z-score normalisation when found.
+    """
     from data.transforms import get_train_transform
 
-    train_ds = CrownDataset(data_root / "train", transform=get_train_transform())
-    val_ds = CrownDataset(data_root / "val")
-    test_ds = CrownDataset(data_root / "test")
+    stats_path = data_root / "train_stats.json"
+    norm_stats = json.loads(stats_path.read_text()) if stats_path.exists() else None
+    if norm_stats is None:
+        print("[WARN] train_stats.json not found — running without per-channel normalisation")
+
+    train_ds = CrownDataset(data_root / "train", transform=get_train_transform(), norm_stats=norm_stats)
+    val_ds = CrownDataset(data_root / "val", norm_stats=norm_stats)
+    test_ds = CrownDataset(data_root / "test", norm_stats=norm_stats)
 
     g = torch.Generator()
     g.manual_seed(0)
