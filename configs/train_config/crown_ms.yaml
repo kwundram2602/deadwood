@@ -1,5 +1,5 @@
 model_name: crown_ms
-output_dir: out  # relative to --working_dir (deadwood/)
+output_dir: /absolute/path/to/out   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 
 dataset:
   path: out/crown_ms     # relative to --working_dir (deadwood/)
