@@ -54,10 +54,14 @@ loss:
   iou: 0.0
   mae: 0.3
 
-# Evaluation metrics
+# Evaluation metrics -  binary metrics using thresholds
+# t_bin = tgts_v > target_threshold
+# preds = probs_v >= threshold
+# sigmoid thresholds for binary metrics (precision/recall/F1/IoU)
+# GT binarisation thresholds — pixels above this count as crown
 metrics:
-  threshold: 0.7        # sigmoid threshold for binary metrics (precision/recall/F1/IoU)
-  target_threshold: 0.5 # GT binarisation threshold — pixels above this count as crown
+  thresholds: [0.6,0.8]     #preds   
+  target_thresholds: [0.7, 0.8] #targets
 
 # Standalone evaluation (scripts/evaluate.py)
 evaluate:
