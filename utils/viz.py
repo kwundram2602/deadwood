@@ -176,10 +176,11 @@ def plot_final_bars_multi(
                 ax.grid(alpha=0.3, axis="y")
 
         handles, leg_labels = axes[0, 0].get_legend_handles_labels()
-        fig.legend(handles, leg_labels, loc="center left",
-                   bbox_to_anchor=(1.01, 0.5), fontsize=8, borderaxespad=0)
-        fig.tight_layout()
-        fig.subplots_adjust(right=0.88)
+        fig.legend(handles, leg_labels, loc="upper left",
+                   bbox_to_anchor=(1.0, 1.0),
+                   bbox_transform=axes[0, n_cols - 1].transAxes,
+                   fontsize=8, borderaxespad=0)
+        fig.tight_layout(rect=[0, 0, 0.92, 1])
         save_path = Path(out_dir) / f"{stem}_{metric_key}.png"
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -268,8 +269,8 @@ def plot_samples(
                 axes[row, col].set_title(col_titles[col], fontsize=10)
 
     if im_pred is not None:
-        fig.colorbar(im_pred, ax=axes[:, 2:4], shrink=0.6, label="probability")
+        fig.colorbar(im_pred, ax=axes, shrink=0.6, pad=0.02, label="probability")
     fig.tight_layout()
-    fig.savefig(save_path, dpi=150)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved samples -> {save_path}")
