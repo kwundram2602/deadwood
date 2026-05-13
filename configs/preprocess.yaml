@@ -39,7 +39,7 @@ dsm_mask:
   method: both          # Erkennungsmethode: local_min (Höhe), gradient (Hangneigung), both (beide kombiniert)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
   windows: [600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
-  height_threshold: 1.0 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  height_threshold: 1.3 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten
   gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert
   max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
@@ -55,8 +55,10 @@ tiling:
   dsm: datafiles/process_out/ndsm/dsm_ndsm_w150-350-700.tif
   out: out/crown_ms_patches
   size: 512
-  # skip patches with > this fraction of noData pixels in the image; 0.9 = skip if >90% noData
+  # skip patches with > this fraction of noData pixels in the mask (== 255)
   nodata_thresh: 0.9
+  # skip patches with > this fraction of all-zero pixels across all MS bands (sensor gaps / edge padding)
+  img_nodata_thresh: 0.9
 
 split:
   input: out/crown_ms_patches   # output of tiling stage
