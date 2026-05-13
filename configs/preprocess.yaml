@@ -51,15 +51,16 @@ tiling:
   # mask/dsm: when running via preprocess.py, these are overwritten automatically with the
   # param-embedded paths produced by apply_dsm_mask (e.g. crown_mask_final_lm_w150-350-700_ht2.0.tif).
   # When running tile_patches.py standalone, set these to the actual param-embedded paths manually.
-  mask: datafiles/process_out/masks/crown_mask_final_lm_w150-350-700_ht2.0.tif
-  dsm: datafiles/process_out/ndsm/dsm_ndsm_w150-350-700.tif
+  mask: D:\EAGLE\InnoLab_DL\deadwood\datafiles\process_out\masks\20260513_232855\crown_mask_final_lm_w600-700_ht1.3_gr_s2.0_and.tif
+  dsm: D:\EAGLE\InnoLab_DL\deadwood\datafiles\process_out\ndsm\20260513_232855\dsm_ndsm_w600-700.tif
   out: out/crown_ms_patches
   size: 512
   # skip patches with > this fraction of noData pixels in the mask (== 255)
-  nodata_thresh: 0.9
+  nodata_thresh: 0.8
   # skip patches with > this fraction of all-zero pixels across all MS bands (sensor gaps / edge padding)
-  img_nodata_thresh: 0.9
+  img_nodata_thresh: 0.8
 
+# uv run python utils/data.py --config configs/preprocess.yaml
 split:
   input: out/crown_ms_patches   # output of tiling stage
   output: out/crown_ms          # train/val/test split destination; train_stats.json written here
