@@ -84,7 +84,7 @@ def main(args):
         pad_rows = len(str(n_rows))
         pad_cols = len(str(n_cols))
 
-        kept = skipped = 0
+        kept = skipped_mask = skipped_img = 0
         for r in range(n_rows):
             for c in range(n_cols):
                 row_off = r * args.size
@@ -93,13 +93,13 @@ def main(args):
                 mask_data = tile_raster(mask_src, row_off, col_off, args.size)
                 nodata_frac = np.mean(mask_data[0] == 255.0)
                 if nodata_frac > args.nodata_thresh:
-                    skipped += 1
+                    skipped_mask += 1
                     continue
 
                 img_data  = tile_raster(img_src,  row_off, col_off, args.size)
                 img_nodata_frac = np.mean(np.all(img_data == 0, axis=0))
                 if img_nodata_frac > args.img_nodata_thresh:
-                    skipped += 1
+                    skipped_img += 1
                     continue
                 dsm_data  = tile_raster(dsm_src,  row_off, col_off, args.size)
                 pt = patch_transform(transform, row_off, col_off, args.size)
@@ -113,7 +113,9 @@ def main(args):
                             dsm_data, pt, crs, nodata=None)
                 kept += 1
 
-    print(f"Done. Kept {kept} patches, skipped {skipped} (>{args.nodata_thresh*100:.0f}% noData).")
+    print(f"Done. Kept {kept} patches.")
+    print(f"  Skipped (mask noData >{args.nodata_thresh*100:.0f}%): {skipped_mask}")
+    print(f"  Skipped (image noData >{args.img_nodata_thresh*100:.0f}%): {skipped_img}")
     print(f"Output: {args.out}")
 
 
