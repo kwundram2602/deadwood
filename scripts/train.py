@@ -24,7 +24,7 @@ from training.learning_configurator import LearningConfigurator
 from training.losses import CombinedLoss
 from training.trainer import train
 from utils.device import get_device
-from utils.logging import init_wandb
+from utils.logger import init_wandb
 
 
 def _reload_best(model: torch.nn.Module, ckpt_path: Path, device: torch.device) -> None:

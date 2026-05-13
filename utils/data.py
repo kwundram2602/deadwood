@@ -153,3 +153,34 @@ def compute_channel_stats(split_dir: Path) -> dict[str, list[float]]:
     std = np.sqrt(np.maximum(variance, 1e-12))
 
     return {"mean": mean.tolist(), "std": std.tolist()}
+
+
+if __name__ == "__main__":
+    import argparse
+
+    import yaml
+
+    parser = argparse.ArgumentParser(description="Split crown-MS patches into train/val/test.")
+    parser.add_argument("--config", type=Path, default=Path("configs/preprocess.yaml"))
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--train_ratio", type=float)
+    parser.add_argument("--val_ratio", type=float)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--mode", choices=["copy", "symlink"])
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f).get("split", {})
+
+    def _get(key: str, fallback):
+        return getattr(args, key) if getattr(args, key) is not None else cfg.get(key, fallback)
+
+    split_patches(
+        input_root=Path(_get("input", "out/crown_ms_patches")),
+        output_root=Path(_get("output", "out/crown_ms")),
+        train_ratio=_get("train_ratio", 0.7),
+        val_ratio=_get("val_ratio", 0.2),
+        seed=_get("seed", 42),
+        mode=_get("mode", "copy"),
+    )
