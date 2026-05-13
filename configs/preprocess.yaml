@@ -26,8 +26,8 @@ rasterize:
   raster_dir: null
   # target_gsd: if specified, will resample to this GSD (m) during rasterization;
   target_gsd: 0.05
-  # sigma
-  sigma: 10.0
+  # sigma for gaussian_filter 
+  sigma: 8.0
   nodata_threshold: 0.05
   bands: [5, 4, 6, 7]
 
@@ -38,12 +38,12 @@ dsm_mask:
   out_dsm: datafiles/process_out/ndsm/dsm_ndsm.tif
   method: both          # Erkennungsmethode: local_min (Höhe), gradient (Hangneigung), both (beide kombiniert)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
-  windows: [600]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
-  height_threshold: 1.2 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  windows: [600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
+  height_threshold: 1.0 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten
   gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert
   max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
-  nodata_resolve_threshold: 0.4  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
+  nodata_resolve_threshold: 0.6  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
 
 tiling:
   # image: exact path produced by rasterize stage ({out_image_dir}/{raster_stem}_ms4.tif)
