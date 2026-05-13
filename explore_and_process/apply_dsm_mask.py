@@ -180,11 +180,17 @@ def apply_soft_blend(
       ground_conf > nodata_resolve_threshold, otherwise kept at 255.
     """
     result = mask.copy()
+
+    # Alle gültigen Kronenpixel (Konfidenz 0–1, kein noData-Sentinel)
     crown = (mask >= 0.0) & (mask < 255.0)
+    # Krone × (1 – Bodenwahrscheinlichkeit): hohe Bodenkonf. → Kronenwert sinkt gegen 0
     result[crown] = mask[crown] * (1.0 - ground_conf[crown])
 
+    # noData-Pixel (Sentinel 255): außerhalb des Bildbereichs oder nicht klassifiziert
     nodata = mask == 255.0
+    # Wenn der DSM-Detektor trotzdem sicher Boden erkennt, Pixel auflösen statt 255 zu behalten
     resolve = nodata & (ground_conf > nodata_resolve_threshold)
+    # Aufgelöste noData-Pixel bekommen Bodenwahrscheinlichkeit als invertierte Kronenkonfidenz
     result[resolve] = 1.0 - ground_conf[resolve]
     return result
 

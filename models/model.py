@@ -51,6 +51,7 @@ def _adapt_first_conv(encoder: nn.Module, from_ch: int, to_ch: int) -> None:
             kernel_size=old.kernel_size,
             stride=old.stride,
             padding=old.padding,
+            padding_mode=old.padding_mode,
             dilation=old.dilation,
             groups=old.groups,
             bias=old.bias is not None,

@@ -89,16 +89,18 @@ def build_mask(crowns_paths, src, h, w, transform, sigma, nodata_threshold):
     print(f"  {len(gdf)} crown polygons (son/soff) from {len(crowns_paths)} file(s)")
 
     shapes = [(geom, 1.0) for geom in gdf.geometry if geom is not None and geom.is_valid]
+    # Burn crown polygons into a binary raster: crown pixels = 1.0, background = 0.0
     binary = rio_rasterize(shapes, out_shape=(h, w), transform=transform,
                            fill=0.0, dtype="float32")
 
     soft = gaussian_filter(binary, sigma=sigma)
+    # Pixels outside all crowns that received no Gaussian bleed-over become noData (255)
     soft[(binary == 0) & (soft < nodata_threshold)] = 255.0
 
     n_crown  = int(np.sum((soft > 0) & (soft < 255)))
-    n_ground = int(np.sum(soft == 0.0))
+    soft_zero = int(np.sum(soft == 0.0))
     n_nodata = int(np.sum(soft == 255.0))
-    print(f"  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
+    print(f"  Crown: {n_crown:,}  Soft == 0.0: {soft_zero:,}  noData: {n_nodata:,}")
     return soft
 
 
