@@ -24,6 +24,7 @@ Usage:
 import argparse
 import logging
 import os
+import shutil
 
 import numpy as np
 import rasterio
@@ -70,6 +71,12 @@ def write_patch(path, data, transform, crs, nodata=None):
 
 def main(args):
     logger.info("Config:\n%s", OmegaConf.to_yaml(args))
+
+    out_dir = args.out
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+        print(f"[INFO] Cleared existing patch directory: {out_dir}")
+    os.makedirs(out_dir, exist_ok=True)
 
     with rasterio.open(args.image) as img_src, \
          rasterio.open(args.mask)  as mask_src, \
