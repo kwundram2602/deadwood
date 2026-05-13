@@ -91,6 +91,9 @@ def split_patches(
         f"train {len(splits['train'])} | val {len(splits['val'])} | test {len(splits['test'])}"
     )
 
+    if output_root.exists():
+        shutil.rmtree(output_root)
+        print(f"[INFO] Cleared existing split directory: {output_root}")
     _ensure_split_dirs(output_root)
 
     written: dict[str, list[tuple[Path, Path, Path]]] = {}
