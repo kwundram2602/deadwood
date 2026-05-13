@@ -97,6 +97,10 @@ def main(args):
                     continue
 
                 img_data  = tile_raster(img_src,  row_off, col_off, args.size)
+                img_nodata_frac = np.mean(np.all(img_data == 0, axis=0))
+                if img_nodata_frac > args.img_nodata_thresh:
+                    skipped += 1
+                    continue
                 dsm_data  = tile_raster(dsm_src,  row_off, col_off, args.size)
                 pt = patch_transform(transform, row_off, col_off, args.size)
 
