@@ -3,9 +3,20 @@ apply_dsm_mask.py
 
 Refine the soft crown mask by labelling confirmed ground pixels using the DSM.
 
-Ground detection uses a local-minimum approximation of the terrain surface:
-  nDSM_approx = DSM - minimum_filter(DSM, window)
-  pixels where nDSM_approx < height_threshold  =>  ground = 0.0
+Ground detection supports three methods:
+
+  local_min  — DTM approximation via multi-scale minimum filter:
+                 nDSM_approx = DSM - minimum_filter(DSM, window)
+                 pixels where nDSM_approx < height_threshold  =>  ground = 0.0
+
+  dtm        — External DTM raster (resampled to DSM grid):
+                 nDSM = DSM - DTM
+                 pixels where nDSM < height_threshold  =>  ground = 0.0
+
+  gradient   — Slope/edge filter: flat DSM regions are classified as ground.
+
+  both       — Combines local_min (or dtm when --dtm is supplied) with gradient
+               via OR or AND logic (see --combine).
 
 Ground pixels soft-blend into the crown mask: crown pixels (0–1) are
 multiplied by (1 − ground_conf); noData pixels are resolved to ground
@@ -17,8 +28,9 @@ are excluded from the loss during training.
 Usage:
   python explore_and_process/apply_dsm_mask.py \\
       --mask  explore_and_process/out/crown_mask.tif \\
-      --dsm   data/raster/20230824_Airport_Main_MAVICM3MFIXEDM3M_DSM_coregReference.tif \\
+      --dsm   data/raster/DSM.tif \\
       --out   explore_and_process/out/crown_mask_final.tif \\
+      [--method dtm --dtm data/raster/DTM.tif] \\
       [--window 200] [--height_threshold 2.0]
 """
 
@@ -38,10 +50,10 @@ from scipy.ndimage import gaussian_filter, minimum_filter, sobel, uniform_filter
 logger = logging.getLogger(__name__)
 
 
-def resample_dsm(dsm_path, h, w, transform, crs):
-    """Reproject DSM to exactly match the mask grid."""
+def resample_raster(path, h, w, transform, crs):
+    """Reproject a single-band raster to exactly match the target grid."""
     out = np.full((h, w), np.nan, dtype=np.float32)
-    with rasterio.open(dsm_path) as src:
+    with rasterio.open(path) as src:
         reproject(
             source=rasterio.band(src, 1),
             destination=out,
@@ -118,6 +130,27 @@ def detect_ground_local_min(
     confidence[np.isnan(dsm)] = 0.0
 
     binary = (ndsm < height_threshold) & ~np.isnan(dsm)
+    return binary, confidence, ndsm
+
+
+def detect_ground_dtm(
+    dsm: np.ndarray, dtm: np.ndarray, height_threshold: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Ground detection using an external DTM: nDSM = DSM - DTM.
+
+    Returns:
+        binary:     bool array, True where pixel is ground
+        confidence: float32 [0,1], higher = more likely ground
+        ndsm:       raw nDSM (m) for diagnostics and nDSM output
+    """
+    ndsm = (dsm - dtm).astype(np.float32)
+    # NaN where either input is NaN
+    ndsm[np.isnan(dsm) | np.isnan(dtm)] = np.nan
+
+    confidence = _smoothstep_confidence(ndsm, height_threshold)
+    confidence[np.isnan(ndsm)] = 0.0
+
+    binary = (ndsm < height_threshold) & ~np.isnan(ndsm)
     return binary, confidence, ndsm
 
 
@@ -250,21 +283,29 @@ def main(args):
     # --- Build output filename suffix ----------------------------------------
     w_tag = "-".join(str(w) for w in args.windows)
     lm_tag = f"_lm_w{w_tag}_ht{args.height_threshold}"
+    dt_tag = f"_dtm_ht{args.height_threshold}"
     gr_tag = f"_gr_s{args.gradient_sigma}"
+
+    # Determine which height-based tag to use (local_min or external dtm)
+    use_external_dtm = bool(getattr(args, "dtm", None))
+    ht_tag = dt_tag if use_external_dtm else lm_tag
 
     if args.method == "local_min":
         mask_suffix = lm_tag
+    elif args.method == "dtm":
+        mask_suffix = dt_tag
     elif args.method == "gradient":
         mask_suffix = gr_tag
     else:  # both
-        mask_suffix = f"{lm_tag}{gr_tag}_{args.combine}"
+        mask_suffix = f"{ht_tag}{gr_tag}_{args.combine}"
 
     args.out = _embed_params(args.out, mask_suffix)
     mask_dir, mask_file = os.path.dirname(args.out), os.path.basename(args.out)
     args.out = os.path.join(mask_dir, run_id, mask_file)
 
     if args.out_dsm:
-        args.out_dsm = _embed_params(args.out_dsm, f"_w{w_tag}")
+        ndsm_suffix = "_dtm" if use_external_dtm else f"_w{w_tag}"
+        args.out_dsm = _embed_params(args.out_dsm, ndsm_suffix)
         dsm_dir, dsm_file = os.path.dirname(args.out_dsm), os.path.basename(args.out_dsm)
         args.out_dsm = os.path.join(dsm_dir, run_id, dsm_file)
 
@@ -283,7 +324,12 @@ def main(args):
 
     print(f"Mask grid: {h} x {w}")
     print("Resampling DSM to mask grid...")
-    dsm = resample_dsm(args.dsm, h, w, transform, crs)
+    dsm = resample_raster(args.dsm, h, w, transform, crs)
+
+    dtm = None
+    if use_external_dtm:
+        print("Resampling external DTM to mask grid...")
+        dtm = resample_raster(args.dtm, h, w, transform, crs)
 
     # --- Run detection method(s) ---------------------------------------------
     lm_bin = lm_conf = ndsm = None
@@ -291,9 +337,19 @@ def main(args):
 
     mask_stem = os.path.splitext(os.path.basename(args.out))[0]
 
-    if args.method in ("local_min", "both"):
+    if args.method == "dtm":
+        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m")
+        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold)
+
+    if args.method in ("local_min", "both") and not use_external_dtm:
         print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m")
         lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold)
+
+    if args.method == "both" and use_external_dtm:
+        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m")
+        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold)
+
+    if args.method in ("local_min", "dtm", "both") and ndsm is not None:
         valid_ndsm = ndsm[~np.isnan(ndsm)]
         suggested_ht = _find_valley_threshold(ndsm)
         print(f"  nDSM  min={np.min(valid_ndsm):.2f} m  "
@@ -304,12 +360,15 @@ def main(args):
               f"p95={np.percentile(valid_ndsm, 95):.2f} m  "
               f"max={np.max(valid_ndsm):.2f} m")
         print(f"  Suggested threshold (valley): {suggested_ht:.2f} m  (used: {args.height_threshold} m)")
+        ndsm_diag_label = "dtm" if use_external_dtm else "lm"
+        ndsm_diag_title = ("dtm — nDSM distribution" if use_external_dtm
+                           else "local_min — nDSM distribution")
         _save_diagnostic(
-            ndsm, process_out_dir, run_id, mask_stem, label="lm",
+            ndsm, process_out_dir, run_id, mask_stem, label=ndsm_diag_label,
             used_threshold=args.height_threshold,
             suggested_threshold=suggested_ht,
             xlabel="nDSM [m]",
-            title="local_min — nDSM distribution",
+            title=ndsm_diag_title,
         )
 
     if args.method in ("gradient", "both"):
@@ -329,12 +388,13 @@ def main(args):
 
     # --- Save individual confidences -----------------------------------------
     if lm_conf is not None:
-        _save_conf_tif(lm_conf, os.path.join(conf_dir, f"{mask_stem}_lm_conf.tif"), profile)
+        lm_conf_label = "dtm" if use_external_dtm else "lm"
+        _save_conf_tif(lm_conf, os.path.join(conf_dir, f"{mask_stem}_{lm_conf_label}_conf.tif"), profile)
     if gr_conf is not None:
         _save_conf_tif(gr_conf, os.path.join(conf_dir, f"{mask_stem}_gr_conf.tif"), profile)
 
     # --- Combine -------------------------------------------------------------
-    if args.method == "local_min":
+    if args.method in ("local_min", "dtm"):
         ground_bin, ground_conf = lm_bin, lm_conf
     elif args.method == "gradient":
         ground_bin, ground_conf = gr_bin, gr_conf

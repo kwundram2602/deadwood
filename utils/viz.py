@@ -273,3 +273,29 @@ def plot_samples(
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
     print(f"Saved samples -> {save_path}")
+
+
+def save_model_graph(
+    model: torch.nn.Module,
+    out_dir: Path,
+    in_channels: int,
+    patch_size: int = 512,
+    device: str | torch.device = "cpu",
+) -> None:
+    """Render model architecture graph as PNG and SVG via torchview + graphviz."""
+    try:
+        from torchview import draw_graph
+
+        m = model.module if hasattr(model, "module") else model
+        graph = draw_graph(
+            m,
+            input_size=(1, in_channels, patch_size, patch_size),
+            device=device,
+            expand_nested=True,
+        )
+        stem = out_dir / "model_graph"
+        graph.visual_graph.render(str(stem), format="png", cleanup=True)
+        graph.visual_graph.render(str(stem), format="svg", cleanup=True)
+        print(f"Saved model graph -> {stem}.{{png,svg}}")
+    except Exception as exc:
+        print(f"[WARNING] torchview graph skipped: {exc}")

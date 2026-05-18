@@ -25,6 +25,7 @@ from training.losses import CombinedLoss
 from training.trainer import train
 from utils.device import get_device
 from utils.logger import init_wandb
+from utils.viz import save_model_graph
 
 
 def _reload_best(model: torch.nn.Module, ckpt_path: Path, device: torch.device) -> None:
@@ -87,6 +88,7 @@ def main() -> None:
     train_loader, val_loader, _ = make_loaders(cfg, data_root)
 
     model = build_model(cfg, device)
+    save_model_graph(model, out_dir, cfg.model.in_channels, device=device)
     lc = LearningConfigurator()
     criterion = CombinedLoss(cfg.loss)
     metrics_cfg = cfg.get("metrics", {})
