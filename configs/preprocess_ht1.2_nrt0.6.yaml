@@ -36,7 +36,8 @@ dsm_mask:
   dsm: datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_DSM_shift.tif
   out: datafiles/process_out/masks/crown_mask_final.tif
   out_dsm: datafiles/process_out/ndsm/dsm_ndsm.tif
-  method: both          # Erkennungsmethode: local_min (Höhe), gradient (Hangneigung), both (beide kombiniert)
+  dtm: null             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
+  method: both          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
   windows: [700]   # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
   height_threshold: 1.2 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
