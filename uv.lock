@@ -434,6 +434,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "albumentations" },
+    { name = "graphviz" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "omegaconf" },
@@ -464,6 +465,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "albumentations", specifier = ">=2.0.8" },
+    { name = "graphviz", specifier = ">=0.21" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=2.4.3" },
     { name = "omegaconf", specifier = ">=2.3" },
