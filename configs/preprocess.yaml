@@ -36,9 +36,10 @@ dsm_mask:
   dsm: datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_DSM_shift.tif
   out: datafiles/process_out/masks/crown_mask_final.tif
   out_dsm: datafiles/process_out/ndsm/dsm_ndsm.tif
-  dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
+  dtm: null
+  #dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
   method: both          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
-  combine: or          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
+  combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
   windows: [600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
   height_threshold: 1.3 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten
@@ -64,7 +65,7 @@ tiling:
 # uv run python utils/data.py --config configs/preprocess.yaml
 split:
   input: out/crown_ms_patches   # output of tiling stage
-  output: out/crown_ms          # train/val/test split destination; train_stats.json written here
+  output: out/crown_ms_and          # train/val/test split destination; train_stats.json written here
   train_ratio: 0.7
   val_ratio: 0.2
   seed: 42
