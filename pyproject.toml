@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "albumentations>=2.0.8",
+    "graphviz>=0.21",
     "arosics>=1.13.2",
     "cartopy>=0.25.0",
     "gdal==3.12.2",
