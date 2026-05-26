@@ -282,7 +282,11 @@ def save_model_graph(
     patch_size: int = 512,
     device: str | torch.device = "cpu",
 ) -> None:
-    """Render model architecture graph as PNG and SVG via torchview + graphviz."""
+    """Render model architecture graph as PNG/SVG via torchview + graphviz.
+
+    Always writes model_graph.gv (dot source, no binary needed).
+    PNG/SVG require the Graphviz system package on PATH.
+    """
     try:
         from torchview import draw_graph
 
@@ -294,8 +298,17 @@ def save_model_graph(
             expand_nested=True,
         )
         stem = out_dir / "model_graph"
-        graph.visual_graph.render(str(stem), format="png", cleanup=True)
-        graph.visual_graph.render(str(stem), format="svg", cleanup=True)
-        print(f"Saved model graph -> {stem}.{{png,svg}}")
+        gv_path = stem.with_suffix(".gv")
+        gv_path.write_text(graph.visual_graph.source, encoding="utf-8")
+        print(f"Saved model graph source -> {gv_path}")
+
+        try:
+            graph.visual_graph.render(str(stem), format="png", cleanup=True)
+            graph.visual_graph.render(str(stem), format="svg", cleanup=True)
+            print(f"Saved model graph -> {stem}.{{png,svg}}")
+        except Exception as render_exc:
+            print(f"[WARNING] PNG/SVG rendering skipped (graphviz not on PATH): {render_exc}")
+            print(f"          Install Graphviz or render manually:")
+            print(f"          dot -Tpng {gv_path} -o {stem}.png")
     except Exception as exc:
         print(f"[WARNING] torchview graph skipped: {exc}")
