@@ -6,14 +6,21 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "albumentations>=2.0.8",
+    "arosics>=1.13.2",
+    "cartopy>=0.25.0",
+    "gdal==3.12.2",
+    "joblib>=1.5.3",
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
     "omegaconf>=2.3",
     "pillow>=12.1.1",
+    "pyproj>=3.7.2",
     "pyyaml>=6.0.3",
     "rasterio>=1.4",
+    "scikit-image>=0.26.0",
     "scikit-learn>=1.8.0",
     "seaborn>=0.13.2",
+    "shapely>=2.1.2",
     "torch>=2.10.0",
     "torchgeo>=0.9.0",
     "torchview>=0.2.7",
@@ -39,6 +46,7 @@ torchvision = [
     { index = "pytorch-cpu",   marker = "sys_platform != 'linux'" },
     { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]
+gdal = { index = "gwi" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -48,6 +56,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "gwi"
+url = "https://gisidx.github.io/gwi"
 explicit = true
 
 [tool.ruff]

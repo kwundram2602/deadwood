@@ -17,7 +17,11 @@ checkpoints/
 data/raw/
 notes/
 .vscode/
-datafiles/
+datafiles/dtms
+datafiles/raster
+datafiles/raster_tiles
+datafiles/raster_merged
+datafiles/process_out
 configs/user/
 configs/**/user/
 wandb
