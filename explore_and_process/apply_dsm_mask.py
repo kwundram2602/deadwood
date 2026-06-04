@@ -278,7 +278,17 @@ def main(args):
 
     # --- Run ID (timestamp) groups all outputs of this run -------------------
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    process_out_dir = os.path.dirname(os.path.dirname(os.path.abspath(args.out)))
+
+    # --- Auto-derive output paths from mask path if not configured -----------
+    _mask_abs = os.path.abspath(args.mask)
+    _mask_dir = os.path.dirname(_mask_abs)
+    _mask_stem = os.path.splitext(os.path.basename(_mask_abs))[0]
+    process_out_dir = os.path.dirname(_mask_dir)
+
+    if not getattr(args, "out", None):
+        args.out = os.path.join(_mask_dir, f"{_mask_stem}_final.tif")
+    if not getattr(args, "out_dsm", None):
+        args.out_dsm = os.path.join(process_out_dir, "ndsm", "dsm_ndsm.tif")
 
     # --- Build output filename suffix ----------------------------------------
     w_tag = "-".join(str(w) for w in args.windows)

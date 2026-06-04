@@ -13,12 +13,11 @@
 rasterize:
 # crowns: field datasets to rasterize (vector → raster mask)
   crowns:
-    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
-    - datafiles/crown_poly/2_crown_neighbour_20260409_editLP.gpkg
+    - datafiles\crown_poly\2_crown_main_20260409_editLP.gpkg
 # reference raster: to match for geotransform, CRS
 # reads Transform and , h, w from this raster.
 # Is also used as the main source for the training pipeline's input image
-  reference: datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_OM_shift.tif
+  reference: datafiles\raster_merged\20260313\20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
   out_mask: datafiles/process_out/masks/crown_mask.tif
   out_image_dir: datafiles/process_out/images
   # raster_dir : if set, images in raster_dir
@@ -29,32 +28,30 @@ rasterize:
   # sigma for gaussian_filter 
   sigma: 8.0
   nodata_threshold: 0.05
-  bands: [5, 4, 6, 7]
+  bands: [1, 2, 3, 4]
 
 dsm_mask:
   mask: datafiles/process_out/masks/crown_mask.tif
-  dsm: datafiles/raster/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_DSM_shift.tif
-  out: datafiles/process_out/masks/crown_mask_final.tif
-  out_dsm: datafiles/process_out/ndsm/dsm_ndsm.tif
+  dsm: datafiles\raster_merged\20260313\20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
+  # out / out_dsm: auto-derived from mask path + params + timestamp.
+  # Set explicitly here only to override the default locations.
   dtm: null
   #dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
-  method: both          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
+  method: local_min          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
-  windows: [600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
+  windows: [500,600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
   height_threshold: 1.3 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
-  gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten
-  gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert
+  gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten. wird bei method: gradient oder both genutzt
+  gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert.Wird bei method: gradient oder both genutzt
+  # nDSM-Obergrenze für die Normalisierung des DSM-Werts in der DSM-Maske; Pixel mit nDSM > dieser Höhe werden auf 1 gesetzt, Bodenpixel auf 0, und dazwischenliegende Werte entsprechend skaliert. Wird bei method: local_min oder both genutzt.
   max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
-  nodata_resolve_threshold: 0.6  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
+  nodata_resolve_threshold: 0.0  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
 
 tiling:
   # image: exact path produced by rasterize stage ({out_image_dir}/{raster_stem}_ms4.tif)
-  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_tile001_OM_shift_ms4.tif
-  # mask/dsm: when running via preprocess.py, these are overwritten automatically with the
-  # param-embedded paths produced by apply_dsm_mask (e.g. crown_mask_final_lm_w150-350-700_ht2.0.tif).
-  # When running tile_patches.py standalone, set these to the actual param-embedded paths manually.
-  mask: D:\EAGLE\InnoLab_DL\deadwood\datafiles\process_out\masks\20260513_232855\crown_mask_final_lm_w600-700_ht1.3_gr_s2.0_and.tif
-  dsm: D:\EAGLE\InnoLab_DL\deadwood\datafiles\process_out\ndsm\20260513_232855\dsm_ndsm_w600-700.tif
+  image: datafiles\process_out\images\20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_ms4.tif
+  # mask and dsm are set automatically by preprocess.py from dsm_mask outputs.
+  # When running tile_patches.py standalone, pass --mask and --dsm explicitly.
   out: out/crown_ms_patches
   size: 512
   # skip patches with > this fraction of noData pixels in the mask (== 255)
@@ -62,7 +59,6 @@ tiling:
   # skip patches with > this fraction of all-zero pixels across all MS bands (sensor gaps / edge padding)
   img_nodata_thresh: 0.8
 
-# uv run python utils/data.py --config configs/preprocess.yaml
 split:
   input: out/crown_ms_patches   # output of tiling stage
   output: out/crown_ms_and          # train/val/test split destination; train_stats.json written here
