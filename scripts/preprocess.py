@@ -36,7 +36,6 @@ def run(config_path: str) -> None:
     cfg.tiling.mask = cfg.dsm_mask.out
     if cfg.dsm_mask.out_dsm is not None:
         cfg.tiling.dsm = cfg.dsm_mask.out_dsm
-    # else: cfg.tiling.dsm keeps the value set directly in [tiling] config
 
     print("\n=== Stage 2: tile_patches ===")
     tile_main(cfg.tiling)
