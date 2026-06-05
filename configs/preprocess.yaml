@@ -28,6 +28,7 @@ rasterize:
   # sigma for gaussian_filter 
   sigma: 8.0
   nodata_threshold: 0.05
+  # bands 
   bands: [1, 2, 3, 4]
 
 dsm_mask:
