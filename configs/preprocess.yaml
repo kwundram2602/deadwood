@@ -13,11 +13,11 @@
 rasterize:
 # crowns: field datasets to rasterize (vector → raster mask)
   crowns:
-    - datafiles\crown_poly\2_crown_main_20260409_editLP.gpkg
+    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
 # reference raster: to match for geotransform, CRS
 # reads Transform and , h, w from this raster.
 # Is also used as the main source for the training pipeline's input image
-  reference: datafiles\raster_merged\20260313\20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+  reference: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
   out_mask: datafiles/process_out/masks/crown_mask.tif
   out_image_dir: datafiles/process_out/images
   # raster_dir : if set, images in raster_dir
@@ -33,7 +33,7 @@ rasterize:
 
 dsm_mask:
   mask: datafiles/process_out/masks/crown_mask.tif
-  dsm: datafiles\raster_merged\20260313\20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
+  dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
   # out / out_dsm: auto-derived from mask path + params + timestamp.
   # Set explicitly here only to override the default locations.
   dtm: null
@@ -41,16 +41,16 @@ dsm_mask:
   method: local_min          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
   windows: [500,600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
-  height_threshold: 1.3 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  height_threshold: 1.2 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten. wird bei method: gradient oder both genutzt
   gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert.Wird bei method: gradient oder both genutzt
   # nDSM-Obergrenze für die Normalisierung des DSM-Werts in der DSM-Maske; Pixel mit nDSM > dieser Höhe werden auf 1 gesetzt, Bodenpixel auf 0, und dazwischenliegende Werte entsprechend skaliert. Wird bei method: local_min oder both genutzt.
   max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
-  nodata_resolve_threshold: 0.0  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
+  nodata_resolve_threshold: 0.4  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
 
 tiling:
   # image: exact path produced by rasterize stage ({out_image_dir}/{raster_stem}_ms4.tif)
-  image: datafiles\process_out\images\20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_ms4.tif
+  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_ms4.tif
   # mask and dsm are set automatically by preprocess.py from dsm_mask outputs.
   # When running tile_patches.py standalone, pass --mask and --dsm explicitly.
   out: out/crown_ms_patches

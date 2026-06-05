@@ -3,7 +3,7 @@ run_tag: null       # optional suffix appended to experiment_id, e.g. "v2" or "a
 output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_exp   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 
 dataset:
-  path: out/crown_ms     # relative to --working_dir (deadwood/)
+  path: out/crown_ms     # path with relative to --working_dir (deadwood/)
   batch_size: 8
   num_workers: 4
 
