@@ -105,3 +105,31 @@ def test_print_model_key_tree_lists_all_submodules(capsys):
     assert "encoder.layer4.0.conv1" in out, "tree must go to full depth"
     assert "decoder" in out
     assert "segmentation_head" in out
+
+
+def test_empty_string_key_raises():
+    model = _make_model()
+    with pytest.raises(ValueError, match="non-empty"):
+        LearningConfigurator().prepare_model_for_fine_tuning(model, [""])
+
+
+def test_multiple_keys_unfreeze_both_blocks():
+    model = _make_model()
+    m = _unwrap(model)
+
+    LearningConfigurator().prepare_model_for_fine_tuning(model, ["layer3", "layer4"])
+
+    assert _all_trainable(m.encoder.layer3)
+    assert _all_trainable(m.encoder.layer4)
+    assert _all_frozen(m.encoder.layer2)
+
+
+def test_three_level_key_unfreezes_single_conv():
+    model = _make_model()
+    m = _unwrap(model)
+    last = len(m.encoder.layer4) - 1
+
+    LearningConfigurator().prepare_model_for_fine_tuning(model, [f"layer4.{last}.conv1"])
+
+    assert _all_trainable(m.encoder.layer4[last].conv1)
+    assert _all_frozen(m.encoder.layer4[last].conv2)
