@@ -81,3 +81,17 @@ def test_empty_keys_raises():
     model = _make_model()
     with pytest.raises(ValueError, match="unfreeze_keys"):
         LearningConfigurator().prepare_model_for_fine_tuning(model, [])
+
+
+def test_table_shows_subblock_rows_and_partial_status(capsys):
+    model = _make_model()
+    m = _unwrap(model)
+    last = str(len(m.encoder.layer4) - 1)
+
+    LearningConfigurator().prepare_model_for_fine_tuning(model, [f"layer4.{last}"])
+
+    out = capsys.readouterr().out
+    assert "PARTIAL" in out, "mixed block must show PARTIAL status"
+    assert f"layer4.{last}" in out, "targeted sub-block must have its own row"
+    assert "layer4.0" in out, "frozen sibling sub-blocks must have rows too"
+    assert "layer1.0" in out, "sub-block rows must appear for all encoder layers"
