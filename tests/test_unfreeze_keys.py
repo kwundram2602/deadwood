@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models.model import build_model
-from training.learning_configurator import LearningConfigurator
+from training.learning_configurator import LearningConfigurator, print_model_key_tree
 
 
 def _make_model():
@@ -95,3 +95,13 @@ def test_table_shows_subblock_rows_and_partial_status(capsys):
     assert f"layer4.{last}" in out, "targeted sub-block must have its own row"
     assert "layer4.0" in out, "frozen sibling sub-blocks must have rows too"
     assert "layer1.0" in out, "sub-block rows must appear for all encoder layers"
+
+
+def test_print_model_key_tree_lists_all_submodules(capsys):
+    model = _make_model()
+    print_model_key_tree(model)
+    out = capsys.readouterr().out
+    assert "encoder.layer4.0" in out
+    assert "encoder.layer4.0.conv1" in out, "tree must go to full depth"
+    assert "decoder" in out
+    assert "segmentation_head" in out

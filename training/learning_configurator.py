@@ -144,3 +144,15 @@ class LearningConfigurator:
         total_all = sum(p.numel() for p in model.parameters())
         pct = 100 * total_tr / total_all if total_all else 0.0
         print(f"\n  Trainable params: {total_tr:,} / {total_all:,} ({pct:.1f}%)")
+
+
+def print_model_key_tree(model: nn.Module) -> None:
+    """Print every named module with its param count (debug: true in config)."""
+    m = model.module if hasattr(model, "module") else model
+    print("Model key tree (module: param count):")
+    for name, module in m.named_modules():
+        if not name:
+            continue
+        n_params = sum(p.numel() for p in module.parameters())
+        indent = "  " * name.count(".")
+        print(f"  {indent}{name}: {n_params:,}")
