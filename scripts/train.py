@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.dataset import make_loaders
 from models.model import build_model
-from training.learning_configurator import LearningConfigurator
+from training.learning_configurator import LearningConfigurator, print_model_key_tree
 from training.losses import CombinedLoss
 from training.trainer import train
 from utils.device import get_device
@@ -88,6 +88,8 @@ def main() -> None:
     train_loader, val_loader, _ = make_loaders(cfg, data_root)
 
     model = build_model(cfg, device)
+    if cfg.get("debug", False):
+        print_model_key_tree(model)
     save_model_graph(model, out_dir, cfg.model.in_channels, device=device)
     lc = LearningConfigurator()
     criterion = CombinedLoss(cfg.loss)
@@ -128,7 +130,7 @@ def main() -> None:
         print("\n" + "=" * 60)
         print("Phase 2: Fine-tuning")
         print("=" * 60)
-        lc.prepare_model_for_fine_tuning(model, cfg.fine_tune.unfreeze_blocks)
+        lc.prepare_model_for_fine_tuning(model, list(cfg.fine_tune.unfreeze_keys))
         ft_result = train(
             model,
             train_loader,
