@@ -94,37 +94,51 @@ class LearningConfigurator:
 
     def _print_trainable_table(self, model: nn.Module) -> None:
         m = model.module if hasattr(model, "module") else model
-        rows: list[tuple[str, int, int]] = []
+        rows: list[tuple[str, str, int, int]] = []
+
+        def counts(mod: nn.Module) -> tuple[int, int]:
+            tr = sum(p.numel() for p in mod.parameters() if p.requires_grad)
+            tot = sum(p.numel() for p in mod.parameters())
+            return tr, tot
+
+        def status(tr: int, tot: int) -> str:
+            if tr == 0:
+                return "FROZEN"
+            if tr == tot:
+                return "TRAINABLE"
+            return "PARTIAL"
 
         if hasattr(m, "encoder"):
-            enc = m.encoder
             found_blocks = False
-            for bname in ("conv1", "bn1", "layer0", "layer1", "layer2", "layer3", "layer4"):
-                if hasattr(enc, bname):
-                    block = getattr(enc, bname)
-                    tr = sum(p.numel() for p in block.parameters() if p.requires_grad)
-                    tot = sum(p.numel() for p in block.parameters())
-                    if tot > 0:
-                        rows.append((f"encoder.{bname}", tr, tot))
-                        found_blocks = True
+            for bname, block in m.encoder.named_children():
+                tr, tot = counts(block)
+                if tot == 0:
+                    continue
+                found_blocks = True
+                rows.append((f"encoder.{bname}", status(tr, tot), tr, tot))
+                for sub_name, sub in block.named_children():
+                    if not sub_name.isdigit():
+                        continue
+                    str_, stot = counts(sub)
+                    if stot == 0:
+                        continue
+                    rows.append(
+                        (f"  {bname}.{sub_name}", status(str_, stot), str_, stot)
+                    )
             if not found_blocks:
-                tr = sum(p.numel() for p in enc.parameters() if p.requires_grad)
-                tot = sum(p.numel() for p in enc.parameters())
-                rows.append(("encoder", tr, tot))
+                tr, tot = counts(m.encoder)
+                rows.append(("encoder", status(tr, tot), tr, tot))
 
         for attr in ("decoder", "segmentation_head"):
             if hasattr(m, attr):
-                mod = getattr(m, attr)
-                tr = sum(p.numel() for p in mod.parameters() if p.requires_grad)
-                tot = sum(p.numel() for p in mod.parameters())
-                rows.append((attr, tr, tot))
+                tr, tot = counts(getattr(m, attr))
+                rows.append((attr, status(tr, tot), tr, tot))
 
         name_w = max(len(r[0]) for r in rows) + 2 if rows else 20
         print(f"  {'Module':<{name_w}}  {'Status':<10}  {'Trainable':>13} / {'Total':>13}")
         print(f"  {'-' * name_w}  {'-' * 10}  {'-' * 13}   {'-' * 13}")
-        for name, tr, tot in rows:
-            status = "TRAINABLE" if tr > 0 else "FROZEN"
-            print(f"  {name:<{name_w}}  {status:<10}  {tr:>13,} / {tot:>13,}")
+        for name, st, tr, tot in rows:
+            print(f"  {name:<{name_w}}  {st:<10}  {tr:>13,} / {tot:>13,}")
 
         total_tr = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_all = sum(p.numel() for p in model.parameters())
