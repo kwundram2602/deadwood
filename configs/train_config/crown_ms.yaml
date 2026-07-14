@@ -1,6 +1,7 @@
 model_name: crown_ms
 run_tag: null       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
 output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_exp   # absolute output root; outputs go to <output_dir>/<experiment_id>/
+debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
   path: out/crown_ms     # path with relative to --working_dir (deadwood/)
@@ -13,6 +14,7 @@ model:
   num_classes: 1          # binary crown segmentation → BCEWithLogitsLoss
   weights_name: OAM_RGB_RESNET50_TCD      # TorchGeo pretrained weight enum name, e.g. OAM_RGB_RESNET50_TCD,OAM_RGB_RESNET34_TCD
   weights_path: null      # path to a local .pt checkpoint (overrides weights_name)
+  frozen_pretrained_channels: [0, 1]   # input-channel indices of first conv kept frozen (R, G inherit pretrained weights); [] = fully trainable
 
 # Transfer Learning phase — encoder frozen, decoder + head only
 transfer:
@@ -31,7 +33,7 @@ fine_tune:
   epochs: 30
   lr: 0.00005
   weight_decay: 0.001     # stronger regularisation for small dataset (was 0.0001)
-  unfreeze_blocks: 1      # only layer4 — was 2 (layer4+layer3 = 23M params, too much)
+  unfreeze_keys: ["layer4"]   # encoder submodule paths, e.g. ["layer4.2"] for just the last bottleneck (~4.5M params); ["layer4"] = old unfreeze_blocks: 1
   encoder_lr_scale: 0.1   # encoder LR = lr * encoder_lr_scale (differential learning rates)
   optimizer: adamw
   scheduler: step         # stable decay; cos restarts spike LR mid-finetuning
