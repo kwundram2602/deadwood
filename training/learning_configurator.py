@@ -66,6 +66,11 @@ class LearningConfigurator:
                 "submodules. Valid keys:\n" + self._format_valid_keys(m.encoder)
             )
         for key in keys:
+            if not key:
+                raise ValueError(
+                    "unfreeze_keys entries must be non-empty encoder paths. "
+                    "Valid keys:\n" + self._format_valid_keys(m.encoder)
+                )
             try:
                 submodule = m.encoder.get_submodule(key)
             except AttributeError:
@@ -119,11 +124,11 @@ class LearningConfigurator:
                 for sub_name, sub in block.named_children():
                     if not sub_name.isdigit():
                         continue
-                    str_, stot = counts(sub)
-                    if stot == 0:
+                    sub_tr, sub_tot = counts(sub)
+                    if sub_tot == 0:
                         continue
                     rows.append(
-                        (f"  {bname}.{sub_name}", status(str_, stot), str_, stot)
+                        (f"  {bname}.{sub_name}", status(sub_tr, sub_tot), sub_tr, sub_tot)
                     )
             if not found_blocks:
                 tr, tot = counts(m.encoder)
