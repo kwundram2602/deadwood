@@ -20,6 +20,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from data.channels import ChannelSpec, load_manifest
 from data.dataset import make_loaders
 from models.model import build_model
 from scripts.train import _make_experiment_id
@@ -64,6 +65,14 @@ def main() -> None:
     root = Path(args.working_dir).resolve()
     data_root = root / cfg.dataset.path
 
+    stack_names = load_manifest(data_root / "channels.json")
+    pcm = cfg.model.get("pretrained_channel_map")
+    spec = ChannelSpec(
+        stack_names,
+        list(cfg.dataset.input_channels),
+        OmegaConf.to_container(pcm) if pcm is not None else None,
+    )
+
     metrics_cfg = cfg.get("metrics", OmegaConf.create({}))
     # Support both list form (thresholds) and legacy scalar form (threshold)
     if "thresholds" in metrics_cfg:
@@ -86,9 +95,9 @@ def main() -> None:
         print(f"Weights inferred: {weights_str}")
 
     device = get_device()
-    train_loader, val_loader, test_loader = make_loaders(cfg, data_root)
+    train_loader, val_loader, test_loader = make_loaders(cfg, data_root, spec)
 
-    model = build_model(cfg, device)
+    model = build_model(cfg, device, spec)
     weights_path = Path(weights_str)
     state = torch.load(weights_path, map_location=device, weights_only=True)
     if isinstance(state, dict) and "state_dict" in state:
