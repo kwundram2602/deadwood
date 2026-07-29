@@ -198,3 +198,40 @@ def test_frozen_empty_list_ok():
     spec = ChannelSpec(STACK_MS, ["nir"])
     assert spec.frozen_indices([]) == []
     assert spec.frozen_indices(None) == []
+
+
+# ------------------------------------------------------------------ display
+
+def test_ndsm_position_none_when_unused():
+    assert ChannelSpec(STACK7, ["red", "green", "blue"]).ndsm_position is None
+
+
+def test_ndsm_position_tracks_input_order():
+    assert ChannelSpec(STACK7, ["red", NDSM, "green"]).ndsm_position == 1
+
+
+def test_display_rgb_positions_true_colour():
+    spec = ChannelSpec(STACK7, ["red", "green", "blue", NDSM])
+    assert spec.display_rgb_positions == [0, 1, 2]
+
+
+def test_display_rgb_positions_reorders_to_rgb():
+    """Display order is R,G,B regardless of input order."""
+    spec = ChannelSpec(STACK7, ["blue", "green", "red"])
+    assert spec.display_rgb_positions == [2, 1, 0]
+
+
+def test_display_rgb_positions_uses_ms_slots():
+    """green_ms/red_ms win their slots; blue is absent, so it falls back."""
+    spec = ChannelSpec(STACK_MS, ["green_ms", "red_ms", "rededge", "nir", NDSM])
+    assert spec.display_rgb_positions == [0, 1, 2]
+
+
+def test_display_rgb_positions_never_selects_ndsm():
+    spec = ChannelSpec(STACK_MS, ["nir", NDSM])
+    assert NDSM not in [spec.input_channels[p] for p in spec.display_rgb_positions]
+
+
+def test_display_rgb_positions_pads_single_channel():
+    spec = ChannelSpec(STACK_MS, ["nir"])
+    assert spec.display_rgb_positions == [0, 0, 0]

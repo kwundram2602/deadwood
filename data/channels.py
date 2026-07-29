@@ -112,6 +112,30 @@ class ChannelSpec:
         return NDSM in self.input_channels
 
     @property
+    def ndsm_position(self) -> int | None:
+        """Input position of the ndsm channel, or None if it is not selected."""
+        return self.input_channels.index(NDSM) if self.use_ndsm else None
+
+    @property
+    def display_rgb_positions(self) -> list[int]:
+        """Three input positions to render as R, G, B in a pseudo-RGB preview.
+
+        Prefers the channels that won the pretrained R/G/B slots — true colour
+        when red/green/blue are selected, the *_ms equivalents otherwise. Falls
+        back to the first spectral channels (last one repeated) when fewer than
+        three slots are filled, so previews work for any channel selection.
+        """
+        assignment = self.pretrained_assignment
+        if len(assignment) == len(PRETRAINED_SLOTS):
+            by_slot = {slot: pos for pos, slot in assignment.items()}
+            return [by_slot[s] for s in range(len(PRETRAINED_SLOTS))]
+        spectral = [i for i, c in enumerate(self.input_channels) if c != NDSM]
+        if not spectral:
+            raise ValueError("no spectral channel to preview; input_channels is ndsm-only")
+        pos = spectral[:3]
+        return pos + [pos[-1]] * (3 - len(pos))
+
+    @property
     def stack_indexes(self) -> list[int]:
         """1-based rasterio band indexes of the selected spectral channels, in input order."""
         return [self.stack_names.index(c) + 1 for c in self.input_channels if c != NDSM]
