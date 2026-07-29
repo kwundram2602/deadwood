@@ -4,17 +4,28 @@ output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
-  path: out/crown_ms     # path with relative to --working_dir (deadwood/)
+  path: out/crown_ms     # path relative to --working_dir (deadwood/)
+  # Model input channels by name, in order. Spectral names come from the
+  # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
+  # Examples:
+  #   RGB only:        [red, green, blue]
+  #   MS4 + nDSM:      [green_ms, red_ms, rededge, nir, ndsm]
+  #   Full merge:      [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
+  input_channels: [red, green, blue, rededge, nir, ndsm]
   batch_size: 8
   num_workers: 4
 
 model:
   type: unet
-  in_channels: 5          # R, G, RedEdge, NIR, nDSM
   num_classes: 1          # binary crown segmentation → BCEWithLogitsLoss
-  weights_name: OAM_RGB_RESNET50_TCD      # TorchGeo pretrained weight enum name, e.g. OAM_RGB_RESNET50_TCD,OAM_RGB_RESNET34_TCD
+  weights_name: OAM_RGB_RESNET50_TCD      # TorchGeo pretrained weight enum name
   weights_path: null      # path to a local .pt checkpoint (overrides weights_name)
-  frozen_pretrained_channels: [0, 1]   # input-channel indices of first conv kept frozen (R, G inherit pretrained weights); [] = fully trainable
+  # Channels kept frozen at the first conv (must have pretrained weights);
+  # [] = fully trainable. Names, not indices.
+  frozen_pretrained_channels: [red, green]
+  # Optional override of the exact/prefix name convention for pretrained
+  # R/G/B slots, e.g. {red: red_ms, green: green_ms} or {blue: null}
+  pretrained_channel_map: null
 
 # Transfer Learning phase — encoder frozen, decoder + head only
 transfer:

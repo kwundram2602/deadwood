@@ -10,6 +10,7 @@ Usage (HPC via sbatch):
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from data.channels import ChannelSpec, load_manifest
 from data.dataset import make_loaders
 from models.model import build_model
 from training.learning_configurator import LearningConfigurator, print_model_key_tree
@@ -72,6 +74,16 @@ def main() -> None:
 
     data_root = root / cfg.dataset.path
 
+    stack_names = load_manifest(data_root / "channels.json")
+    pcm = cfg.model.get("pretrained_channel_map")
+    spec = ChannelSpec(
+        stack_names,
+        list(cfg.dataset.input_channels),
+        OmegaConf.to_container(pcm) if pcm is not None else None,
+    )
+    print(f"Input channels ({spec.in_channels}): {spec.input_channels}")
+    print(f"Pretrained slot assignment (pos→slot): {spec.pretrained_assignment}")
+
     experiment_id = _make_experiment_id(cfg)
     out_dir = Path(cfg.output_dir) / experiment_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -84,13 +96,17 @@ def main() -> None:
     OmegaConf.save(cfg, out_dir / "config.yaml")
     print(OmegaConf.to_yaml(cfg))
 
-    device = get_device()
-    train_loader, val_loader, _ = make_loaders(cfg, data_root)
+    (out_dir / "channels.json").write_text(
+        json.dumps({"names": spec.input_channels}, indent=2)
+    )
 
-    model = build_model(cfg, device)
+    device = get_device()
+    train_loader, val_loader, _ = make_loaders(cfg, data_root, spec)
+
+    model = build_model(cfg, device, spec)
     if cfg.get("debug", False):
         print_model_key_tree(model)
-    save_model_graph(model, out_dir, cfg.model.in_channels, device=device)
+    save_model_graph(model, out_dir, spec.in_channels, device=device)
     lc = LearningConfigurator()
     criterion = CombinedLoss(cfg.loss)
     metrics_cfg = cfg.get("metrics", {})
