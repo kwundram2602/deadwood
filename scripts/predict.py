@@ -1,10 +1,13 @@
 """Full-scene inference: tile, predict, merge, binarize.
 
-Takes the full-res MS4 image + aligned nDSM (same grid, both [0,1] — the
+Takes the full-res named-channel scene stack (+ an aligned nDSM on the same
+grid, only when the model's channels include 'ndsm' — both [0,1], the
 rasterize/dsm_mask stage outputs), slides an overlapping tile window over the
 scene, runs the trained UNet on each tile, and blends the sigmoid outputs back
-into one georeferenced probability map. The probability map is binarized with
-the configured threshold into a 0/1 crown mask (255 = noData).
+into one georeferenced probability map. The channels the model was trained on
+are read from the experiment's channels.json manifest and selected out of the
+stack by name. The probability map is binarized with the configured threshold
+into a 0/1 crown mask (255 = noData).
 
 Outputs (written to out:, default <weights_dir>/predict/):
     <scene>_prob.tif        float32 [0,1] crown probability, noData = -1
@@ -21,6 +24,7 @@ CLI flags override config values when provided:
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -32,6 +36,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from data.channels import NDSM, ChannelSpec, load_manifest
 from explore_and_process.tile_patches import tile_raster
 
 _NODATA_BIN = 255
@@ -119,36 +124,34 @@ def validate_grid(img_src, dsm_src) -> None:
 
 
 def prepare_inputs(
-    raw_image: Path, raw_dsm: Path, prep_cfg, prep_dir: Path
-) -> tuple[Path, Path]:
+    sources: list[tuple[str, list[int], list[str]]],
+    raw_dsm: Path | None,
+    prep_cfg,
+    prep_dir: Path,
+    need_ndsm: bool,
+) -> tuple[Path, Path | None]:
     """Replicate the training preprocessing on raw merged rasters.
 
-    MS: resample to target_gsd, band-select, scale to [0,1]  (rasterize stage).
-    DSM: reproject to the same grid, nDSM via multi-scale minimum filter,
-    normalise to [0,1] with ceiling min(p95, max_ndsm_height) (dsm_mask stage).
-
-    Prepared rasters are cached in prep_dir with param-tagged names and
-    reused on the next run.
+    Sources: (path, bands, names) tuples — resampled to target_gsd, scaled to
+    [0,1], stacked with band descriptions (rasterize stage). DSM (only when
+    need_ndsm): reproject to the same grid, nDSM via multi-scale minimum
+    filter, normalise to [0,1] (dsm_mask stage). Prepared rasters are cached
+    in prep_dir with param-tagged names and reused on the next run.
     """
     from explore_and_process.apply_dsm_mask import (
         detect_ground_local_min,
         normalize_ndsm,
         resample_raster,
     )
-    from explore_and_process.rasterize_crowns import resample_image, target_grid
+    from explore_and_process.rasterize_crowns import stack_sources, target_grid
 
     gsd = float(prep_cfg.target_gsd)
-    bands = [int(b) for b in prep_cfg.bands]
-    windows = [int(w) for w in prep_cfg.windows]
-    max_h = float(prep_cfg.max_ndsm_height)
-
     gsd_tag = f"{gsd * 100:g}cm"
-    w_tag = "-".join(str(w) for w in windows)
-    img_out = prep_dir / f"{raw_image.stem}_ms4_{gsd_tag}.tif"
-    dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_w{w_tag}_max{max_h:g}.tif"
+    src_tag = hashlib.md5(repr(sources).encode()).hexdigest()[:8]
+    img_out = prep_dir / f"{Path(sources[0][0]).stem}_stack_{src_tag}_{gsd_tag}.tif"
     prep_dir.mkdir(parents=True, exist_ok=True)
 
-    with rasterio.open(raw_image) as ref:
+    with rasterio.open(sources[0][0]) as ref:
         h, w, transform = target_grid(ref, gsd)
         crs = ref.crs
         print(
@@ -159,9 +162,18 @@ def prepare_inputs(
     if img_out.exists():
         print(f"Prep cache hit: {img_out.name}")
     else:
-        print(f"Resampling MS bands {bands} to {gsd * 100:g} cm...")
-        resample_image(str(raw_image), bands, h, w, transform, crs, str(img_out))
+        print(f"Stacking {len(sources)} source(s) to {gsd * 100:g} cm...")
+        stack_sources(sources, h, w, transform, crs, str(img_out))
 
+    if not need_ndsm:
+        return img_out, None
+
+    if raw_dsm is None:
+        raise ValueError("model uses 'ndsm' but no dsm is set (config dsm: or --dsm)")
+    windows = [int(x) for x in prep_cfg.windows]
+    max_h = float(prep_cfg.max_ndsm_height)
+    w_tag = "-".join(str(x) for x in windows)
+    dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_w{w_tag}_max{max_h:g}.tif"
     if dsm_out.exists():
         print(f"Prep cache hit: {dsm_out.name}")
     else:
@@ -178,7 +190,6 @@ def prepare_inputs(
         with rasterio.open(dsm_out, "w", **profile) as dst:
             dst.write(ndsm_norm[np.newaxis])
         print(f"Saved nDSM: {dsm_out}")
-
     return img_out, dsm_out
 
 
@@ -242,23 +253,31 @@ def build_model_from_checkpoint(
 def predict_scene(
     model: torch.nn.Module,
     image_path: Path,
-    dsm_path: Path,
+    dsm_path: Path | None,
     device: torch.device,
     norm_stats: dict | None,
+    spec: ChannelSpec,
     tile_size: int,
     stride: int,
     batch_size: int,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Sliding-window inference. Returns (prob, valid_mask, raster profile)."""
+    import contextlib
+
     if norm_stats is not None:
         mean = np.asarray(norm_stats["mean"], dtype=np.float32)[:, None, None]
         std = np.asarray(norm_stats["std"], dtype=np.float32)[:, None, None]
     else:
         mean = std = None
 
+    idx0 = np.asarray(spec.stack_indexes) - 1  # 0-based positions in the stack tile
+
     model.eval()
-    with rasterio.open(image_path) as img_src, rasterio.open(dsm_path) as dsm_src:
-        validate_grid(img_src, dsm_src)
+    with contextlib.ExitStack() as ctx:
+        img_src = ctx.enter_context(rasterio.open(image_path))
+        dsm_src = ctx.enter_context(rasterio.open(dsm_path)) if dsm_path else None
+        if dsm_src is not None:
+            validate_grid(img_src, dsm_src)
         h, w = img_src.height, img_src.width
         profile = dict(crs=img_src.crs, transform=img_src.transform)
 
@@ -273,10 +292,12 @@ def predict_scene(
                 batch_offs = offsets[start : start + batch_size]
                 tiles = []
                 for r, c in batch_offs:
-                    img = tile_raster(img_src, r, c, tile_size).astype(np.float32)
-                    dsm = tile_raster(dsm_src, r, c, tile_size).astype(np.float32)
+                    img = tile_raster(img_src, r, c, tile_size).astype(np.float32)[idx0]
                     np.nan_to_num(img, copy=False, nan=0.0)
-                    np.nan_to_num(dsm, copy=False, nan=0.0)
+                    ndsm = None
+                    if dsm_src is not None:
+                        ndsm = tile_raster(dsm_src, r, c, tile_size).astype(np.float32)
+                        np.nan_to_num(ndsm, copy=False, nan=0.0)
 
                     th = min(tile_size, h - r)
                     tw = min(tile_size, w - c)
@@ -284,7 +305,7 @@ def predict_scene(
                         img[:, :th, :tw] == 0, axis=0
                     )
 
-                    tile = np.concatenate([img, dsm], axis=0)  # (5, H, W)
+                    tile = spec.assemble(img, ndsm)  # (in_channels, H, W)
                     if mean is not None:
                         tile = (tile - mean) / std
                     tiles.append(tile)
@@ -317,11 +338,23 @@ def write_geotiff(path: Path, data: np.ndarray, profile: dict, nodata) -> None:
     print(f"Saved {path}")
 
 
+def quicklook_band_indexes(stack_names: list[str]) -> list[int]:
+    """1-based display bands: true red/green/blue if all present, else the
+    first three stack bands (last one repeated if fewer exist)."""
+    if all(n in stack_names for n in ("red", "green", "blue")):
+        return [stack_names.index(n) + 1 for n in ("red", "green", "blue")]
+    idx = list(range(1, min(3, len(stack_names)) + 1))
+    while len(idx) < 3:
+        idx.append(idx[-1])
+    return idx
+
+
 def save_quicklook(
     image_path: Path,
     prob: np.ndarray,
     binary: np.ndarray,
     save_path: Path,
+    stack_names: list[str],
     max_dim: int = 2000,
 ) -> None:
     """Pseudo-RGB | probability | binary side-by-side preview."""
@@ -331,7 +364,7 @@ def save_quicklook(
 
     ds = max(1, max(prob.shape) // max_dim)
     with rasterio.open(image_path) as src:
-        rgb = src.read([1, 2, 3]).astype(np.float32)  # R, G, RedEdge as pseudo-blue
+        rgb = src.read(quicklook_band_indexes(stack_names)).astype(np.float32)
     rgb = rgb[:, ::ds, ::ds].transpose(1, 2, 0)
     rgb = np.clip((rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8), 0, 1)
 
@@ -371,7 +404,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Predict crown mask for a full scene")
     parser.add_argument("--config", required=True, help="Path to configs/predict/*.yaml")
     parser.add_argument("--working_dir", default=".")
-    parser.add_argument("--image", default=None, help="Override: full-res 4-band MS GeoTIFF")
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Override: pre-stacked scene GeoTIFF (preprocess.enabled: false)",
+    )
     parser.add_argument("--dsm", default=None, help="Override: aligned nDSM GeoTIFF")
     parser.add_argument("--weights", default=None, help="Override: .pt checkpoint")
     parser.add_argument("--threshold", type=float, default=None, help="Override: binarization threshold")
@@ -383,13 +420,6 @@ def main() -> None:
     pcfg = OmegaConf.load(args.config)
     root = Path(args.working_dir).resolve()
 
-    image_str = args.image or pcfg.get("image", None)
-    dsm_str = args.dsm or pcfg.get("dsm", None)
-    if not image_str or not dsm_str:
-        raise ValueError("image and dsm must be set (predict config or --image/--dsm)")
-    image_path = root / image_str
-    dsm_path = root / dsm_str
-
     threshold = args.threshold if args.threshold is not None else float(pcfg.get("threshold", 0.5))
 
     weights_str = args.weights or pcfg.get("weights", None)
@@ -399,16 +429,6 @@ def main() -> None:
     if not weights_path.is_absolute():
         weights_path = root / weights_path
 
-    stats_str = pcfg.get("stats", None)
-    if stats_str:
-        stats_path = root / stats_str
-        norm_stats = json.loads(stats_path.read_text())
-        print(f"Normalisation stats: {stats_path}")
-    else:
-        norm_stats = None
-        print("[WARN] stats not set — predicting without normalisation. "
-              "If the model was trained with train_stats.json this will degrade results.")
-
     tile_size = int(pcfg.get("tile_size", 512))
     overlap = float(pcfg.get("overlap", 0.5))
     if not 0 <= overlap < 1:
@@ -416,24 +436,83 @@ def main() -> None:
     stride = max(1, int(tile_size * (1 - overlap)))
     batch_size = int(pcfg.get("batch_size", 8))
 
+    # --- resolve channels the model was trained with -----------------------
+    channels_str = pcfg.get("channels", None)
+    channels_path = (
+        root / channels_str if channels_str else weights_path.parent / "channels.json"
+    )
+    if not channels_path.exists():
+        raise ValueError(
+            f"Channel manifest not found: {channels_path}\n"
+            "scripts/train.py writes channels.json next to the checkpoint; "
+            "for other checkpoints set 'channels:' explicitly."
+        )
+    input_channels = load_manifest(channels_path)
+    print(f"Model input channels: {input_channels}")
+    need_ndsm = NDSM in input_channels
+
+    dsm_str = args.dsm or pcfg.get("dsm", None)
+    dsm_path = root / dsm_str if dsm_str else None
+
+    # --- build / load the scene stack --------------------------------------
     prep_cfg = pcfg.get("preprocess", None)
     if prep_cfg is not None and prep_cfg.get("enabled", False):
+        sources = [
+            (str(root / s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
+            for s in prep_cfg.sources
+        ]
+        stack_names = [n for _, _, names in sources for n in names]
         prep_dir_str = prep_cfg.get("dir", None)
-        prep_dir = root / prep_dir_str if prep_dir_str else root / "datafiles/process_out/predict_prep"
-        image_path, dsm_path = prepare_inputs(image_path, dsm_path, prep_cfg, prep_dir)
+        prep_dir = (
+            root / prep_dir_str
+            if prep_dir_str
+            else root / "datafiles/process_out/predict_prep"
+        )
+        image_path, dsm_path = prepare_inputs(
+            sources, dsm_path, prep_cfg, prep_dir, need_ndsm
+        )
+    else:
+        image_str = args.image or pcfg.get("image", None)
+        if not image_str:
+            raise ValueError("preprocess.enabled is false — set image: (pre-stacked scene)")
+        image_path = root / image_str
+        with rasterio.open(image_path) as src:
+            stack_names = list(src.descriptions)
+        if not all(stack_names):
+            raise ValueError(
+                f"{image_path} has no band descriptions — produce it with "
+                "rasterize_crowns.py or set preprocess.enabled: true"
+            )
+        if need_ndsm and dsm_path is None:
+            raise ValueError("model uses 'ndsm' but no dsm is set (config dsm: or --dsm)")
+
+    spec = ChannelSpec(stack_names, input_channels)
+    if not spec.use_ndsm:
+        dsm_path = None
+
+    # --- stats --------------------------------------------------------------
+    stats_str = pcfg.get("stats", None)
+    if stats_str:
+        stats_path = root / stats_str
+        norm_stats = spec.norm_stats(json.loads(stats_path.read_text()))
+        print(f"Normalisation stats: {stats_path}")
+    else:
+        norm_stats = None
+        print("[WARN] stats not set — predicting without normalisation. "
+              "If the model was trained with train_stats.json this will degrade results.")
 
     device = get_device()
     model = build_model_from_checkpoint(weights_path, device)
+    ckpt_in = model.encoder.conv1.in_channels
+    if ckpt_in != spec.in_channels:
+        raise ValueError(
+            f"Checkpoint expects {ckpt_in} input channels but channels.json "
+            f"lists {spec.in_channels}: {spec.input_channels}"
+        )
 
     prob, valid_mask, profile = predict_scene(
-        model,
-        image_path,
-        dsm_path,
-        device,
-        norm_stats,
-        tile_size=tile_size,
-        stride=stride,
-        batch_size=batch_size,
+        model, image_path, dsm_path, device, norm_stats, spec,
+        tile_size=tile_size, stride=stride, batch_size=batch_size,
     )
     binary = binarize(prob, threshold, valid_mask)
     prob_out = np.where(valid_mask, prob, _NODATA_PROB).astype(np.float32)
@@ -452,7 +531,9 @@ def main() -> None:
     print(f"Threshold {threshold:g}: {crown_frac:.1%} of valid pixels classified as crown")
 
     if pcfg.get("quicklook", True):
-        save_quicklook(image_path, prob, binary, out_dir / f"{stem}_quicklook.png")
+        save_quicklook(
+            image_path, prob, binary, out_dir / f"{stem}_quicklook.png", stack_names
+        )
 
 
 if __name__ == "__main__":

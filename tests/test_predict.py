@@ -117,10 +117,30 @@ def test_predict_config_has_required_keys():
 
     root = Path(os.path.join(os.path.dirname(__file__), ".."))
     pcfg = OmegaConf.load(root / "configs/predict/predict.yaml")
-    for key in ("image", "dsm", "weights", "stats", "threshold", "tile_size", "overlap"):
+    for key in ("weights", "channels", "dsm", "stats", "threshold", "tile_size", "overlap"):
         assert key in pcfg, f"predict.yaml missing key: {key}"
+    p = pcfg.preprocess
+    assert p.enabled is True
+    assert p.target_gsd > 0
+    assert len(p.sources) >= 1
+    for s in p.sources:
+        assert len(list(s.bands)) == len(list(s.names))
     assert 0 <= float(pcfg.overlap) < 1
     assert 0 <= float(pcfg.threshold) <= 1
+
+
+def test_quicklook_band_indexes_true_rgb():
+    from scripts.predict import quicklook_band_indexes
+
+    names = ["green_ms", "red_ms", "red", "green", "blue", "nir"]
+    assert quicklook_band_indexes(names) == [3, 4, 5]
+
+
+def test_quicklook_band_indexes_fallback_first_three():
+    from scripts.predict import quicklook_band_indexes
+
+    assert quicklook_band_indexes(["green_ms", "red_ms", "nir"]) == [1, 2, 3]
+    assert quicklook_band_indexes(["nir"]) == [1, 1, 1]
 
 
 # -------------------------------------------------------------- grid validation
