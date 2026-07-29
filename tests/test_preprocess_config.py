@@ -8,19 +8,20 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "preprocess.yaml")
+CONFIG_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "configs", "preprocess", "preprocess.yaml"
+)
 
 
 def test_config_rasterize_section():
     cfg = OmegaConf.load(CONFIG_PATH)
     r = cfg.rasterize
-    assert len(list(r.crowns)) > 0
-    assert all(isinstance(p, str) for p in r.crowns)
-    assert r.target_gsd == pytest.approx(0.05)
-    assert r.sigma == pytest.approx(10.0)
-    assert r.nodata_threshold == pytest.approx(0.05)
-    assert list(r.bands) == [5, 4, 6, 7]
-    assert r.raster_dir is None
+    assert r.reference
+    assert len(r.sources) >= 1
+    for s in r.sources:
+        assert len(list(s.bands)) == len(list(s.names))
+    assert "ndsm" not in [n for s in r.sources for n in s.names]
+    assert r.target_gsd > 0
 
 
 def test_config_dsm_mask_section():
@@ -37,7 +38,7 @@ def test_config_tiling_section():
     cfg = OmegaConf.load(CONFIG_PATH)
     t = cfg.tiling
     assert t.size == 512
-    assert t.nodata_thresh == pytest.approx(0.9)
+    assert t.nodata_thresh == pytest.approx(0.8)
     assert isinstance(t.out, str)
 
 

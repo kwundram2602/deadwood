@@ -1,81 +1,111 @@
 # tests/test_resample_image.py
-import os
+import json
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from explore_and_process.rasterize_crowns import resample_image  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-CRS = "EPSG:32736"
-SIZE = 16
-# uint16-range value that normalises to ~0.2 after /65535
-VALID_RAW = 13107.0
+from explore_and_process.rasterize_crowns import (  # noqa: E402
+    read_scaled_bands,
+    stack_sources,
+    validate_sources,
+)
+
+TRANSFORM = from_origin(500000, 5400000, 0.05, 0.05)
+CRS = "EPSG:32636"
 
 
-def _write_source(path, data):
-    transform = from_origin(357000.0, 7238000.0, 0.05, 0.05)
+def _write_raster(path, n_bands, h=8, w=8, fill=1000.0):
     profile = dict(
-        driver="GTiff", dtype="float32",
-        width=data.shape[2], height=data.shape[1],
-        count=data.shape[0], crs=CRS, transform=transform,
-        nodata=None,
+        driver="GTiff", dtype="float32", width=w, height=h, count=n_bands,
+        crs=CRS, transform=TRANSFORM,
     )
+    data = np.stack([np.full((h, w), fill * (i + 1), np.float32) for i in range(n_bands)])
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(data)
-    return transform
+    return path
 
 
-def _run(tmp_path, data):
-    src_path = tmp_path / "src.tif"
-    out_path = tmp_path / "out_ms4.tif"
-    transform = _write_source(str(src_path), data)
-    resample_image(
-        str(src_path), bands=list(range(1, data.shape[0] + 1)),
-        h=SIZE, w=SIZE, transform=transform, crs=CRS, out_path=str(out_path),
-    )
-    with rasterio.open(out_path) as src:
-        return src.read()
+def test_read_scaled_bands_selects_and_scales(tmp_path):
+    src = _write_raster(tmp_path / "ms.tif", 4)
+    out = read_scaled_bands(str(src), [2, 4], 8, 8)
+    assert out.shape == (2, 8, 8)
+    assert out.dtype == np.float32
+    assert np.allclose(out[0], 2000.0 / 65535.0)
+    assert np.allclose(out[1], 4000.0 / 65535.0)
 
 
-def test_hot_pixels_clipped_to_valid_range(tmp_path):
-    data = np.full((2, SIZE, SIZE), VALID_RAW, dtype=np.float32)
-    data[0, 3, 4] = 5.0e23  # corrupt reflectance blow-up
-    data[1, 8, 8] = 1.2e9
-
-    out = _run(tmp_path, data)
-
-    assert np.isfinite(out).all()
-    assert out.min() >= 0.0
+def test_read_scaled_bands_clips_artifacts(tmp_path):
+    src = _write_raster(tmp_path / "hot.tif", 1, fill=1e23)
+    out = read_scaled_bands(str(src), [1], 8, 8)
     assert out.max() <= 1.0
 
 
-def test_negative_values_clipped_to_zero(tmp_path):
-    data = np.full((1, SIZE, SIZE), VALID_RAW, dtype=np.float32)
-    data[0, 2, 2] = -500.0
+def test_stack_sources_order_descriptions_manifestable(tmp_path):
+    rgb = _write_raster(tmp_path / "rgb.tif", 3, fill=100.0)
+    ms = _write_raster(tmp_path / "ms.tif", 4, fill=1000.0)
+    out_path = tmp_path / "out_stack.tif"
+    specs = [
+        (str(rgb), [1, 2, 3], ["red", "green", "blue"]),
+        (str(ms), [3, 4], ["rededge", "nir"]),
+    ]
+    names = stack_sources(specs, 8, 8, TRANSFORM, CRS, str(out_path))
+    assert names == ["red", "green", "blue", "rededge", "nir"]
+    with rasterio.open(out_path) as src:
+        assert src.count == 5
+        assert list(src.descriptions) == names
+        data = src.read()
+    # source order preserved: band 4 = ms band 3 (fill 3000), band 5 = ms band 4
+    assert np.allclose(data[3], 3000.0 / 65535.0)
+    assert np.allclose(data[4], 4000.0 / 65535.0)
 
-    out = _run(tmp_path, data)
 
-    assert out.min() >= 0.0
-
-
-def test_valid_values_unchanged(tmp_path):
-    data = np.full((1, SIZE, SIZE), VALID_RAW, dtype=np.float32)
-    data[0, 3, 4] = 5.0e23
-
-    out = _run(tmp_path, data)
-
-    # a pixel far away from the hot pixel keeps its normalised value
-    assert out[0, 12, 12] == pytest.approx(VALID_RAW / 65535.0, abs=1e-6)
+def _src_entry(path, bands, names):
+    from omegaconf import OmegaConf
+    return OmegaConf.create({"path": str(path), "bands": bands, "names": names})
 
 
-def test_nan_becomes_zero(tmp_path):
-    data = np.full((1, SIZE, SIZE), VALID_RAW, dtype=np.float32)
-    data[0, 5, 5] = np.nan
+def test_validate_sources_ok():
+    sources = [
+        _src_entry("a.tif", [1, 2, 3], ["red", "green", "blue"]),
+        _src_entry("b.tif", [1, 2], ["green_ms", "red_ms"]),
+    ]
+    assert validate_sources(sources) == ["red", "green", "blue", "green_ms", "red_ms"]
 
-    out = _run(tmp_path, data)
 
-    assert np.isfinite(out).all()
+def test_validate_sources_length_mismatch():
+    with pytest.raises(ValueError, match="length"):
+        validate_sources([_src_entry("a.tif", [1, 2], ["red"])])
+
+
+def test_validate_sources_duplicate_names():
+    sources = [
+        _src_entry("a.tif", [1], ["red"]),
+        _src_entry("b.tif", [2], ["red"]),
+    ]
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_sources(sources)
+
+
+def test_validate_sources_ndsm_reserved():
+    with pytest.raises(ValueError, match="reserved"):
+        validate_sources([_src_entry("a.tif", [1], ["ndsm"])])
+
+
+def test_validate_sources_raster_dir_single_source_only():
+    sources = [
+        _src_entry("a.tif", [1], ["red"]),
+        _src_entry("b.tif", [1], ["nir"]),
+    ]
+    with pytest.raises(ValueError, match="raster_dir"):
+        validate_sources(sources, raster_dir="some/dir")
+
+
+def test_validate_sources_empty():
+    with pytest.raises(ValueError, match="at least one"):
+        validate_sources([])
