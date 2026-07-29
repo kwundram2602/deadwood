@@ -60,6 +60,11 @@ def test_ndsm_reserved_in_stack():
         ChannelSpec(["red", NDSM], ["red"])
 
 
+def test_duplicate_stack_names_rejected():
+    with pytest.raises(ValueError, match="unique"):
+        ChannelSpec(["red", "green", "red"], ["red", "green"])
+
+
 # ---------------------------------------------------------------- pretrained
 
 def test_exact_names_win_slots():

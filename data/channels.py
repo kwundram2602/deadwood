@@ -19,12 +19,29 @@ PRETRAINED_SLOTS = ("red", "green", "blue")
 NDSM = "ndsm"
 
 
+def _validate_unique_names(names: list, context: str) -> list[str]:
+    """Validate that a list of channel names contains no duplicates.
+
+    Args:
+        names: list of channel names to validate
+        context: context string for error message (e.g., "stack_names" or path)
+
+    Returns:
+        List of stringified names if validation passes.
+
+    Raises:
+        ValueError: if names is empty or contains duplicates.
+    """
+    names_str = [str(n) for n in names]
+    if not names_str or len(set(names_str)) != len(names_str):
+        raise ValueError(f"{context} must list unique channel names, got {names_str}")
+    return names_str
+
+
 def load_manifest(path: Path | str) -> list[str]:
     """Read the ordered channel names from a channels.json manifest."""
     names = json.loads(Path(path).read_text())["names"]
-    if not names or len(set(names)) != len(names):
-        raise ValueError(f"{path} must list unique channel names, got {names}")
-    return [str(n) for n in names]
+    return _validate_unique_names(names, str(path))
 
 
 class ChannelSpec:
@@ -42,7 +59,7 @@ class ChannelSpec:
         input_channels: list[str],
         pretrained_channel_map: dict | None = None,
     ):
-        self.stack_names = [str(n) for n in stack_names]
+        self.stack_names = _validate_unique_names(stack_names, "stack_names")
         self.input_channels = [str(c) for c in input_channels]
 
         if NDSM in self.stack_names:
