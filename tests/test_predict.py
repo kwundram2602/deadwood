@@ -129,6 +129,23 @@ def test_predict_config_has_required_keys():
     assert 0 <= float(pcfg.threshold) <= 1
 
 
+def test_predict_sources_match_preprocess_sources():
+    """Predict must stack the same channels, in the same order, as training."""
+    from omegaconf import OmegaConf
+
+    root = Path(os.path.join(os.path.dirname(__file__), ".."))
+    pcfg = OmegaConf.load(root / "configs/predict/predict.yaml")
+    prep = OmegaConf.load(root / "configs/preprocess/preprocess.yaml")
+
+    def triples(sources):
+        return [
+            (str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
+            for s in sources
+        ]
+
+    assert triples(pcfg.preprocess.sources) == triples(prep.rasterize.sources)
+
+
 def test_quicklook_band_indexes_true_rgb():
     from scripts.predict import quicklook_band_indexes
 
@@ -180,6 +197,82 @@ def test_validate_grid_rejects_shape_mismatch(tmp_path):
     with _open_raster(tmp_path, "a.tif") as a, _open_raster(tmp_path, "b.tif", h=9) as b:
         with pytest.raises(ValueError, match="Grid mismatch"):
             validate_grid(a, b)
+
+
+# ------------------------------------------------------------ main hard errors
+def _run_main(cfg_text: str, tmp_path: Path) -> None:
+    """Run scripts.predict.main() against an inline config rooted at tmp_path."""
+    from scripts.predict import main
+
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(cfg_text)
+    old_argv = sys.argv
+    sys.argv = ["predict.py", "--config", str(cfg), "--working_dir", str(tmp_path)]
+    try:
+        main()
+    finally:
+        sys.argv = old_argv
+
+
+def _write_stack(path: Path, names: list[str], h: int = 8, w: int = 8) -> None:
+    """Minimal [0,1] scene stack with band descriptions, as rasterize writes it."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    profile = dict(
+        driver="GTiff", dtype="float32", width=w, height=h, count=len(names),
+        crs="EPSG:32736", transform=from_origin(357000.0, 7238000.0, 0.05, 0.05),
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(np.zeros((len(names), h, w), dtype=np.float32))
+        for i, name in enumerate(names, 1):
+            dst.set_band_description(i, name)
+
+
+def test_main_rejects_missing_channel_manifest(tmp_path):
+    (tmp_path / "exp").mkdir()
+    with pytest.raises(ValueError, match="Channel manifest not found"):
+        _run_main("weights: exp/best.pt\nchannels: null\n", tmp_path)
+
+
+def test_main_rejects_stack_without_band_descriptions(tmp_path):
+    import json
+
+    (tmp_path / "exp").mkdir()
+    (tmp_path / "exp" / "channels.json").write_text(json.dumps({"names": ["red"]}))
+    _open_raster(tmp_path, "scene.tif").close()  # 1 band, no descriptions
+
+    cfg = (
+        "weights: exp/best.pt\nchannels: null\nimage: scene.tif\n"
+        "preprocess:\n  enabled: false\n"
+    )
+    with pytest.raises(ValueError, match="no band descriptions"):
+        _run_main(cfg, tmp_path)
+
+
+def test_main_rejects_checkpoint_channel_width_mismatch(tmp_path):
+    import json
+
+    import segmentation_models_pytorch as smp
+    import torch
+
+    exp = tmp_path / "exp"
+    exp.mkdir()
+    model = smp.Unet(
+        encoder_name="resnet34", encoder_weights=None, in_channels=3, classes=1
+    )
+    torch.save(model.state_dict(), exp / "best.pt")
+    # manifest lists 4 channels but the checkpoint's first conv takes 3
+    names = ["red", "green", "blue", "nir"]
+    (exp / "channels.json").write_text(json.dumps({"names": names}))
+    _write_stack(tmp_path / "scene.tif", names)
+
+    cfg = (
+        "weights: exp/best.pt\nchannels: null\nstats: null\nimage: scene.tif\n"
+        "preprocess:\n  enabled: false\n"
+    )
+    with pytest.raises(ValueError, match="Checkpoint expects 3 input channels"):
+        _run_main(cfg, tmp_path)
 
 
 # ---------------------------------------------------------- nDSM normalisation

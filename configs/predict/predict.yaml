@@ -17,7 +17,7 @@ channels: null
 # Per-channel normalisation stats the model was trained with
 # (the train config's dataset.path + /train_stats.json). Must contain a
 # "names" field. null → no normalisation.
-stats: out/crown_ms/train_stats.json
+stats: out/crown_ms_1407/train_stats.json
 
 # Raw absolute-elevation DSM. Only required when the model's channels
 # include 'ndsm'.
