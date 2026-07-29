@@ -112,13 +112,30 @@ def test_binarize_threshold_sweeps(t, expected_ones):
 
 
 # ------------------------------------------------------------- predict config
-def test_predict_config_has_required_keys():
+ROOT = Path(os.path.join(os.path.dirname(__file__), ".."))
+PREDICT_CONFIGS = sorted((ROOT / "configs/predict").glob("*.yaml"))
+
+
+def _triples(sources):
+    return [
+        (str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
+        for s in sources
+    ]
+
+
+def test_predict_configs_exist():
+    assert PREDICT_CONFIGS, "no predict configs found under configs/predict/"
+
+
+@pytest.mark.parametrize("cfg_path", PREDICT_CONFIGS, ids=lambda p: p.name)
+def test_predict_config_has_required_keys(cfg_path):
     from omegaconf import OmegaConf
 
-    root = Path(os.path.join(os.path.dirname(__file__), ".."))
-    pcfg = OmegaConf.load(root / "configs/predict/predict.yaml")
-    for key in ("weights", "channels", "dsm", "stats", "threshold", "tile_size", "overlap"):
-        assert key in pcfg, f"predict.yaml missing key: {key}"
+    pcfg = OmegaConf.load(cfg_path)
+    for key in (
+        "weights", "channels", "dsm", "dtm", "stats", "threshold", "tile_size", "overlap"
+    ):
+        assert key in pcfg, f"{cfg_path.name} missing key: {key}"
     p = pcfg.preprocess
     assert p.enabled is True
     assert p.target_gsd > 0
@@ -129,21 +146,20 @@ def test_predict_config_has_required_keys():
     assert 0 <= float(pcfg.threshold) <= 1
 
 
-def test_predict_sources_match_preprocess_sources():
-    """Predict must stack the same channels, in the same order, as training."""
+@pytest.mark.parametrize("cfg_path", PREDICT_CONFIGS, ids=lambda p: p.name)
+def test_predict_sources_match_preprocess_sources(cfg_path):
+    """Every predict source must be byte-identical to a training source, in the
+    same relative order — a predict config may use fewer rasters (RGB only) but
+    never different bands, names, or ordering than the data was built with."""
     from omegaconf import OmegaConf
 
-    root = Path(os.path.join(os.path.dirname(__file__), ".."))
-    pcfg = OmegaConf.load(root / "configs/predict/predict.yaml")
-    prep = OmegaConf.load(root / "configs/preprocess/preprocess.yaml")
+    prep = OmegaConf.load(ROOT / "configs/preprocess/preprocess.yaml")
+    train = _triples(prep.rasterize.sources)
+    pred = _triples(OmegaConf.load(cfg_path).preprocess.sources)
 
-    def triples(sources):
-        return [
-            (str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
-            for s in sources
-        ]
-
-    assert triples(pcfg.preprocess.sources) == triples(prep.rasterize.sources)
+    unknown = [t for t in pred if t not in train]
+    assert not unknown, f"{cfg_path.name}: sources absent from preprocess.yaml: {unknown}"
+    assert pred == [t for t in train if t in pred], f"{cfg_path.name}: source order differs"
 
 
 def test_quicklook_band_indexes_true_rgb():
