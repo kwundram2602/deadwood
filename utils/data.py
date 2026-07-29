@@ -117,13 +117,11 @@ def split_patches(
     return written
 
 
-def compute_channel_stats(split_dir: Path) -> dict[str, list[float]]:
-    """Compute per-channel mean and std from all patches in *split_dir*.
+def compute_channel_stats(split_dir: Path, names: list[str]) -> dict:
+    """Per-channel mean/std over all patches: stack channels (*names*) + ndsm.
 
-    Reads both the 4-band MS image and the 1-band DSM for each patch so that
-    the returned stats cover all 5 input channels (R, G, RE, NIR, nDSM).
     Uses the sum-of-squares identity (E[X²] − E[X]²) to avoid holding all
-    data in memory.
+    data in memory. Returns {"names": names + ["ndsm"], "mean", "std"}.
     """
     image_dir = split_dir / "images"
     dsm_dir = split_dir / "dsm"
@@ -132,21 +130,24 @@ def compute_channel_stats(split_dir: Path) -> dict[str, list[float]]:
     if not stems:
         raise RuntimeError(f"No images found in {image_dir}")
 
-    n_ch = 5
+    all_names = list(names) + ["ndsm"]
+    n_ch = len(all_names)
     ch_sum = np.zeros(n_ch, dtype=np.float64)
     ch_sum_sq = np.zeros(n_ch, dtype=np.float64)
     n_pixels = 0
 
     for stem in stems:
-        img_path = image_dir / f"{stem}.tif"
-        dsm_path = dsm_dir / f"{stem}_dsm.tif"
+        with rasterio.open(image_dir / f"{stem}.tif") as src:
+            img = src.read().astype(np.float64)
+        if img.shape[0] != len(names):
+            raise ValueError(
+                f"{stem}.tif has {img.shape[0]} bands but manifest lists "
+                f"{len(names)} names: {list(names)}"
+            )
+        with rasterio.open(dsm_dir / f"{stem}_dsm.tif") as src:
+            dsm = src.read().astype(np.float64)
 
-        with rasterio.open(img_path) as src:
-            img = src.read().astype(np.float64)   # (4, H, W)
-        with rasterio.open(dsm_path) as src:
-            dsm = src.read().astype(np.float64)   # (1, H, W)
-
-        combined = np.concatenate([img, dsm], axis=0)  # (5, H, W)
+        combined = np.concatenate([img, dsm], axis=0)
         np.nan_to_num(combined, copy=False)
 
         hw = combined.shape[1] * combined.shape[2]
@@ -159,7 +160,7 @@ def compute_channel_stats(split_dir: Path) -> dict[str, list[float]]:
     variance = ch_sum_sq / n_pixels - mean**2
     std = np.sqrt(np.maximum(variance, 1e-12))
 
-    return {"mean": mean.tolist(), "std": std.tolist()}
+    return {"names": all_names, "mean": mean.tolist(), "std": std.tolist()}
 
 
 if __name__ == "__main__":

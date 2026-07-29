@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from omegaconf import OmegaConf
 
+from data.channels import load_manifest
 from explore_and_process.apply_dsm_mask import main as dsm_main
 from explore_and_process.rasterize_crowns import main as rasterize_main
 from explore_and_process.tile_patches import main as tile_main
@@ -52,12 +53,12 @@ def run(config_path: str) -> None:
     )
 
     print("[INFO] Computing per-channel normalisation stats from training split …")
-    stats = compute_channel_stats(Path(sp.output) / "train")
+    names = load_manifest(Path(sp.output) / "channels.json")
+    stats = compute_channel_stats(Path(sp.output) / "train", names)
     stats_path = Path(sp.output) / "train_stats.json"
     stats_path.write_text(json.dumps(stats, indent=2))
-    ch_names = ["R", "G", "RE", "NIR", "nDSM"]
-    for i, name in enumerate(ch_names):
-        print(f"  {name:5s}  mean={stats['mean'][i]:.4f}  std={stats['std'][i]:.4f}")
+    for name, m, s in zip(stats["names"], stats["mean"], stats["std"]):
+        print(f"  {name:10s}  mean={m:.4f}  std={s:.4f}")
     print(f"[DONE] Stats saved to {stats_path}")
 
 
