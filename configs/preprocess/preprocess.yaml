@@ -14,22 +14,26 @@ rasterize:
 # crowns: field datasets to rasterize (vector → raster mask)
   crowns:
     - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
-# reference raster: to match for geotransform, CRS
-# reads Transform and , h, w from this raster.
-# Is also used as the main source for the training pipeline's input image
+  # reference raster: grid only (CRS, transform, extent) — inputs come from sources
   reference: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+  # sources: rasters stacked (in order) into one training image.
+  # names travel with the data (band descriptions + channels.json);
+  # the train config selects model inputs from these names + 'ndsm'.
+  sources:
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
+      bands: [1, 2, 3]
+      names: [red, green, blue]
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+      bands: [1, 2, 3, 4]
+      names: [green_ms, red_ms, rededge, nir]   # native M3M order (verified 2026-07-16)
   out_mask: datafiles/process_out/masks/crown_mask.tif
   out_image_dir: datafiles/process_out/images
-  # raster_dir : if set, images in raster_dir
-  # overwrite the reference raster as the target for resampling 
+  # raster_dir: only valid with exactly ONE source entry; its bands/names apply
+  # to every *_OM_*.tif in the dir (the source's path is ignored)
   raster_dir: null
-  # target_gsd: if specified, will resample to this GSD (m) during rasterization;
   target_gsd: 0.05
-  # sigma for gaussian_filter 
   sigma: 8.0
   nodata_threshold: 0.05
-  # bands 
-  bands: [1, 2, 3, 4]
 
 dsm_mask:
   mask: datafiles/process_out/masks/crown_mask.tif
@@ -61,8 +65,8 @@ dsm_mask:
   crown_resolve_threshold: 0.05
 
 tiling:
-  # image: exact path produced by rasterize stage ({out_image_dir}/{raster_stem}_ms4.tif)
-  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_ms4.tif
+  # image: exact path produced by rasterize ({out_image_dir}/{reference_stem}_stack.tif)
+  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_stack.tif
   # mask and dsm are set automatically by preprocess.py from dsm_mask outputs.
   # When running tile_patches.py standalone, pass --mask and --dsm explicitly.
   out: out/crown_ms_patches
