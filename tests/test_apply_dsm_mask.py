@@ -51,12 +51,12 @@ def test_nodata_stays_255_when_conf_below_threshold():
     assert result[0] == pytest.approx(255.0, abs=1e-6)
 
 
-def test_nodata_stays_255_when_conf_exactly_at_threshold():
-    # threshold is strict: must be *greater than*, not equal
+def test_nodata_resolves_when_conf_exactly_at_threshold():
+    # threshold is inclusive: ground_conf >= nodata_resolve_threshold resolves
     mask = _arr(255.0)
     conf = _arr(0.7)
     result = apply_soft_blend(mask, conf, nodata_resolve_threshold=0.7)
-    assert result[0] == pytest.approx(255.0, abs=1e-6)
+    assert result[0] == pytest.approx(0.3, abs=1e-6)
 
 
 def test_existing_zero_crown_pixel_stays_zero():

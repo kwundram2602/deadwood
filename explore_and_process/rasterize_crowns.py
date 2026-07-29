@@ -112,6 +112,12 @@ def resample_image(om_path, bands, h, w, transform, crs, out_path):
                         resampling=Resampling.bilinear).astype(np.float32)
     data /= 65535.0          # uint16-range → [0, 1]
     data = np.where(np.isnan(data), 0.0, data)
+    # Sensor/calibration artifacts can produce physically impossible
+    # reflectance (hot pixels up to ~1e23 in the raw mosaic); clip to [0,1]
+    n_clipped = int(np.sum((data < 0.0) | (data > 1.0)))
+    if n_clipped:
+        print(f"  [WARN] clipped {n_clipped} out-of-range pixel value(s) to [0,1]")
+    np.clip(data, 0.0, 1.0, out=data)
     write_tif(out_path, data, transform, crs, nodata=None)
     print(f"  -> {os.path.basename(out_path)}")
 
