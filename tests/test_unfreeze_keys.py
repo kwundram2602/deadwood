@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from data.channels import ChannelSpec
 from models.model import build_model
 from training.learning_configurator import LearningConfigurator, print_model_key_tree
 
@@ -16,7 +17,6 @@ def _make_model():
         {
             "model": {
                 "type": "unet",
-                "in_channels": 5,
                 "num_classes": 1,
                 "weights_name": None,
                 "weights_path": None,
@@ -24,7 +24,11 @@ def _make_model():
             }
         }
     )
-    return build_model(cfg, torch.device("cpu"))
+    spec = ChannelSpec(
+        ["green_ms", "red_ms", "rededge", "nir"],
+        ["green_ms", "red_ms", "rededge", "nir", "ndsm"],
+    )
+    return build_model(cfg, torch.device("cpu"), spec)
 
 
 def _unwrap(model):

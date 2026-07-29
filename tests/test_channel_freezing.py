@@ -7,24 +7,31 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from data.channels import ChannelSpec
 from models.model import build_model
 from training.learning_configurator import LearningConfigurator
 from training.trainer import _build_optimizer
 
+STACK = ["green_ms", "red_ms", "rededge", "nir"]
+INPUTS = ["green_ms", "red_ms", "rededge", "nir", "ndsm"]
 
-def _make_cfg(frozen_channels):
+
+def _make_cfg(frozen_names):
     return OmegaConf.create(
         {
             "model": {
                 "type": "unet",
-                "in_channels": 5,
                 "num_classes": 1,
                 "weights_name": None,
                 "weights_path": None,
-                "frozen_pretrained_channels": frozen_channels,
+                "frozen_pretrained_channels": frozen_names,
             }
         }
     )
+
+
+def _make_spec():
+    return ChannelSpec(STACK, INPUTS)
 
 
 def _first_conv(model):
@@ -34,7 +41,7 @@ def _first_conv(model):
 
 def test_frozen_channels_survive_training_step():
     device = torch.device("cpu")
-    model = build_model(_make_cfg([0, 1]), device)
+    model = build_model(_make_cfg(["green_ms", "red_ms"]), device, _make_spec())
     model = LearningConfigurator().prepare_model_for_transfer_learning(model)
 
     phase_cfg = OmegaConf.create(
@@ -74,21 +81,26 @@ def test_frozen_channels_survive_training_step():
 
 def test_bn1_trainable_alongside_conv1():
     device = torch.device("cpu")
-    model = build_model(_make_cfg([0, 1]), device)
+    model = build_model(_make_cfg(["green_ms", "red_ms"]), device, _make_spec())
     model = LearningConfigurator().prepare_model_for_transfer_learning(model)
 
     m = model.module if hasattr(model, "module") else model
     assert all(p.requires_grad for p in m.encoder.bn1.parameters())
 
 
-def test_invalid_frozen_channel_index_raises():
+def test_invalid_frozen_channel_name_raises():
     with pytest.raises(ValueError, match="frozen_pretrained_channels"):
-        build_model(_make_cfg([0, 5]), torch.device("cpu"))
+        build_model(_make_cfg(["not_a_channel"]), torch.device("cpu"), _make_spec())
+
+
+def test_freezing_unpretrained_channel_raises():
+    with pytest.raises(ValueError, match="did not receive pretrained weights"):
+        build_model(_make_cfg(["nir"]), torch.device("cpu"), _make_spec())
 
 
 def test_empty_frozen_list_trains_all_channels():
     device = torch.device("cpu")
-    model = build_model(_make_cfg([]), device)
+    model = build_model(_make_cfg([]), device, _make_spec())
     model = LearningConfigurator().prepare_model_for_transfer_learning(model)
 
     conv1 = _first_conv(model)
