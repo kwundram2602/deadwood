@@ -148,7 +148,7 @@ def main() -> None:
     # Sample visualisations use the first threshold
     val_samples_path = out_dir / f"{weights_path.stem}_val_samples.png"
     plot_samples(
-        model, val_loader, device, n=n_samples, threshold=t0, save_path=val_samples_path
+        model, val_loader, device, spec, n=n_samples, threshold=t0, save_path=val_samples_path
     )
 
     test_samples_path = out_dir / f"{weights_path.stem}_test_samples.png"
@@ -156,6 +156,7 @@ def main() -> None:
         model,
         test_loader,
         device,
+        spec,
         n=n_samples,
         threshold=t0,
         save_path=test_samples_path,

@@ -191,15 +191,17 @@ def plot_samples(
     model: torch.nn.Module,
     loader,
     device: torch.device,
+    spec,
     n: int = 6,
     threshold: float = 0.5,
     save_path: str | Path = "samples.png",
 ) -> None:
-    """4-panel per-sample visualization: Pseudo-RGB | nDSM | GT Mask | Model sigma.
+    """Per-sample visualization: Pseudo-RGB | [nDSM] | GT Mask | Model sigma x2.
 
-    Band layout of the 5-channel input tensor:
-        0=R, 1=G, 2=RedEdge, 3=NIR, 4=nDSM
-    Pseudo-RGB: bands [0,1,2] -> R,G,B (RedEdge fills the missing blue channel)
+    The input tensor's channel layout comes from ``spec`` (a ChannelSpec), so
+    this works for any input_channels selection: the pseudo-RGB panel uses
+    ``spec.display_rgb_positions`` and the nDSM panel is dropped when the
+    selection has no ndsm channel.
     """
     model.eval()
     images_list: list[torch.Tensor] = []
@@ -220,18 +222,26 @@ def plot_samples(
             if len(images_list) >= n:
                 break
 
+    rgb_pos = spec.display_rgb_positions
+    ndsm_pos = spec.ndsm_position
+
+    col_titles = ["Pseudo-RGB"]
+    if ndsm_pos is not None:
+        col_titles.append("nDSM")
+    col_titles += ["GT Mask", "Model sigma (masked)", "Model sigma (full)"]
+    n_cols = len(col_titles)
+
     n_actual = len(images_list)
-    fig, axes = plt.subplots(n_actual, 5, figsize=(15, 3 * n_actual), constrained_layout=True)
+    fig, axes = plt.subplots(
+        n_actual, n_cols, figsize=(3 * n_cols, 3 * n_actual), constrained_layout=True
+    )
     if n_actual == 1:
         axes = axes[np.newaxis, :]
 
-    col_titles = ["Pseudo-RGB", "nDSM", "GT Mask", "Model sigma (masked)", "Model sigma (full)"]
     im_pred = None
     for row, (img, mask, pred) in enumerate(zip(images_list, masks_list, preds_list)):
-        rgb = img[[0, 1, 2]].permute(1, 2, 0).numpy()
+        rgb = img[rgb_pos].permute(1, 2, 0).numpy()
         rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
-
-        ndsm = img[4].numpy()
 
         gt = mask.squeeze(0).numpy()
         nodata_mask = gt == _NODATA
@@ -241,10 +251,15 @@ def plot_samples(
         pred_display = np.where(nodata_mask, np.nan, pred_np)
 
         axes[row, 0].imshow(rgb)
-        axes[row, 1].imshow(ndsm, cmap="gray")
+        col = 1
+        if ndsm_pos is not None:
+            axes[row, col].imshow(img[ndsm_pos].numpy(), cmap="gray")
+            col += 1
 
-        axes[row, 2].imshow(gt_display, cmap="viridis", vmin=0, vmax=1)
-        axes[row, 2].imshow(
+        gt_ax, masked_ax, full_ax = axes[row, col], axes[row, col + 1], axes[row, col + 2]
+
+        gt_ax.imshow(gt_display, cmap="viridis", vmin=0, vmax=1)
+        gt_ax.imshow(
             np.where(nodata_mask, 1.0, np.nan),
             cmap="gray",
             vmin=0,
@@ -252,8 +267,8 @@ def plot_samples(
             alpha=0.4,
         )
 
-        im_pred = axes[row, 3].imshow(pred_display, cmap="viridis", vmin=0, vmax=1)
-        axes[row, 3].imshow(
+        im_pred = masked_ax.imshow(pred_display, cmap="viridis", vmin=0, vmax=1)
+        masked_ax.imshow(
             np.where(nodata_mask, 1.0, np.nan),
             cmap="gray",
             vmin=0,
@@ -261,12 +276,12 @@ def plot_samples(
             alpha=0.4,
         )
 
-        axes[row, 4].imshow(pred_np, cmap="viridis", vmin=0, vmax=1)
+        full_ax.imshow(pred_np, cmap="viridis", vmin=0, vmax=1)
 
-        for col in range(5):
-            axes[row, col].axis("off")
+        for c in range(n_cols):
+            axes[row, c].axis("off")
             if row == 0:
-                axes[row, col].set_title(col_titles[col], fontsize=10)
+                axes[row, c].set_title(col_titles[c], fontsize=10)
 
     if im_pred is not None:
         fig.colorbar(im_pred, ax=axes, shrink=0.6, label="probability")
