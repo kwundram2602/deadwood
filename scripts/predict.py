@@ -20,7 +20,7 @@ Usage:
         --working_dir .
 
 CLI flags override config values when provided:
-    --image --dsm --weights --threshold --out
+    --image --dsm --dtm --weights --threshold --out
 """
 
 import argparse
@@ -126,6 +126,7 @@ def validate_grid(img_src, dsm_src) -> None:
 def prepare_inputs(
     sources: list[tuple[str, list[int], list[str]]],
     raw_dsm: Path | None,
+    raw_dtm: Path | None,
     prep_cfg,
     prep_dir: Path,
     need_ndsm: bool,
@@ -134,11 +135,14 @@ def prepare_inputs(
 
     Sources: (path, bands, names) tuples — resampled to target_gsd, scaled to
     [0,1], stacked with band descriptions (rasterize stage). DSM (only when
-    need_ndsm): reproject to the same grid, nDSM via multi-scale minimum
-    filter, normalise to [0,1] (dsm_mask stage). Prepared rasters are cached
-    in prep_dir with param-tagged names and reused on the next run.
+    need_ndsm): reproject to the same grid, then nDSM = DSM - DTM when an
+    external DTM is given (apply_dsm_mask's `method: dtm`) or DSM - multi-scale
+    minimum filter otherwise (`method: local_min`), normalised to [0,1] the
+    same way in both cases (dsm_mask stage). Prepared rasters are cached in
+    prep_dir with param-tagged names and reused on the next run.
     """
     from explore_and_process.apply_dsm_mask import (
+        detect_ground_dtm,
         detect_ground_local_min,
         normalize_ndsm,
         resample_raster,
@@ -173,15 +177,22 @@ def prepare_inputs(
     windows = [int(x) for x in prep_cfg.windows]
     max_h = float(prep_cfg.max_ndsm_height)
     w_tag = "-".join(str(x) for x in windows)
-    dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_w{w_tag}_max{max_h:g}.tif"
+    # Tag mirrors apply_dsm_mask.py so a DTM run never reuses a local_min cache
+    method_tag = "dtm" if raw_dtm is not None else f"w{w_tag}"
+    dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_{method_tag}_max{max_h:g}.tif"
     if dsm_out.exists():
         print(f"Prep cache hit: {dsm_out.name}")
     else:
-        print(f"Computing nDSM (minimum filter windows {windows} px)...")
         dsm = resample_raster(str(raw_dsm), h, w, transform, crs)
         # height_threshold only shapes the (discarded) ground confidence;
-        # the nDSM itself is just dsm - min_filter(windows)
-        _, _, ndsm = detect_ground_local_min(dsm, windows, height_threshold=1.0)
+        # the nDSM itself is just dsm - ground
+        if raw_dtm is not None:
+            print(f"Computing nDSM (external DTM {raw_dtm.name})...")
+            dtm = resample_raster(str(raw_dtm), h, w, transform, crs)
+            _, _, ndsm = detect_ground_dtm(dsm, dtm, height_threshold=1.0)
+        else:
+            print(f"Computing nDSM (minimum filter windows {windows} px)...")
+            _, _, ndsm = detect_ground_local_min(dsm, windows, height_threshold=1.0)
         ndsm_norm = normalize_ndsm(ndsm, dsm, max_h)
         profile = dict(
             driver="GTiff", dtype="float32", width=w, height=h, count=1,
@@ -410,6 +421,12 @@ def main() -> None:
         help="Override: pre-stacked scene GeoTIFF (preprocess.enabled: false)",
     )
     parser.add_argument("--dsm", default=None, help="Override: aligned nDSM GeoTIFF")
+    parser.add_argument(
+        "--dtm",
+        default=None,
+        help="Override: external DTM GeoTIFF; nDSM becomes DSM-DTM instead of "
+        "DSM minus a minimum filter (requires preprocess.enabled)",
+    )
     parser.add_argument("--weights", default=None, help="Override: .pt checkpoint")
     parser.add_argument("--threshold", type=float, default=None, help="Override: binarization threshold")
     parser.add_argument("--out", default=None, help="Override: output dir")
@@ -453,6 +470,8 @@ def main() -> None:
 
     dsm_str = args.dsm or pcfg.get("dsm", None)
     dsm_path = root / dsm_str if dsm_str else None
+    dtm_str = args.dtm or pcfg.get("dtm", None)
+    dtm_path = root / dtm_str if dtm_str else None
 
     # --- build / load the scene stack --------------------------------------
     prep_cfg = pcfg.get("preprocess", None)
@@ -469,7 +488,7 @@ def main() -> None:
             else root / "datafiles/process_out/predict_prep"
         )
         image_path, dsm_path = prepare_inputs(
-            sources, dsm_path, prep_cfg, prep_dir, need_ndsm
+            sources, dsm_path, dtm_path, prep_cfg, prep_dir, need_ndsm
         )
     else:
         image_str = args.image or pcfg.get("image", None)
@@ -485,6 +504,12 @@ def main() -> None:
             )
         if need_ndsm and dsm_path is None:
             raise ValueError("model uses 'ndsm' but no dsm is set (config dsm: or --dsm)")
+        if dtm_path is not None:
+            raise ValueError(
+                "dtm: is only used when preprocess.enabled is true — with a "
+                "pre-stacked scene the nDSM must already be built (use "
+                "apply_dsm_mask.py --method dtm)"
+            )
 
     spec = ChannelSpec(stack_names, input_channels)
     if not spec.use_ndsm:
