@@ -7,29 +7,38 @@
 # CLI flags override config values when provided:
 #   --image --dsm --weights --threshold --out
 
-# Trained checkpoint (.pt) — the architecture (backbone, in_channels, classes)
-# is inferred from the checkpoint itself, nothing else needed.
+# Trained checkpoint (.pt). Architecture is inferred from the checkpoint.
 weights: experiments/crown_ms_mask_and_hr0.9__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/ft_best.pt
 
-# Per-channel normalisation stats the model was trained with
-# (the train config's dataset.path + /train_stats.json). null → no
-# normalisation (only correct if trained without train_stats.json).
-stats: out/crown_ms_and/train_stats.json
+# Model input channels manifest. null → <weights_dir>/channels.json
+# (written by scripts/train.py next to the checkpoint).
+channels: null
 
-# Scene inputs. With preprocess.enabled: true these are the RAW merged
-# rasters (uint16 MS orthomosaic + absolute-elevation DSM); the script
-# replicates the training preprocessing itself. With enabled: false they
-# must already be preprocessed (ms4 [0,1] + normalised nDSM, same grid).
-image: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+# Per-channel normalisation stats the model was trained with
+# (the train config's dataset.path + /train_stats.json). Must contain a
+# "names" field. null → no normalisation.
+stats: out/crown_ms/train_stats.json
+
+# Raw absolute-elevation DSM. Only required when the model's channels
+# include 'ndsm'.
 dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
 
-# Preprocessing of raw inputs — values MUST match the preprocess config the
-# training data was built with (configs/preprocess/*.yaml: rasterize +
-# dsm_mask sections). height_threshold/ramp are label-only and not needed.
+# Pre-stacked scene image ([0,1] float32 with band descriptions, as written
+# by rasterize_crowns.py). Only used when preprocess.enabled is false.
+image: null
+
+# Preprocessing of raw inputs — sources MUST match the preprocess config the
+# training data was built with (bands, names, target_gsd).
 preprocess:
   enabled: true
-  target_gsd: 0.05        # rasterize.target_gsd — grid the model was trained at
-  bands: [1, 2, 3, 4]     # rasterize.bands
+  target_gsd: 0.05
+  sources:
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
+      bands: [1, 2, 3]
+      names: [red, green, blue]
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+      bands: [1, 2, 3, 4]
+      names: [green_ms, red_ms, rededge, nir]   # native M3M order
   windows: [500, 600]     # dsm_mask.windows — minimum-filter sizes for nDSM
   max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
   dir: null               # prep cache; null → datafiles/process_out/predict_prep
@@ -39,7 +48,7 @@ threshold: 0.9
 
 # Sliding-window tiling
 tile_size: 512
-overlap: 0.5          # tile overlap fraction [0,1); higher = smoother seams, more compute
+overlap: 0.5
 batch_size: 8
 
 # Outputs
