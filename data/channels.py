@@ -19,6 +19,18 @@ PRETRAINED_SLOTS = ("red", "green", "blue")
 NDSM = "ndsm"
 
 
+def _require_name_list(value, context: str) -> list[str]:
+    """Reject a bare string, which would otherwise iterate character by character.
+
+    A YAML list written without its brackets (``input_channels: red, green``)
+    arrives here as a string; splitting it into letters yields a baffling error
+    far from the actual typo.
+    """
+    if isinstance(value, str):
+        raise ValueError(f"{context} must be a list of channel names, got the string {value!r}")
+    return [str(n) for n in value]
+
+
 def _validate_unique_names(names: list, context: str) -> list[str]:
     """Validate that a list of channel names contains no duplicates.
 
@@ -30,9 +42,9 @@ def _validate_unique_names(names: list, context: str) -> list[str]:
         List of stringified names if validation passes.
 
     Raises:
-        ValueError: if names is empty or contains duplicates.
+        ValueError: if names is not a list, is empty, or contains duplicates.
     """
-    names_str = [str(n) for n in names]
+    names_str = _require_name_list(names, context)
     if not names_str or len(set(names_str)) != len(names_str):
         raise ValueError(f"{context} must list unique channel names, got {names_str}")
     return names_str
@@ -60,7 +72,7 @@ class ChannelSpec:
         pretrained_channel_map: dict | None = None,
     ):
         self.stack_names = _validate_unique_names(stack_names, "stack_names")
-        self.input_channels = [str(c) for c in input_channels]
+        self.input_channels = _require_name_list(input_channels, "input_channels")
 
         if NDSM in self.stack_names:
             raise ValueError(f"'{NDSM}' is reserved and cannot be a stack channel")
