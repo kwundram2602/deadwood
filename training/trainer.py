@@ -189,20 +189,41 @@ def _build_optimizer(cfg: DictConfig, model: torch.nn.Module):
             "No trainable parameters — check LearningConfigurator freeze/unfreeze."
         )
 
+    # First-conv weight: own group with full LR and no weight decay — its grads
+    # are channel-masked, and decoupled weight decay would otherwise still
+    # shrink the frozen pretrained slices.
+    first_conv_params = (
+        [p for p in m.encoder.conv1.parameters() if p.requires_grad]
+        if hasattr(m, "encoder") and hasattr(m.encoder, "conv1")
+        else []
+    )
+    first_conv_ids = {id(p) for p in first_conv_params}
+
     # Differential LRs: encoder params get lr * encoder_lr_scale
     encoder_param_ids = (
         {id(p) for p in m.encoder.parameters()} if hasattr(m, "encoder") else set()
     )
-    encoder_trainable = [p for p in trainable_all if id(p) in encoder_param_ids]
+    encoder_trainable = [
+        p
+        for p in trainable_all
+        if id(p) in encoder_param_ids and id(p) not in first_conv_ids
+    ]
+    other_trainable = [p for p in trainable_all if id(p) not in encoder_param_ids]
 
     if encoder_trainable and encoder_lr_scale != 1.0:
-        other_trainable = [p for p in trainable_all if id(p) not in encoder_param_ids]
         param_groups = [
             {"params": other_trainable, "lr": lr, "weight_decay": wd},
             {"params": encoder_trainable, "lr": lr * encoder_lr_scale, "weight_decay": wd},
         ]
     else:
-        param_groups = [{"params": trainable_all, "lr": lr, "weight_decay": wd}]
+        param_groups = [
+            {"params": other_trainable + encoder_trainable, "lr": lr, "weight_decay": wd}
+        ]
+    if first_conv_params:
+        param_groups.append(
+            {"params": first_conv_params, "lr": lr, "weight_decay": 0.0}
+        )
+    param_groups = [g for g in param_groups if g["params"]]
 
     if cfg.optimizer == "adam":
         opt = optim.Adam(param_groups)

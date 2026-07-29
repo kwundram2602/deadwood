@@ -1,7 +1,7 @@
+# Deadwood
 
 
-
-## Pipeline
+## Training and Evaluation Pipeline
 
 
 ### 1a)
@@ -20,7 +20,7 @@ uv run python explore_and_process/tile_patches.py --config
 ```
 ### Run full pipeline (1 - 2 +  data split)
 ```
-uv run python scripts/preprocess.py --config \configs/preprocess.yaml
+uv run python scripts/preprocess.py --config ./configs/preprocess.yaml
 ```
 ### Training
 
@@ -30,4 +30,8 @@ uv run python scripts/train.py --config configs/train_config/crown_ms.yaml --wor
 
 ### Evaluation
 
-uv run python scripts/evaluate.py --config configs/train_config/user/crown_ms_bce_dice.yaml --working_dir .
+uv run python scripts/evaluate.py --config configs/train_config/user/crown_ms.yaml --working_dir .
+
+## Prediction
+
+Predicts on 

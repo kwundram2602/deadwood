@@ -26,3 +26,4 @@ configs/user/
 configs/**/user/
 wandb
 experiments/
+deadwood_notes/
