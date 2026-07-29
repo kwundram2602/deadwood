@@ -96,6 +96,10 @@ def split_patches(
         print(f"[INFO] Cleared existing split directory: {output_root}")
     _ensure_split_dirs(output_root)
 
+    manifest = input_root / "channels.json"
+    if manifest.exists():
+        shutil.copy2(manifest, output_root / "channels.json")
+
     written: dict[str, list[tuple[Path, Path, Path]]] = {}
     for split_name, split_triples in splits.items():
         out_imgs: list[tuple[Path, Path, Path]] = []

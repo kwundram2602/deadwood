@@ -8,9 +8,9 @@ All three inputs must share the same grid (transform + shape). Run
 rasterize_crowns.py and apply_dsm_mask.py first to ensure this.
 
 Output naming per patch (zero-padded row/col index):
-  <row>_<col>_ms4.tif       — 4-band MS image  (float32, [0,1])
-  <row>_<col>_ms4_mask.tif  — 1-band soft mask  (float32, 0/0-1/255)
-  <row>_<col>_ms4_dsm.tif   — 1-band nDSM       (float32, [0,1])
+  <row>_<col>.tif       — multi-band image  (float32, [0,1])
+  <row>_<col>_mask.tif  — 1-band soft mask  (float32, 0/0-1/255)
+  <row>_<col>_dsm.tif   — 1-band nDSM       (float32, [0,1])
 
 Usage:
   python explore_and_process/tile_patches.py \\
@@ -22,9 +22,11 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import shutil
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -111,7 +113,7 @@ def main(args):
                 dsm_data  = tile_raster(dsm_src,  row_off, col_off, args.size)
                 pt = patch_transform(transform, row_off, col_off, args.size)
 
-                stem = f"{str(r).zfill(pad_rows)}_{str(c).zfill(pad_cols)}_ms4"
+                stem = f"{str(r).zfill(pad_rows)}_{str(c).zfill(pad_cols)}"
                 write_patch(os.path.join(args.out, f"{stem}.tif"),
                             img_data, pt, crs, nodata=None)
                 write_patch(os.path.join(args.out, f"{stem}_mask.tif"),
@@ -119,6 +121,14 @@ def main(args):
                 write_patch(os.path.join(args.out, f"{stem}_dsm.tif"),
                             dsm_data, pt, crs, nodata=None)
                 kept += 1
+
+    src_manifest = Path(args.image).parent / "channels.json"
+    if src_manifest.exists():
+        shutil.copy2(src_manifest, os.path.join(out_dir, "channels.json"))
+        print(f"Copied manifest: {src_manifest}")
+    else:
+        print(f"[WARN] no channels.json next to {args.image} — training will fail "
+              "without a channel manifest")
 
     print(f"Done. Kept {kept} patches.")
     print(f"  Skipped (mask noData >{args.nodata_thresh*100:.0f}%): {skipped_mask}")
