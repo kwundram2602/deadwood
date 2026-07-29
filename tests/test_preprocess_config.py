@@ -56,8 +56,10 @@ def test_omegaconf_list_is_iterable():
     assert list(cfg.windows) == [150, 350, 700]
 
 
-def test_run_propagates_dsm_paths_to_tiling(tmp_path):
+def test_run_propagates_dsm_paths_to_tiling(tmp_path, monkeypatch):
     """After dsm_main mutates cfg.dsm_mask.out/_dsm via _embed_params, run() copies to cfg.tiling."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out" / "split").mkdir(parents=True, exist_ok=True)
     config_file = tmp_path / "preprocess.yaml"
     config_file.write_text(
         "rasterize:\n"
@@ -90,6 +92,13 @@ def test_run_propagates_dsm_paths_to_tiling(tmp_path):
         "  out: out/patches\n"
         "  size: 512\n"
         "  nodata_thresh: 0.9\n"
+        "split:\n"
+        "  input: out/patches\n"
+        "  output: out/split\n"
+        "  train_ratio: 0.7\n"
+        "  val_ratio: 0.2\n"
+        "  seed: 42\n"
+        "  mode: copy\n"
     )
 
     def fake_dsm_main(args):
@@ -98,7 +107,12 @@ def test_run_propagates_dsm_paths_to_tiling(tmp_path):
 
     with patch("scripts.preprocess.rasterize_main"), \
          patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main), \
-         patch("scripts.preprocess.tile_main") as mock_tile:
+         patch("scripts.preprocess.tile_main") as mock_tile, \
+         patch("scripts.preprocess.split_patches"), \
+         patch("scripts.preprocess.load_manifest", return_value=["red", "green"]), \
+         patch("scripts.preprocess.compute_channel_stats",
+               return_value={"names": ["red", "green", "ndsm"],
+                             "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0]}):
         from scripts.preprocess import run
         run(str(config_file))
         tiling_args = mock_tile.call_args[0][0]
@@ -106,8 +120,10 @@ def test_run_propagates_dsm_paths_to_tiling(tmp_path):
         assert tiling_args.dsm == "ndsm/dsm_ndsm_w150-350-700.tif"
 
 
-def test_run_does_not_propagate_null_out_dsm(tmp_path):
+def test_run_does_not_propagate_null_out_dsm(tmp_path, monkeypatch):
     """If dsm_mask.out_dsm is null (or not mutated), cfg.tiling.dsm must keep its original value."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out" / "split").mkdir(parents=True, exist_ok=True)
     config_file = tmp_path / "preprocess.yaml"
     config_file.write_text(
         "rasterize:\n"
@@ -140,6 +156,13 @@ def test_run_does_not_propagate_null_out_dsm(tmp_path):
         "  out: out/patches\n"
         "  size: 512\n"
         "  nodata_thresh: 0.9\n"
+        "split:\n"
+        "  input: out/patches\n"
+        "  output: out/split\n"
+        "  train_ratio: 0.7\n"
+        "  val_ratio: 0.2\n"
+        "  seed: 42\n"
+        "  mode: copy\n"
     )
 
     def fake_dsm_main(args):
@@ -148,7 +171,12 @@ def test_run_does_not_propagate_null_out_dsm(tmp_path):
 
     with patch("scripts.preprocess.rasterize_main"), \
          patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main), \
-         patch("scripts.preprocess.tile_main") as mock_tile:
+         patch("scripts.preprocess.tile_main") as mock_tile, \
+         patch("scripts.preprocess.split_patches"), \
+         patch("scripts.preprocess.load_manifest", return_value=["red", "green"]), \
+         patch("scripts.preprocess.compute_channel_stats",
+               return_value={"names": ["red", "green", "ndsm"],
+                             "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0]}):
         from scripts.preprocess import run
         run(str(config_file))
         tiling_args = mock_tile.call_args[0][0]
