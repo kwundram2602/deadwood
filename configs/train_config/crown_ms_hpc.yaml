@@ -1,10 +1,10 @@
 model_name: crown_ms_full_band_stack
 run_tag: null       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
-output_dir: /experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
+output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_exp   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
-  path: out/crown_ms_1407     # path relative to --working_dir (deadwood/)
+  path: out/crown_ms     # path relative to --working_dir (deadwood/)
   # Model input channels by name, in order. Spectral names come from the
   # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
   # Examples:
@@ -65,7 +65,7 @@ loss:
   dice: 0.6
   dice_squared: false   # true -> squared denominator variant (p^2+t^2)
   iou: 0.0
-  mae: 0.0
+  mae: 0.3
 
 # Evaluation metrics -  binary metrics using thresholds
 # t_bin = tgts_v > target_threshold

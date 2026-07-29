@@ -60,6 +60,17 @@ def test_ndsm_reserved_in_stack():
         ChannelSpec(["red", NDSM], ["red"])
 
 
+def test_string_input_channels_rejected():
+    """A YAML list missing its brackets must not be split into characters."""
+    with pytest.raises(ValueError, match="list of channel names"):
+        ChannelSpec(STACK7, "red, green, blue")
+
+
+def test_string_stack_names_rejected():
+    with pytest.raises(ValueError, match="list of channel names"):
+        ChannelSpec("red, green, blue", ["red"])
+
+
 def test_duplicate_stack_names_rejected():
     with pytest.raises(ValueError, match="unique"):
         ChannelSpec(["red", "green", "red"], ["red", "green"])
