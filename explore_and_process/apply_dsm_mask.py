@@ -157,19 +157,144 @@ def detect_ground_local_min(
     return binary, confidence, ndsm
 
 
+def _block_ground_candidates(
+    diff: np.ndarray, blocks: int, quantile: float
+) -> np.ndarray:
+    """Boolean mask of likely-ground pixels, picked per block rather than
+    globally so the candidates are spread over the whole scene: a global
+    quantile lands entirely in the lowest-lying corner and leaves the rest of
+    the fit unconstrained."""
+    h, w = diff.shape
+    picked = np.zeros((h, w), dtype=bool)
+    for rows in np.array_split(np.arange(h), min(blocks, h)):
+        for cols in np.array_split(np.arange(w), min(blocks, w)):
+            block = diff[np.ix_(rows, cols)]
+            valid = block[np.isfinite(block)]
+            if valid.size == 0:
+                continue
+            cut = np.percentile(valid, quantile)
+            picked[np.ix_(rows, cols)] = np.isfinite(block) & (block <= cut)
+    return picked
+
+
+def align_dtm_to_dsm(
+    dsm: np.ndarray,
+    dtm: np.ndarray,
+    max_shift: float = 20.0,
+    blocks: int = 32,
+    ground_quantile: float = 2.0,
+    min_candidates: int = 50,
+    min_extent: float = 0.25,
+) -> tuple[np.ndarray, dict]:
+    """Vertically co-register an external DTM to the DSM.
+
+    A DTM flown on a different date, or referenced to a different vertical
+    datum, sits at a constant offset (and often a slight tilt) from the DSM.
+    Differencing them directly then puts bare ground at several metres, which
+    the [0,1] nDSM normalisation turns into "everything is canopy".
+
+    Estimates that mis-levelling as a plane through the scene's ground pixels
+    and returns the DTM lifted onto the DSM's ground level. Both inputs must
+    already be on the same grid. The DTM on disk is never touched.
+
+    Returns:
+        aligned:  DTM + correction surface, same shape/dtype as the input
+        info:     {"mode", "mean_shift", "tilt", "n_candidates"} for logging
+    """
+    diff = (dsm - dtm).astype(np.float32)
+    diff[np.isnan(dsm) | np.isnan(dtm)] = np.nan
+    if not np.isfinite(diff).any():
+        raise ValueError("DSM and DTM do not overlap — no valid pixels to align on")
+
+    h, w = diff.shape
+    # normalised pixel coordinates in [-1, 1] keep the least-squares well conditioned
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    yy = yy * (2.0 / max(h - 1, 1)) - 1.0
+    xx = xx * (2.0 / max(w - 1, 1)) - 1.0
+
+    cand = _block_ground_candidates(diff, blocks, ground_quantile)
+    cy, cx, cd = yy[cand], xx[cand], diff[cand]
+
+    # A plane needs candidates spread over both axes. When the valid data is a
+    # thin strip the tilt terms are unconstrained and would extrapolate wildly,
+    # so fall back to a constant shift.
+    spread_ok = cd.size >= min_candidates and (
+        cy.size > 0
+        and (cy.max() - cy.min()) >= 2.0 * min_extent
+        and (cx.max() - cx.min()) >= 2.0 * min_extent
+    )
+
+    if spread_ok:
+        mode = "plane"
+        keep = np.ones(cd.shape, dtype=bool)
+        coef = None
+        # Blocks lying entirely inside a canopy patch contribute candidates that
+        # are metres too high. Two robust re-fits drop them.
+        for _ in range(3):
+            design = np.column_stack(
+                [cx[keep], cy[keep], np.ones(int(keep.sum()), dtype=np.float32)]
+            )
+            coef, *_ = np.linalg.lstsq(design, cd[keep], rcond=None)
+            resid = cd - (coef[0] * cx + coef[1] * cy + coef[2])
+            centre = np.median(resid)
+            mad = 1.4826 * np.median(np.abs(resid - centre))
+            tol = max(2.5 * mad, 0.25)  # 0.25 m floor: real ground is rough
+            new_keep = np.abs(resid - centre) <= tol
+            if new_keep.sum() < min_candidates or np.array_equal(new_keep, keep):
+                break
+            keep = new_keep
+        surface = coef[0] * xx + coef[1] * yy + coef[2]
+        tilt = (abs(coef[0]) + abs(coef[1])) * 2.0  # metres across the full extent
+        n_used = int(keep.sum())
+    else:
+        mode = "constant"
+        pool = cd if cd.size else diff[np.isfinite(diff)]
+        surface = np.full((h, w), float(np.median(pool)), dtype=np.float32)
+        tilt = 0.0
+        n_used = int(pool.size)
+
+    peak = float(np.nanmax(np.abs(surface)))
+    if peak > max_shift:
+        raise ValueError(
+            f"DSM/DTM vertical mismatch of {peak:.2f} m exceeds max_shift="
+            f"{max_shift:g} m — the two rasters are probably on different "
+            "vertical datums or the DTM does not belong to this scene"
+        )
+
+    info = {
+        "mode": mode,
+        "mean_shift": float(np.nanmean(np.where(np.isfinite(diff), surface, np.nan))),
+        "tilt": float(tilt),
+        "n_candidates": n_used,
+    }
+    return (dtm + surface).astype(dtm.dtype), info
+
+
 def detect_ground_dtm(
     dsm: np.ndarray,
     dtm: np.ndarray,
     height_threshold: float,
     height_ramp: float | None = None,
+    max_shift: float = 20.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Ground detection using an external DTM: nDSM = DSM - DTM.
+
+    The DTM is vertically co-registered to the DSM first (see
+    align_dtm_to_dsm) — without it any datum offset between the two surveys
+    propagates straight into the nDSM.
 
     Returns:
         binary:     bool array, True where pixel is ground
         confidence: float32 [0,1], higher = more likely ground
         ndsm:       raw nDSM (m) for diagnostics and nDSM output
     """
+    dtm, align_info = align_dtm_to_dsm(dsm, dtm, max_shift=max_shift)
+    print(
+        f"  DTM alignment ({align_info['mode']}): mean shift "
+        f"{align_info['mean_shift']:+.2f} m, tilt {align_info['tilt']:.2f} m "
+        f"across scene, {align_info['n_candidates']:,} ground candidates"
+    )
+
     ndsm = (dsm - dtm).astype(np.float32)
     # NaN where either input is NaN
     ndsm[np.isnan(dsm) | np.isnan(dtm)] = np.nan
