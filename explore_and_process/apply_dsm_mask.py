@@ -100,19 +100,43 @@ def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
     return float(centers[int(np.argmax(sigma_b))])
 
 
-def _smoothstep_confidence(ndsm: np.ndarray, threshold: float) -> np.ndarray:
+def _smoothstep_confidence(
+    ndsm: np.ndarray, threshold: float, ramp: float | None = None
+) -> np.ndarray:
     """Ground confidence based on height threshold.
 
-    Returns 1.0 for nDSM <= threshold, smoothly falls to 0.0 at 2*threshold.
+    Returns 1.0 for nDSM <= threshold, smoothly falls to 0.0 at
+    threshold + ramp (default ramp = threshold, i.e. zero at 2*threshold).
     Uses the smoothstep curve (3t^2 - 2t^3) for a C1-continuous transition.
     NaN handling: caller is responsible for zeroing NaN pixels after this call.
     """
-    t = np.clip((ndsm - threshold) / threshold, 0.0, 1.0)
+    ramp = threshold if ramp is None else ramp
+    t = np.clip((ndsm - threshold) / ramp, 0.0, 1.0)
     return (1.0 - (3 * t**2 - 2 * t**3)).astype(np.float32)
 
 
+def normalize_ndsm(
+    ndsm: np.ndarray, dsm: np.ndarray, max_ndsm_height: float
+) -> np.ndarray:
+    """Normalise raw nDSM (m) to [0,1] with ceiling = min(p95, max_ndsm_height).
+
+    Same procedure at train and predict time: pixels above the ceiling
+    saturate to 1, DSM noData pixels become 0.
+    """
+    valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
+    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else max_ndsm_height
+    ceiling = min(p95, max_ndsm_height)
+    print(f"nDSM ceiling: {ceiling:.2f} m  (p95={p95:.2f} m, cap={max_ndsm_height} m)")
+    ndsm_norm = np.clip(ndsm, 0.0, ceiling) / ceiling
+    ndsm_norm[np.isnan(dsm)] = 0.0
+    return ndsm_norm.astype(np.float32)
+
+
 def detect_ground_local_min(
-    dsm: np.ndarray, windows: list[int], height_threshold: float
+    dsm: np.ndarray,
+    windows: list[int],
+    height_threshold: float,
+    height_ramp: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """DTM approximation via multi-scale minimum filter.
 
@@ -126,28 +150,156 @@ def detect_ground_local_min(
     local_min = np.mean(local_mins, axis=0) if len(local_mins) > 1 else local_mins[0]
     ndsm = dsm - local_min
 
-    confidence = _smoothstep_confidence(ndsm, height_threshold)
+    confidence = _smoothstep_confidence(ndsm, height_threshold, height_ramp)
     confidence[np.isnan(dsm)] = 0.0
 
     binary = (ndsm < height_threshold) & ~np.isnan(dsm)
     return binary, confidence, ndsm
 
 
+def _block_ground_candidates(
+    diff: np.ndarray, blocks: int, quantile: float
+) -> np.ndarray:
+    """Boolean mask of likely-ground pixels, picked per block rather than
+    globally so the candidates are spread over the whole scene: a global
+    quantile lands entirely in the lowest-lying corner and leaves the rest of
+    the fit unconstrained."""
+    h, w = diff.shape
+    picked = np.zeros((h, w), dtype=bool)
+    for rows in np.array_split(np.arange(h), min(blocks, h)):
+        for cols in np.array_split(np.arange(w), min(blocks, w)):
+            block = diff[np.ix_(rows, cols)]
+            valid = block[np.isfinite(block)]
+            if valid.size == 0:
+                continue
+            cut = np.percentile(valid, quantile)
+            picked[np.ix_(rows, cols)] = np.isfinite(block) & (block <= cut)
+    return picked
+
+
+def align_dtm_to_dsm(
+    dsm: np.ndarray,
+    dtm: np.ndarray,
+    max_shift: float = 20.0,
+    blocks: int = 32,
+    ground_quantile: float = 2.0,
+    min_candidates: int = 50,
+    min_extent: float = 0.25,
+) -> tuple[np.ndarray, dict]:
+    """Vertically co-register an external DTM to the DSM.
+
+    A DTM flown on a different date, or referenced to a different vertical
+    datum, sits at a constant offset (and often a slight tilt) from the DSM.
+    Differencing them directly then puts bare ground at several metres, which
+    the [0,1] nDSM normalisation turns into "everything is canopy".
+
+    Estimates that mis-levelling as a plane through the scene's ground pixels
+    and returns the DTM lifted onto the DSM's ground level. Both inputs must
+    already be on the same grid. The DTM on disk is never touched.
+
+    Returns:
+        aligned:  DTM + correction surface, same shape/dtype as the input
+        info:     {"mode", "mean_shift", "tilt", "n_candidates"} for logging
+    """
+    diff = (dsm - dtm).astype(np.float32)
+    diff[np.isnan(dsm) | np.isnan(dtm)] = np.nan
+    if not np.isfinite(diff).any():
+        raise ValueError("DSM and DTM do not overlap — no valid pixels to align on")
+
+    h, w = diff.shape
+    # normalised pixel coordinates in [-1, 1] keep the least-squares well conditioned
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    yy = yy * (2.0 / max(h - 1, 1)) - 1.0
+    xx = xx * (2.0 / max(w - 1, 1)) - 1.0
+
+    cand = _block_ground_candidates(diff, blocks, ground_quantile)
+    cy, cx, cd = yy[cand], xx[cand], diff[cand]
+
+    # A plane needs candidates spread over both axes. When the valid data is a
+    # thin strip the tilt terms are unconstrained and would extrapolate wildly,
+    # so fall back to a constant shift.
+    spread_ok = cd.size >= min_candidates and (
+        cy.size > 0
+        and (cy.max() - cy.min()) >= 2.0 * min_extent
+        and (cx.max() - cx.min()) >= 2.0 * min_extent
+    )
+
+    if spread_ok:
+        mode = "plane"
+        keep = np.ones(cd.shape, dtype=bool)
+        coef = None
+        # Blocks lying entirely inside a canopy patch contribute candidates that
+        # are metres too high. Two robust re-fits drop them.
+        for _ in range(3):
+            design = np.column_stack(
+                [cx[keep], cy[keep], np.ones(int(keep.sum()), dtype=np.float32)]
+            )
+            coef, *_ = np.linalg.lstsq(design, cd[keep], rcond=None)
+            resid = cd - (coef[0] * cx + coef[1] * cy + coef[2])
+            centre = np.median(resid)
+            mad = 1.4826 * np.median(np.abs(resid - centre))
+            tol = max(2.5 * mad, 0.25)  # 0.25 m floor: real ground is rough
+            new_keep = np.abs(resid - centre) <= tol
+            if new_keep.sum() < min_candidates or np.array_equal(new_keep, keep):
+                break
+            keep = new_keep
+        surface = coef[0] * xx + coef[1] * yy + coef[2]
+        tilt = (abs(coef[0]) + abs(coef[1])) * 2.0  # metres across the full extent
+        n_used = int(keep.sum())
+    else:
+        mode = "constant"
+        pool = cd if cd.size else diff[np.isfinite(diff)]
+        surface = np.full((h, w), float(np.median(pool)), dtype=np.float32)
+        tilt = 0.0
+        n_used = int(pool.size)
+
+    peak = float(np.nanmax(np.abs(surface)))
+    if peak > max_shift:
+        raise ValueError(
+            f"DSM/DTM vertical mismatch of {peak:.2f} m exceeds max_shift="
+            f"{max_shift:g} m — the two rasters are probably on different "
+            "vertical datums or the DTM does not belong to this scene"
+        )
+
+    info = {
+        "mode": mode,
+        "mean_shift": float(np.nanmean(np.where(np.isfinite(diff), surface, np.nan))),
+        "tilt": float(tilt),
+        "n_candidates": n_used,
+    }
+    return (dtm + surface).astype(dtm.dtype), info
+
+
 def detect_ground_dtm(
-    dsm: np.ndarray, dtm: np.ndarray, height_threshold: float
+    dsm: np.ndarray,
+    dtm: np.ndarray,
+    height_threshold: float,
+    height_ramp: float | None = None,
+    max_shift: float = 20.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Ground detection using an external DTM: nDSM = DSM - DTM.
+
+    The DTM is vertically co-registered to the DSM first (see
+    align_dtm_to_dsm) — without it any datum offset between the two surveys
+    propagates straight into the nDSM.
 
     Returns:
         binary:     bool array, True where pixel is ground
         confidence: float32 [0,1], higher = more likely ground
         ndsm:       raw nDSM (m) for diagnostics and nDSM output
     """
+    dtm, align_info = align_dtm_to_dsm(dsm, dtm, max_shift=max_shift)
+    print(
+        f"  DTM alignment ({align_info['mode']}): mean shift "
+        f"{align_info['mean_shift']:+.2f} m, tilt {align_info['tilt']:.2f} m "
+        f"across scene, {align_info['n_candidates']:,} ground candidates"
+    )
+
     ndsm = (dsm - dtm).astype(np.float32)
     # NaN where either input is NaN
     ndsm[np.isnan(dsm) | np.isnan(dtm)] = np.nan
 
-    confidence = _smoothstep_confidence(ndsm, height_threshold)
+    confidence = _smoothstep_confidence(ndsm, height_threshold, height_ramp)
     confidence[np.isnan(ndsm)] = 0.0
 
     binary = (ndsm < height_threshold) & ~np.isnan(ndsm)
@@ -205,13 +357,24 @@ def apply_soft_blend(
     mask: np.ndarray,
     ground_conf: np.ndarray,
     nodata_resolve_threshold: float,
+    crown_resolve_threshold: float | None = None,
+    dsm_valid: np.ndarray | None = None,
 ) -> np.ndarray:
     """Soft-blend ground confidence into the crown mask.
 
     Crown pixels (0–1): multiplied by (1 - ground_conf).
-    noData pixels (255): resolved to (1 - ground_conf) only when
-      ground_conf > nodata_resolve_threshold, otherwise kept at 255.
+    noData pixels (255): resolved to (1 - ground_conf) when
+      ground_conf >= nodata_resolve_threshold (confident ground), or when
+      ground_conf <= crown_resolve_threshold (confident crown, requires
+      dsm_valid there — NaN-DSM pixels also carry conf 0.0 and must stay 255).
+      The gray zone in between is kept at 255.
     """
+    if crown_resolve_threshold is not None and not (
+        crown_resolve_threshold < nodata_resolve_threshold
+    ):
+        raise ValueError(
+            "crown_resolve_threshold must be < nodata_resolve_threshold"
+        )
     result = mask.copy()
 
     # Alle gültigen Kronenpixel (Konfidenz 0–1, kein noData-Sentinel)
@@ -225,6 +388,14 @@ def apply_soft_blend(
     resolve = nodata & (ground_conf >= nodata_resolve_threshold)
     # Aufgelöste noData-Pixel bekommen Bodenwahrscheinlichkeit als invertierte Kronenkonfidenz
     result[resolve] = 1.0 - ground_conf[resolve]
+
+    # Symmetrische Auflösung Richtung Krone: sicher NICHT Boden (hohe Vegetation
+    # ohne Polygon) wird als Krone gelabelt statt vom Loss ausgeschlossen
+    if crown_resolve_threshold is not None:
+        resolve_crown = nodata & (ground_conf <= crown_resolve_threshold)
+        if dsm_valid is not None:
+            resolve_crown &= dsm_valid
+        result[resolve_crown] = 1.0 - ground_conf[resolve_crown]
     return result
 
 
@@ -309,6 +480,13 @@ def main(args):
     else:  # both
         mask_suffix = f"{ht_tag}{gr_tag}_{args.combine}"
 
+    height_ramp = args.get("height_ramp", None)
+    crown_resolve_threshold = args.get("crown_resolve_threshold", None)
+    if height_ramp is not None:
+        mask_suffix += f"_hr{height_ramp}"
+    if crown_resolve_threshold is not None:
+        mask_suffix += f"_cr{crown_resolve_threshold}"
+
     args.out = _embed_params(args.out, mask_suffix)
     mask_dir, mask_file = os.path.dirname(args.out), os.path.basename(args.out)
     args.out = os.path.join(mask_dir, run_id, mask_file)
@@ -348,16 +526,16 @@ def main(args):
     mask_stem = os.path.splitext(os.path.basename(args.out))[0]
 
     if args.method == "dtm":
-        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m")
-        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold)
+        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
+        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold, height_ramp)
 
     if args.method in ("local_min", "both") and not use_external_dtm:
-        print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m")
-        lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold)
+        print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m  ramp={height_ramp}")
+        lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold, height_ramp)
 
     if args.method == "both" and use_external_dtm:
-        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m")
-        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold)
+        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
+        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold, height_ramp)
 
     if args.method in ("local_min", "dtm", "both") and ndsm is not None:
         valid_ndsm = ndsm[~np.isnan(ndsm)]
@@ -414,14 +592,26 @@ def main(args):
 
     # --- Apply soft ground blend to crown mask --------------------------------
     n_crown_dampened = int(np.sum((mask >= 0.0) & (mask < 255.0) & (ground_conf > 0.0)))
-    n_nodata_before = int(np.sum(mask == 255.0))
-    mask = apply_soft_blend(mask, ground_conf, args.nodata_resolve_threshold)
-    n_nodata_resolved = n_nodata_before - int(np.sum(mask == 255.0))
+    nodata_before = mask == 255.0
+    dsm_valid = ~np.isnan(dsm)
+    mask = apply_soft_blend(
+        mask,
+        ground_conf,
+        args.nodata_resolve_threshold,
+        crown_resolve_threshold=crown_resolve_threshold,
+        dsm_valid=dsm_valid,
+    )
+    n_ground_resolved = int(np.sum(nodata_before & (ground_conf >= args.nodata_resolve_threshold)))
+    n_crown_resolved = 0
+    if crown_resolve_threshold is not None:
+        n_crown_resolved = int(np.sum(nodata_before & dsm_valid & (ground_conf <= crown_resolve_threshold)))
     n_crown  = int(np.sum((mask > 0) & (mask < 255)))
     n_ground = int(np.sum(mask == 0.0))
     n_nodata = int(np.sum(mask == 255.0))
     print(f"\nCrown pixels dampened by DSM:     {n_crown_dampened:,}  (multiplicative blend)")
-    print(f"noData pixels resolved to ground: {n_nodata_resolved:,}  (ground_conf > {args.nodata_resolve_threshold:.2f})")
+    print(f"noData pixels resolved to ground: {n_ground_resolved:,}  (ground_conf >= {args.nodata_resolve_threshold:.2f})")
+    if crown_resolve_threshold is not None:
+        print(f"noData pixels resolved to crown:  {n_crown_resolved:,}  (ground_conf <= {crown_resolve_threshold:.2f})")
     print(f"Final  =>  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
 
     # --- Write binary mask ---------------------------------------------------
@@ -436,12 +626,7 @@ def main(args):
 
     # --- Write normalised nDSM (local_min method only) -----------------------
     if args.out_dsm and ndsm is not None:
-        valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
-        p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else args.max_ndsm_height
-        ceiling = min(p95, args.max_ndsm_height)
-        print(f"nDSM ceiling: {ceiling:.2f} m  (p95={p95:.2f} m, cap={args.max_ndsm_height} m)")
-        ndsm_norm = np.clip(ndsm, 0.0, ceiling) / ceiling
-        ndsm_norm[np.isnan(dsm)] = 0.0
+        ndsm_norm = normalize_ndsm(ndsm, dsm, args.max_ndsm_height)
         dsm_profile = profile.copy()
         dsm_profile.update(dtype="float32", count=1, nodata=None)
         os.makedirs(os.path.dirname(os.path.abspath(args.out_dsm)), exist_ok=True)

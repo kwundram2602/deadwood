@@ -14,43 +14,59 @@ rasterize:
 # crowns: field datasets to rasterize (vector → raster mask)
   crowns:
     - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
-# reference raster: to match for geotransform, CRS
-# reads Transform and , h, w from this raster.
-# Is also used as the main source for the training pipeline's input image
+  # reference raster: grid only (CRS, transform, extent) — inputs come from sources
   reference: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+  # sources: rasters stacked (in order) into one training image.
+  # names travel with the data (band descriptions + channels.json);
+  # the train config selects model inputs from these names + 'ndsm'.
+  sources:
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
+      bands: [1, 2, 3]
+      names: [red, green, blue]
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+      bands: [1, 2, 3, 4]
+      names: [green_ms, red_ms, rededge, nir]   # native M3M order 
   out_mask: datafiles/process_out/masks/crown_mask.tif
   out_image_dir: datafiles/process_out/images
-  # raster_dir : if set, images in raster_dir
-  # overwrite the reference raster as the target for resampling 
+  # raster_dir: only valid with exactly ONE source entry; its bands/names apply
+  # to every *_OM_*.tif in the dir (the source's path is ignored)
   raster_dir: null
-  # target_gsd: if specified, will resample to this GSD (m) during rasterization;
   target_gsd: 0.05
-  # sigma for gaussian_filter 
   sigma: 8.0
   nodata_threshold: 0.05
-  # bands 
-  bands: [1, 2, 3, 4]
 
 dsm_mask:
   mask: datafiles/process_out/masks/crown_mask.tif
   dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
   # out / out_dsm: auto-derived from mask path + params + timestamp.
   # Set explicitly here only to override the default locations.
-  dtm: null
+  dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
   #dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
-  method: local_min          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
+  method: dtm          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
-  windows: [500,600,700]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
-  height_threshold: 1.2 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  windows: [500]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
+  height_threshold: 1.7 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  # Breite der smoothstep-Rampe (m) oberhalb von height_threshold: ground_conf fällt von 1 (bei ht) auf 0 (bei ht + height_ramp).
+  # Schmalere Rampe = bimodalere Labels (weniger diffuse Zwischenwerte). null → Rampe = height_threshold (altes Verhalten, 0 bei 2*ht)
+  height_ramp: 0.9
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten. wird bei method: gradient oder both genutzt
   gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert.Wird bei method: gradient oder both genutzt
   # nDSM-Obergrenze für die Normalisierung des DSM-Werts in der DSM-Maske; Pixel mit nDSM > dieser Höhe werden auf 1 gesetzt, Bodenpixel auf 0, und dazwischenliegende Werte entsprechend skaliert. Wird bei method: local_min oder both genutzt.
   max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
-  nodata_resolve_threshold: 0.4  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf > dieser Schwelle
+  # resolve 255 values ? :
+  nodata_resolve_threshold: 0.6  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf >= dieser Schwelle
+
+  # Symmetrische Auflösung Richtung Krone: noData-Pixel mit ground_conf <= dieser Schwelle (sicher NICHT Boden, d.h. hohe
+  # Vegetation ohne Polygon) werden als Krone (1 - ground_conf) gelabelt statt vom Loss ausgeschlossen. 255 bleibt nur für
+  # die Grauzone dazwischen und DSM-Datenlücken. Muss < nodata_resolve_threshold sein. null → deaktiviert (altes Verhalten)
+  
+  # ground_conf ≤ crown_resolve_threshold:
+  # Label 1 − conf
+  crown_resolve_threshold: 0.05
 
 tiling:
-  # image: exact path produced by rasterize stage ({out_image_dir}/{raster_stem}_ms4.tif)
-  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_ms4.tif
+  # image: exact path produced by rasterize ({out_image_dir}/{reference_stem}_stack.tif)
+  image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_stack.tif
   # mask and dsm are set automatically by preprocess.py from dsm_mask outputs.
   # When running tile_patches.py standalone, pass --mask and --dsm explicitly.
   out: out/crown_ms_patches
@@ -62,7 +78,7 @@ tiling:
 
 split:
   input: out/crown_ms_patches   # output of tiling stage
-  output: out/crown_ms_and          # train/val/test split destination; train_stats.json written here
+  output: out/crown_fullstack          # train/val/test split destination; train_stats.json written here
   train_ratio: 0.7
   val_ratio: 0.2
   seed: 42
