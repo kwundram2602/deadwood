@@ -8,6 +8,11 @@
 ```
 cd path/to/deadwood && uv sync
 ```
+3. Get sample weights
+```
+git lfs install          
+git lfs pull             
+```
 ## Crown Segmentation
 
 ### Preprocessing
@@ -30,13 +35,13 @@ The train config sets input channels (e.g rgb + multispectral), training paramet
 uv run python scripts/train.py --config configs/train_config/crown_rgb_ms.yaml --working_dir .
 ```
 
-#### Evaluation
+### Evaluation
 Reuse your train config.
 ```
 uv run python scripts/evaluate.py --config configs/train_config/user/crown_ms.yaml --working_dir .
 ```
 
-#### Prediction
+### Prediction
 
 Using a model trained on RGB+MS4:
 (sample_exp/crown_rgb_ms__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/ft_best.pt)
