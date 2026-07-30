@@ -1,18 +1,19 @@
-model_name: crown_ms_full_band_stack
+model_name: crown_fullstack
 run_tag: null       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
-output_dir: /dss/dsstbyfs02/pn49ci/pn49ci-dss-0026/di54xen/experiments/deadwood_exp   # absolute output root; outputs go to <output_dir>/<experiment_id>/
+output_dir: experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
-  path: out/crown_ms     # path relative to --working_dir (deadwood/)
+  path: out/crown_fullstack     # path relative to --working_dir (deadwood/)
   # Model input channels by name, in order. Spectral names come from the
   # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
   # Examples:
   #   RGB only:        [red, green, blue]
+  #   RGB + nDSM:      [red, green, blue, ndsm]
   #   MS4 + nDSM:      [green_ms, red_ms, rededge, nir, ndsm]
   #   Full merge:      [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
   input_channels: [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
-  batch_size: 8
+  batch_size: 4
   num_workers: 4
 
 model:
@@ -65,7 +66,7 @@ loss:
   dice: 0.6
   dice_squared: false   # true -> squared denominator variant (p^2+t^2)
   iou: 0.0
-  mae: 0.3
+  mae: 0.0
 
 # Evaluation metrics -  binary metrics using thresholds
 # t_bin = tgts_v > target_threshold
@@ -73,7 +74,7 @@ loss:
 # sigmoid thresholds for binary metrics (precision/recall/F1/IoU)
 # GT binarisation thresholds — pixels above this count as crown
 metrics:
-  thresholds: [0.6,0.8]     #preds   
+  thresholds: [0.6,0.8,0.9]     #preds   
   target_thresholds: [0.7, 0.8] #targets
 
 # Standalone evaluation (scripts/evaluate.py)

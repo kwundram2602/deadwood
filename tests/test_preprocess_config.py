@@ -31,7 +31,9 @@ def test_config_dsm_mask_section():
     assert d.gradient_threshold is None
     assert d.height_threshold > 0
     assert 0.0 < d.nodata_resolve_threshold < 1.0
-    assert d.method in ("local_min", "gradient", "both")
+    assert d.method in ("local_min", "dtm", "gradient", "both")
+    if d.method == "dtm":
+        assert d.dtm is not None, "method: dtm requires an external dtm: path"
 
 
 def test_config_tiling_section():

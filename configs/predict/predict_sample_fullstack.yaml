@@ -8,7 +8,7 @@
 #   --image --dsm --dtm --weights --threshold --out
 
 # Trained checkpoint (.pt). Architecture is inferred from the checkpoint.
-weights: experiments/crown_ms_full_band_stack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/ft_best.pt
+weights: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/ft_best.pt
 
 # Model input channels manifest. null → <weights_dir>/channels.json
 # (written by scripts/train.py next to the checkpoint).
@@ -17,22 +17,21 @@ channels: null
 # Per-channel normalisation stats the model was trained with
 # (the train config's dataset.path + /train_stats.json). Must contain a
 # "names" field. null → no normalisation.
-stats: out/crown_ms_1407/train_stats.json
+stats: sample_exp/sample_train_stats.json
+#stats: out/crown_ms_1407/train_stats.json
 
 # Raw absolute-elevation DSM. Only required when the model's channels
 # include 'ndsm'.
 dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
 
 # Optional external DTM. When set, the nDSM is DSM - DTM (apply_dsm_mask
-# `method: dtm`) instead of DSM minus a multi-scale minimum filter, which
-# removes real terrain slope rather than approximating it. Must cover the
-# scene; it is reprojected onto the target grid, so its own GSD may differ.
-# Only used when preprocess.enabled is true.
-dtm: null
-#dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif
-
+# `method: dtm`) instead of DSM minus a minimum filter.
+dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
+#dtm : null
 # Pre-stacked scene image ([0,1] float32 with band descriptions, as written
-# by rasterize_crowns.py). Only used when preprocess.enabled is false.
+# by rasterize_crowns.py).
+# ! Only used when preprocess.enabled is false !
+# eg a 7 band stack of RGB + MS4
 image: null
 
 # Preprocessing of raw inputs — sources MUST match the preprocess config the
@@ -44,9 +43,9 @@ preprocess:
     - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
       bands: [1, 2, 3]
       names: [red, green, blue]
-    # - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
-    #   bands: [1, 2, 3, 4]
-    #   names: [green_ms, red_ms, rededge, nir]   # native M3M order
+    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
+      bands: [1, 2, 3, 4]
+      names: [green_ms, red_ms, rededge, nir]   # native M3M order
   windows: [500]     # dsm_mask.windows — minimum-filter sizes for nDSM (ignored when dtm: is set)
   max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
   dir: null               # prep cache; null → datafiles/process_out/predict_prep
