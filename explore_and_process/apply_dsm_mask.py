@@ -128,8 +128,23 @@ def normalize_ndsm(
     ceiling = min(p95, max_ndsm_height)
     print(f"nDSM ceiling: {ceiling:.2f} m  (p95={p95:.2f} m, cap={max_ndsm_height} m)")
     ndsm_norm = np.clip(ndsm, 0.0, ceiling) / ceiling
-    ndsm_norm[np.isnan(dsm)] = 0.0
+    # nDSM is NaN wherever the DSM *or* the external DTM has a gap — both mean
+    # "no height information", and neither may leak a NaN into the channel.
+    ndsm_norm[np.isnan(ndsm) | np.isnan(dsm)] = 0.0
     return ndsm_norm.astype(np.float32)
+
+
+def height_data_valid(ndsm: np.ndarray | None, dsm: np.ndarray) -> np.ndarray:
+    """Pixels where the height detector actually had data.
+
+    A DTM gap leaves nDSM NaN while the DSM is perfectly valid; the resulting
+    ground_conf of 0.0 is then indistinguishable from "confidently canopy", so
+    such pixels must stay noData instead of being resolved to crown.
+    """
+    valid = ~np.isnan(dsm)
+    if ndsm is not None:
+        valid &= ~np.isnan(ndsm)
+    return valid
 
 
 def detect_ground_local_min(
@@ -177,6 +192,76 @@ def _block_ground_candidates(
     return picked
 
 
+def _local_ground_residual(
+    resid: np.ndarray,
+    blocks: int,
+    quantile: float,
+    min_valid_frac: float,
+    max_correction: float,
+    smooth_sigma: float,
+    ground_band: float,
+) -> tuple[np.ndarray, int]:
+    """Low-frequency map of how far bare ground still sits off zero.
+
+    A single plane only removes the first-order mis-levelling; a DTM from a
+    different survey (different date, coarser GSD) stays locally warped against
+    the DSM by a few decimetres. This estimates that warp on a coarse block
+    grid and returns it at full resolution.
+
+    Blocks whose low quantile lands above ``max_correction`` saw no bare ground
+    (closed canopy, buildings) and are dropped, then filled from their
+    neighbours by the NaN-aware Gaussian below — so canopy is never flattened.
+
+    Returns:
+        correction: same shape as resid, clipped to +-max_correction
+        n_blocks:   how many blocks contributed a direct estimate
+    """
+    h, w = resid.shape
+    row_edges = np.array_split(np.arange(h), min(blocks, h))
+    col_edges = np.array_split(np.arange(w), min(blocks, w))
+    coarse = np.full((len(row_edges), len(col_edges)), np.nan, dtype=np.float32)
+
+    for i, rows in enumerate(row_edges):
+        for j, cols in enumerate(col_edges):
+            block = resid[np.ix_(rows, cols)]
+            valid = block[np.isfinite(block)]
+            if valid.size < min_valid_frac * block.size:
+                continue
+            # The low quantile finds the ground population even in a block that
+            # is mostly canopy, but sits ~1.6 sigma below its centre. Taking the
+            # median of everything within +-ground_band of it recovers the true
+            # ground level without dragging canopy in.
+            anchor = float(np.percentile(valid, quantile))
+            near = valid[np.abs(valid - anchor) <= ground_band]
+            level = float(np.median(near)) if near.size else anchor
+            if abs(level) <= max_correction:
+                coarse[i, j] = level
+
+    n_blocks = int(np.isfinite(coarse).sum())
+    if n_blocks == 0:
+        return np.zeros_like(resid), 0
+
+    # NaN-aware Gaussian: smooth values and weights separately, then divide.
+    # This both denoises the estimates and extrapolates into the dropped blocks.
+    filled = np.where(np.isfinite(coarse), coarse, 0.0).astype(np.float32)
+    weight = np.isfinite(coarse).astype(np.float32)
+    num = gaussian_filter(filled, sigma=smooth_sigma, mode="nearest")
+    den = gaussian_filter(weight, sigma=smooth_sigma, mode="nearest")
+    smooth = num / np.maximum(den, 1e-6)
+    # Blocks too far from any estimate fall back to the scene median
+    smooth[den < 1e-6] = float(np.nanmedian(coarse))
+    smooth = np.clip(smooth, -max_correction, max_correction)
+
+    correction = np.empty((h, w), dtype=np.float32)
+    for i, rows in enumerate(row_edges):
+        for j, cols in enumerate(col_edges):
+            correction[np.ix_(rows, cols)] = smooth[i, j]
+    # Block edges would show up as steps in the nDSM without this
+    px_sigma = smooth_sigma * max(h / len(row_edges), w / len(col_edges)) / 2.0
+    correction = gaussian_filter(correction, sigma=px_sigma, mode="nearest")
+    return correction, n_blocks
+
+
 def align_dtm_to_dsm(
     dsm: np.ndarray,
     dtm: np.ndarray,
@@ -185,6 +270,13 @@ def align_dtm_to_dsm(
     ground_quantile: float = 2.0,
     min_candidates: int = 50,
     min_extent: float = 0.25,
+    local_refine: bool = True,
+    local_blocks: int = 24,
+    local_quantile: float = 5.0,
+    local_min_valid_frac: float = 0.2,
+    local_max_correction: float = 1.0,
+    local_smooth_sigma: float = 1.0,
+    local_ground_band: float = 0.5,
 ) -> tuple[np.ndarray, dict]:
     """Vertically co-register an external DTM to the DSM.
 
@@ -197,9 +289,15 @@ def align_dtm_to_dsm(
     and returns the DTM lifted onto the DSM's ground level. Both inputs must
     already be on the same grid. The DTM on disk is never touched.
 
+    A plane alone still leaves bare ground a few decimetres off zero, varying
+    across the scene, because the two surveys are warped against each other.
+    With local_refine that residual warp is estimated on a coarse block grid
+    and removed on top of the plane (see _local_ground_residual).
+
     Returns:
         aligned:  DTM + correction surface, same shape/dtype as the input
-        info:     {"mode", "mean_shift", "tilt", "n_candidates"} for logging
+        info:     {"mode", "mean_shift", "tilt", "n_candidates",
+                  "local_rms", "local_blocks"} for logging
     """
     diff = (dsm - dtm).astype(np.float32)
     diff[np.isnan(dsm) | np.isnan(dtm)] = np.nan
@@ -253,6 +351,8 @@ def align_dtm_to_dsm(
         tilt = 0.0
         n_used = int(pool.size)
 
+    # Plausibility check on the plane alone: a datum blunder shows up here, and
+    # the local refinement is bounded to +-local_max_correction anyway.
     peak = float(np.nanmax(np.abs(surface)))
     if peak > max_shift:
         raise ValueError(
@@ -261,11 +361,28 @@ def align_dtm_to_dsm(
             "vertical datums or the DTM does not belong to this scene"
         )
 
+    local_rms = 0.0
+    n_local_blocks = 0
+    if local_refine:
+        local, n_local_blocks = _local_ground_residual(
+            diff - surface,
+            blocks=local_blocks,
+            quantile=local_quantile,
+            min_valid_frac=local_min_valid_frac,
+            max_correction=local_max_correction,
+            smooth_sigma=local_smooth_sigma,
+            ground_band=local_ground_band,
+        )
+        surface = surface + local
+        local_rms = float(np.sqrt(np.mean(local**2)))
+
     info = {
         "mode": mode,
         "mean_shift": float(np.nanmean(np.where(np.isfinite(diff), surface, np.nan))),
         "tilt": float(tilt),
         "n_candidates": n_used,
+        "local_rms": local_rms,
+        "local_blocks": n_local_blocks,
     }
     return (dtm + surface).astype(dtm.dtype), info
 
@@ -276,6 +393,7 @@ def detect_ground_dtm(
     height_threshold: float,
     height_ramp: float | None = None,
     max_shift: float = 20.0,
+    local_refine: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Ground detection using an external DTM: nDSM = DSM - DTM.
 
@@ -288,12 +406,19 @@ def detect_ground_dtm(
         confidence: float32 [0,1], higher = more likely ground
         ndsm:       raw nDSM (m) for diagnostics and nDSM output
     """
-    dtm, align_info = align_dtm_to_dsm(dsm, dtm, max_shift=max_shift)
+    dtm, align_info = align_dtm_to_dsm(
+        dsm, dtm, max_shift=max_shift, local_refine=local_refine
+    )
     print(
         f"  DTM alignment ({align_info['mode']}): mean shift "
         f"{align_info['mean_shift']:+.2f} m, tilt {align_info['tilt']:.2f} m "
         f"across scene, {align_info['n_candidates']:,} ground candidates"
     )
+    if local_refine:
+        print(
+            f"  Local refinement: RMS {align_info['local_rms']:.2f} m over "
+            f"{align_info['local_blocks']:,} blocks with visible ground"
+        )
 
     ndsm = (dsm - dtm).astype(np.float32)
     # NaN where either input is NaN
@@ -358,7 +483,7 @@ def apply_soft_blend(
     ground_conf: np.ndarray,
     nodata_resolve_threshold: float,
     crown_resolve_threshold: float | None = None,
-    dsm_valid: np.ndarray | None = None,
+    height_valid: np.ndarray | None = None,
 ) -> np.ndarray:
     """Soft-blend ground confidence into the crown mask.
 
@@ -366,7 +491,8 @@ def apply_soft_blend(
     noData pixels (255): resolved to (1 - ground_conf) when
       ground_conf >= nodata_resolve_threshold (confident ground), or when
       ground_conf <= crown_resolve_threshold (confident crown, requires
-      dsm_valid there — NaN-DSM pixels also carry conf 0.0 and must stay 255).
+      height_valid there — pixels without DSM or DTM data also carry conf 0.0
+      and must stay 255).
       The gray zone in between is kept at 255.
     """
     if crown_resolve_threshold is not None and not (
@@ -393,8 +519,8 @@ def apply_soft_blend(
     # ohne Polygon) wird als Krone gelabelt statt vom Loss ausgeschlossen
     if crown_resolve_threshold is not None:
         resolve_crown = nodata & (ground_conf <= crown_resolve_threshold)
-        if dsm_valid is not None:
-            resolve_crown &= dsm_valid
+        if height_valid is not None:
+            resolve_crown &= height_valid
         result[resolve_crown] = 1.0 - ground_conf[resolve_crown]
     return result
 
@@ -481,6 +607,7 @@ def main(args):
         mask_suffix = f"{ht_tag}{gr_tag}_{args.combine}"
 
     height_ramp = args.get("height_ramp", None)
+    dtm_local_refine = bool(args.get("dtm_local_refine", True))
     crown_resolve_threshold = args.get("crown_resolve_threshold", None)
     if height_ramp is not None:
         mask_suffix += f"_hr{height_ramp}"
@@ -527,7 +654,9 @@ def main(args):
 
     if args.method == "dtm":
         print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold, height_ramp)
+        lm_bin, lm_conf, ndsm = detect_ground_dtm(
+            dsm, dtm, args.height_threshold, height_ramp, local_refine=dtm_local_refine
+        )
 
     if args.method in ("local_min", "both") and not use_external_dtm:
         print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m  ramp={height_ramp}")
@@ -535,7 +664,9 @@ def main(args):
 
     if args.method == "both" and use_external_dtm:
         print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        lm_bin, lm_conf, ndsm = detect_ground_dtm(dsm, dtm, args.height_threshold, height_ramp)
+        lm_bin, lm_conf, ndsm = detect_ground_dtm(
+            dsm, dtm, args.height_threshold, height_ramp, local_refine=dtm_local_refine
+        )
 
     if args.method in ("local_min", "dtm", "both") and ndsm is not None:
         valid_ndsm = ndsm[~np.isnan(ndsm)]
@@ -593,18 +724,21 @@ def main(args):
     # --- Apply soft ground blend to crown mask --------------------------------
     n_crown_dampened = int(np.sum((mask >= 0.0) & (mask < 255.0) & (ground_conf > 0.0)))
     nodata_before = mask == 255.0
-    dsm_valid = ~np.isnan(dsm)
+    height_valid = height_data_valid(ndsm, dsm)
+    n_no_height = int(np.sum(~height_valid & ~np.isnan(dsm)))
+    if n_no_height:
+        print(f"Pixels with DSM but no DTM data (kept as noData): {n_no_height:,}")
     mask = apply_soft_blend(
         mask,
         ground_conf,
         args.nodata_resolve_threshold,
         crown_resolve_threshold=crown_resolve_threshold,
-        dsm_valid=dsm_valid,
+        height_valid=height_valid,
     )
     n_ground_resolved = int(np.sum(nodata_before & (ground_conf >= args.nodata_resolve_threshold)))
     n_crown_resolved = 0
     if crown_resolve_threshold is not None:
-        n_crown_resolved = int(np.sum(nodata_before & dsm_valid & (ground_conf <= crown_resolve_threshold)))
+        n_crown_resolved = int(np.sum(nodata_before & height_valid & (ground_conf <= crown_resolve_threshold)))
     n_crown  = int(np.sum((mask > 0) & (mask < 255)))
     n_ground = int(np.sum(mask == 0.0))
     n_nodata = int(np.sum(mask == 255.0))

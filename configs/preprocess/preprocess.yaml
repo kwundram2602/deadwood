@@ -42,13 +42,18 @@ dsm_mask:
   # Set explicitly here only to override the default locations.
   dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
   #dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
+  # true (Standard) → nach der globalen Ebenen-Kalibrierung wird der verbliebene
+  # lokale Verzug zwischen DSM und DTM blockweise geschätzt und entfernt (auf ±1 m
+  # begrenzt, Blöcke ohne sichtbaren Boden werden interpoliert). Ohne das liegen
+  # Bodenpixel je nach Ort um bis zu ±0.3 m neben 0. Nur bei method: dtm/both wirksam.
+  dtm_local_refine: true
   method: dtm          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
   windows: [500]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform
-  height_threshold: 1.7 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
+  height_threshold: 0.5 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
   # Breite der smoothstep-Rampe (m) oberhalb von height_threshold: ground_conf fällt von 1 (bei ht) auf 0 (bei ht + height_ramp).
   # Schmalere Rampe = bimodalere Labels (weniger diffuse Zwischenwerte). null → Rampe = height_threshold (altes Verhalten, 0 bei 2*ht)
-  height_ramp: 0.9
+  height_ramp: 1.5
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten. wird bei method: gradient oder both genutzt
   gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert.Wird bei method: gradient oder both genutzt
   # nDSM-Obergrenze für die Normalisierung des DSM-Werts in der DSM-Maske; Pixel mit nDSM > dieser Höhe werden auf 1 gesetzt, Bodenpixel auf 0, und dazwischenliegende Werte entsprechend skaliert. Wird bei method: local_min oder both genutzt.
@@ -78,7 +83,7 @@ tiling:
 
 split:
   input: out/crown_ms_patches   # output of tiling stage
-  output: out/crown_fullstack          # train/val/test split destination; train_stats.json written here
+  output: out/crown_rgb_ms_hr1.5_ht_0.5          # train/val/test split destination; train_stats.json written here
   train_ratio: 0.7
   val_ratio: 0.2
   seed: 42

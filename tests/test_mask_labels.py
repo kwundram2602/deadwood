@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from explore_and_process.apply_dsm_mask import (
     _smoothstep_confidence,
     apply_soft_blend,
+    height_data_valid,
 )
 
 NODATA = 255.0
@@ -53,16 +54,29 @@ def test_nodata_with_low_ground_conf_resolves_to_crown():
 def test_crown_resolution_skips_invalid_dsm_pixels():
     mask = np.full((1, 2), NODATA, dtype=np.float32)
     conf = np.zeros((1, 2), dtype=np.float32)  # NaN-DSM pixels get conf 0.0
-    dsm_valid = np.array([[True, False]])
+    height_valid = np.array([[True, False]])
     out = apply_soft_blend(
         mask,
         conf,
         nodata_resolve_threshold=0.4,
         crown_resolve_threshold=0.2,
-        dsm_valid=dsm_valid,
+        height_valid=height_valid,
     )
     assert out[0, 0] == 1.0
     assert out[0, 1] == NODATA
+
+
+def test_height_valid_excludes_dtm_gaps():
+    # DSM present but the external DTM has a hole -> nDSM is NaN there, so the
+    # pixel carries no height information and must not be resolved to crown.
+    dsm = np.array([[10.0, 10.0, np.nan]], dtype=np.float32)
+    ndsm = np.array([[2.0, np.nan, np.nan]], dtype=np.float32)
+    assert height_data_valid(ndsm, dsm).tolist() == [[True, False, False]]
+
+
+def test_height_valid_without_ndsm_falls_back_to_dsm():
+    dsm = np.array([[10.0, np.nan]], dtype=np.float32)
+    assert height_data_valid(None, dsm).tolist() == [[True, False]]
 
 
 def test_crown_resolution_disabled_by_default():

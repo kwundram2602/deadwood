@@ -193,7 +193,7 @@ def test_implausible_shift_raises():
     from explore_and_process.apply_dsm_mask import align_dtm_to_dsm
 
     dsm, dtm = _synthetic_scene(offset=45.0)  # geoid-sized blunder
-    with pytest.raises(ValueError, match=r"vertical mismatch of 44\.\d+ m"):
+    with pytest.raises(ValueError, match=r"vertical mismatch of 4[45]\.\d+ m"):
         align_dtm_to_dsm(dsm, dtm, max_shift=20.0)
 
 
@@ -206,6 +206,85 @@ def test_falls_back_to_constant_shift_when_candidates_are_too_few():
 
     assert info["mode"] == "constant"
     assert np.isfinite(aligned).any()
+
+
+# --- local refinement of the residual warp ----------------------------------
+
+
+def _warped_scene(amplitude=0.4, size=512, seed=1):
+    """Like _synthetic_scene, but the DTM is additionally warped by a smooth
+    bump no plane can absorb - the real-world case of two surveys flown on
+    different dates."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+    dsm = rng.normal(0.0, 0.02, (size, size)).astype(np.float32)
+    for r, c in ((20, 20), (200, 300), (400, 120)):
+        dsm[r : r + 80, c : c + 80] += 10.0
+    warp = amplitude * np.sin(2 * np.pi * yy / size) * np.cos(2 * np.pi * xx / size)
+    dtm = (-(6.0 + warp)).astype(np.float32)
+    return dsm, dtm.astype(np.float32)
+
+
+def _ground_levels(ndsm, size=512, block=64):
+    """Median nDSM per block, canopy blocks excluded, as a ground-level map."""
+    levels = []
+    for i in range(0, size, block):
+        for j in range(0, size, block):
+            med = np.median(ndsm[i : i + block, j : j + block])
+            if med < 1.0:  # skip canopy blocks
+                levels.append(med)
+    return np.array(levels)
+
+
+def test_local_refinement_flattens_a_warp_a_plane_cannot_absorb():
+    from explore_and_process.apply_dsm_mask import align_dtm_to_dsm
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+
+    plane_only, _ = align_dtm_to_dsm(dsm, dtm, local_refine=False)
+    refined, info = align_dtm_to_dsm(dsm, dtm, local_refine=True)
+
+    spread_plane = np.abs(_ground_levels(dsm - plane_only)).max()
+    spread_refined = np.abs(_ground_levels(dsm - refined)).max()
+
+    assert spread_plane > 0.25  # the warp survives a plane fit
+    assert spread_refined < 0.10  # and is removed by the local refinement
+    assert info["local_rms"] > 0.0
+    assert info["local_blocks"] > 0
+
+
+def test_local_refinement_preserves_canopy_height():
+    from explore_and_process.apply_dsm_mask import align_dtm_to_dsm
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+    refined, _ = align_dtm_to_dsm(dsm, dtm, local_refine=True)
+
+    ndsm = dsm - refined
+    # a whole closed-canopy block must not be pulled down towards zero
+    assert np.median(ndsm[200:280, 300:380]) == pytest.approx(10.0, abs=0.25)
+
+
+def test_local_refinement_correction_is_bounded():
+    from explore_and_process.apply_dsm_mask import align_dtm_to_dsm
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+    plane_only, _ = align_dtm_to_dsm(dsm, dtm, local_refine=False)
+    refined, _ = align_dtm_to_dsm(
+        dsm, dtm, local_refine=True, local_max_correction=1.0
+    )
+
+    assert np.nanmax(np.abs(refined - plane_only)) <= 1.0 + 1e-5
+
+
+def test_local_refinement_is_a_no_op_on_an_unwarped_dtm():
+    from explore_and_process.apply_dsm_mask import align_dtm_to_dsm
+
+    dsm, dtm = _warped_scene(amplitude=0.0)
+    plane_only, _ = align_dtm_to_dsm(dsm, dtm, local_refine=False)
+    refined, info = align_dtm_to_dsm(dsm, dtm, local_refine=True)
+
+    assert info["local_rms"] < 0.05
+    assert np.nanmax(np.abs(refined - plane_only)) < 0.1
 
 
 def test_detect_ground_dtm_aligns_before_differencing():

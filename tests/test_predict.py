@@ -314,6 +314,19 @@ def test_normalize_ndsm_zeroes_dsm_nodata():
     assert out[0, 0] == 0.0
 
 
+def test_normalize_ndsm_zeroes_dtm_nodata():
+    from explore_and_process.apply_dsm_mask import normalize_ndsm
+
+    # DSM is valid but the external DTM has a gap -> nDSM NaN; the channel must
+    # never carry NaN into the tiles.
+    ndsm = np.full((4, 4), 8.0, dtype=np.float32)
+    ndsm[0, 0] = np.nan
+    dsm = np.ones_like(ndsm)
+    out = normalize_ndsm(ndsm, dsm, max_ndsm_height=16.0)
+    assert out[0, 0] == 0.0
+    assert np.isfinite(out).all()
+
+
 # ------------------------------------------------------- architecture inference
 def _fake_state(in_ch=5, classes=1, bottleneck=True):
     import torch

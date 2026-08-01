@@ -1,4 +1,4 @@
-model_name: crown_rgb_ms
+model_name: crown_rgb
 run_tag: hr1.5_ht_0.5      # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
 output_dir: experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
@@ -12,7 +12,7 @@ dataset:
   #   RGB + nDSM:      [red, green, blue, ndsm]
   #   MS4 + nDSM:      [green_ms, red_ms, rededge, nir, ndsm]
   #   Full merge:      [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
-  input_channels: [red, green, blue, green_ms, red_ms, rededge, nir]
+  input_channels: [red, green, blue]
   batch_size: 4
   num_workers: 4
 
