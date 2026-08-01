@@ -29,3 +29,4 @@ wandb
 sample_exp/**/*.tif
 experiments/
 deadwood_notes/
+**/*.aux.xml
