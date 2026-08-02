@@ -1,0 +1,15 @@
+align:
+  reference: datafiles/process_out/masks/crown_mask.tif
+  src_dir: datafiles/OM_domAligned
+  out_dir: datafiles/process_out/timeseries
+  force: false
+
+coreg:
+  # Reference date for the shift estimate: the scene the crown mask came from.
+  reference_date: null        # null = use the latest aligned date
+  # Stable tiles in map coordinates (EPSG:32736) — pick hard, non-vegetated
+  # features. Filled in after the first visual inspection of the AOI.
+  tiles: []
+  tile_size_px: 512
+  max_shift_m: 0.15
+  report: datafiles/process_out/timeseries/coreg_report.csv
