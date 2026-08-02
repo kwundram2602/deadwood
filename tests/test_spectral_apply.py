@@ -8,7 +8,12 @@ import rasterio
 from rasterio.transform import from_origin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from deadwood_spectral.apply import aggregate_objects, predict_scene, window_table  # noqa: E402
+from deadwood_spectral.apply import (  # noqa: E402
+    aggregate_objects,
+    assert_labels_match_objects,
+    predict_scene,
+    window_table,
+)
 from deadwood_spectral.grid import ReferenceGrid  # noqa: E402
 
 GRID = ReferenceGrid(16, 16, from_origin(1000.0, 2000.0, 1.0, 1.0), rasterio.crs.CRS.from_epsg(32736))
@@ -220,3 +225,31 @@ def test_class_raster_from_proba_marks_nonfinite_pixels_unknown():
 
     assert class_raster[1, 1] == 255
     assert class_raster[0, 0] == 0
+
+
+def test_assert_labels_match_objects_passes_for_the_same_cc_label_call():
+    from skimage.measure import label as cc_label
+
+    class_raster = np.zeros(GRID.shape, dtype=np.uint8)
+    class_raster[2:8, 2:8] = 2
+    prob = np.zeros((3, *GRID.shape), dtype=np.float32)
+    prob[2, 2:8, 2:8] = 0.9
+    objects = aggregate_objects(class_raster, prob, GRID)
+
+    labels = cc_label(class_raster == 2, connectivity=2)
+    assert_labels_match_objects(labels, objects)  # must not raise
+
+
+def test_assert_labels_match_objects_catches_a_diverged_label_raster():
+    class_raster = np.zeros(GRID.shape, dtype=np.uint8)
+    class_raster[2:8, 2:8] = 2
+    prob = np.zeros((3, *GRID.shape), dtype=np.float32)
+    prob[2, 2:8, 2:8] = 0.9
+    objects = aggregate_objects(class_raster, prob, GRID)
+
+    # A labels raster that disagrees on pixel count for object_id 1.
+    bad_labels = np.zeros(GRID.shape, dtype=np.int32)
+    bad_labels[2:7, 2:8] = 1  # one row short of the real object
+
+    with pytest.raises(ValueError, match="disagrees"):
+        assert_labels_match_objects(bad_labels, objects)

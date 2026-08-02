@@ -3,6 +3,7 @@ import sys
 
 import geopandas as gpd
 import numpy as np
+import pytest
 import rasterio
 from shapely.geometry import box
 
@@ -62,3 +63,36 @@ def test_cycles_are_evaluated_in_sorted_key_order():
     masks = {"2025_26": _cycle(True, True), "2023_24": _cycle(True, True)}
     result = first_dead_cycle(masks, _objects(), _labels()).set_index("object_id")
     assert result.loc[1, "first_dead_cycle"] == "2023_24"
+
+
+def _validity(object_1_valid, object_2_valid):
+    valid = np.ones((4, 4), dtype=bool)
+    valid[0, 0] = object_1_valid
+    valid[2, 2] = object_2_valid
+    return valid
+
+
+def test_low_coverage_in_first_dead_cycle_is_flagged():
+    # Object 1 is reported dead in "a" (its footprint pixel is True there),
+    # but that pixel was actually nodata in "a" (validity False), so the
+    # "dead" verdict rests on no real observation and must be flagged.
+    masks = {"a": _cycle(True, True), "b": _cycle(True, True)}
+    validity_masks = {"a": _validity(False, True), "b": _validity(True, True)}
+    result = first_dead_cycle(
+        masks, _objects(), _labels(), validity_masks=validity_masks
+    ).set_index("object_id")
+
+    assert result.loc[1, "first_dead_cycle"] == "a"
+    assert result.loc[1, "first_dead_cycle_coverage"] == pytest.approx(0.0)
+    assert bool(result.loc[1, "low_confidence"]) is True
+
+    # Object 2's footprint was fully observed in "a" — not flagged.
+    assert result.loc[2, "first_dead_cycle_coverage"] == pytest.approx(1.0)
+    assert bool(result.loc[2, "low_confidence"]) is False
+
+
+def test_no_validity_masks_leaves_coverage_unknown_not_flagged():
+    masks = {"a": _cycle(True, True)}
+    result = first_dead_cycle(masks, _objects(), _labels()).set_index("object_id")
+    assert np.isnan(result.loc[1, "first_dead_cycle_coverage"])
+    assert bool(result.loc[1, "low_confidence"]) is False

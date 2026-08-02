@@ -14,7 +14,12 @@ from omegaconf import OmegaConf
 from skimage.measure import label as cc_label
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from deadwood_spectral.apply import DEADWOOD_CODE, aggregate_objects, predict_scene  # noqa: E402
+from deadwood_spectral.apply import (  # noqa: E402
+    DEADWOOD_CODE,
+    aggregate_objects,
+    assert_labels_match_objects,
+    predict_scene,
+)
 from deadwood_spectral.classify import load_model, variant_spec  # noqa: E402
 from deadwood_spectral.grid import load_reference_grid  # noqa: E402
 from deadwood_spectral.retrospect import first_dead_cycle  # noqa: E402
@@ -86,10 +91,16 @@ def main() -> None:
         return
 
     labels = cc_label(class_raster == DEADWOOD_CODE, connectivity=2)
+    # aggregate_objects computed its own connected-component labels internally
+    # and does not expose them; this recomputation is only guaranteed to line
+    # up with objects.object_id because both calls are deterministic over the
+    # same class_raster. Pin that coupling explicitly rather than trust it.
+    assert_labels_match_objects(labels, objects)
     out_dir = Path(cfg.retrospect.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     masks = {}
+    validity_masks = {}
     for cycle_name, cycle_dates in cfg.retrospect.cycles.items():
         cycle_dates = [str(d) for d in cycle_dates]
         if len(cycle_dates) != len(variant_dates):
@@ -112,9 +123,12 @@ def main() -> None:
         # vote. For an object whose footprint is mostly nodata in this cycle
         # (e.g. a cloud/shadow gap in the older imagery), that silently biases
         # the object toward "alive" instead of "unknown". This is a bonus,
-        # indicative-only product, so we don't try to represent "unknown" in
-        # the output — but we do surface it in the log rather than hide it.
+        # indicative-only product, so we don't invent an "unknown" verdict —
+        # but the coverage is both logged here and threaded into
+        # mortality_timing.csv below (first_dead_cycle_coverage/low_confidence)
+        # so a reader of the CSV sees the uncertainty without the log.
         valid = cycle_class != _NODATA_CLASS
+        validity_masks[str(cycle_name)] = valid
         for object_id in np.unique(labels[labels > 0]):
             footprint = labels == object_id
             n_pixels = int(footprint.sum())
@@ -126,7 +140,7 @@ def main() -> None:
                 )
         logger.info("retrospect cycle %s done", cycle_name)
 
-    timing = first_dead_cycle(masks, objects, labels)
+    timing = first_dead_cycle(masks, objects, labels, validity_masks=validity_masks)
     timing.to_csv(out_dir / "mortality_timing.csv", index=False)
     logger.info("mortality timing -> %s", out_dir / "mortality_timing.csv")
 

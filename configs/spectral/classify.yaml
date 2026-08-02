@@ -53,5 +53,11 @@ apply:
 
 retrospect:
   enabled: false
+  # Keys must be zero-padded "YYYY_YY" season labels (e.g. "2023_24") sorted
+  # in chronological order. first_dead_cycle ranks cycles by plain
+  # lexicographic sort of these keys, and that only agrees with chronological
+  # order when they're zero-padded this way — e.g. "2023_9" would sort after
+  # "2023_10". Keys that don't match this shape log a warning rather than
+  # failing outright, but the resulting date may be silently wrong.
   cycles: {}
   out_dir: out/spectral/retrospect

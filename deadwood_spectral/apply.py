@@ -169,3 +169,32 @@ def aggregate_objects(
         )
     logger.info("aggregated %d deadwood object(s)", len(records))
     return gpd.GeoDataFrame(records, geometry="geometry", crs=grid.crs)[columns]
+
+
+def assert_labels_match_objects(labels: np.ndarray, objects: gpd.GeoDataFrame) -> None:
+    """Pin the coupling between an externally computed label raster and objects.
+
+    `aggregate_objects` computes its own connected-component labels internally
+    and does not expose them; callers who need a label raster that lines up
+    with `objects.object_id` (e.g. `deadwood_spectral.retrospect.first_dead_cycle`)
+    must recompute one with the exact same `cc_label(class_raster ==
+    DEADWOOD_CODE, connectivity=2)` call. That agreement is only true because
+    both calls are deterministic over identical input — nothing enforces it,
+    so a future change to either call (e.g. a different connectivity) would
+    silently misattribute every object's data to the wrong footprint.
+
+    This does not re-derive or compare masks pixel-for-pixel (aggregate_objects
+    does not return them); it checks the cheap invariant that is available:
+    each object's pixel count in the externally computed `labels` raster must
+    equal the `n_pixels` aggregate_objects recorded for that object_id. Raises
+    ValueError on any mismatch.
+    """
+    for object_id, expected_pixels in zip(objects["object_id"], objects["n_pixels"]):
+        actual_pixels = int((labels == int(object_id)).sum())
+        if actual_pixels != int(expected_pixels):
+            raise ValueError(
+                f"labels raster disagrees with aggregate_objects for object "
+                f"{object_id}: recomputed connected-component label has "
+                f"{actual_pixels} pixel(s), aggregate_objects recorded "
+                f"{expected_pixels}. The two cc_label calls have diverged."
+            )
