@@ -216,6 +216,53 @@ def test_draw_samples_is_deterministic_for_a_seed(tmp_path):
     assert a.equals(b)
 
 
+def test_draw_samples_deadwood_attribution_survives_son_overlap(tmp_path):
+    # Mirrors real field data: soff 4389 x son 4336 overlap by 76.9% of the
+    # soff crown. rasterize() resolves overlaps last-shape-wins, so if the
+    # deadwood pool were attributed off a raster burned from the *full* gdf
+    # (son + soff together), most of the soff tree's pixels would silently
+    # pick up the overlapping son tree's id/species/group_id and the grouped
+    # CV guarantee (no tree's pixels split across train/test) would break.
+    rows = _default_rows() + [
+        ("9001", "soff", 100, "nc", "acanig", 1005.0, 1905.0, 8.0),
+        ("9002", "son", 100, "nc", "diccin", 1007.0, 1905.0, 8.0),
+    ]
+    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
+    crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
+    pools = build_pools(crown, valid, gdf, GRID)
+    df = draw_samples(pools, gdf, GRID)
+    dead = df[df["class_name"] == "deadwood"]
+
+    soff_tree_ids = set(gdf.loc[gdf["crown_category"] == "soff", "tree_id"])
+    assert dead["tree_id"].isin(soff_tree_ids).all()
+    assert not dead["group_id"].str.contains("tree:9002").any()
+    # the overlapped soff tree must still show up correctly attributed to itself
+    assert (dead["tree_id"] == "9001").any()
+    assert (dead.loc[dead["tree_id"] == "9001", "group_id"] == "tree:9001").all()
+
+
+def test_build_pools_zero_edge_buffer_skips_dilation(tmp_path):
+    # edge_buffer_m=0.0 must mean literally no dilation, not a forced 1 px
+    # floor. Row 20, col 70 sits directly below the second crown blob
+    # (rows 0-19, cols 60-99) and clear of every default-row polygon and its
+    # soff exclusion buffer: the default edge_buffer_m dilates the crown by
+    # 1 px and swallows it out of `background`; with an explicit zero buffer
+    # it must remain background.
+    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
+    pools_default = build_pools(crown, valid, gdf, GRID, edge_buffer_m=0.25)
+    pools_zero = build_pools(crown, valid, gdf, GRID, edge_buffer_m=0.0)
+    assert not pools_default["background"][20, 70]
+    assert pools_zero["background"][20, 70]
+
+
+def test_block_ids_rejects_non_positive_block_m():
+    with pytest.raises(ValueError, match="block_m"):
+        block_ids(GRID, block_m=0.0)
+    with pytest.raises(ValueError, match="block_m"):
+        block_ids(GRID, block_m=-5.0)
+
+
 def test_empty_deadwood_pool_raises(tmp_path):
     rows = [("4345", "son", 100, "nc", "diccin", 1060.0, 1910.0, 10.0)]
     gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))

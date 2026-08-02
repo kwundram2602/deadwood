@@ -129,8 +129,11 @@ def build_pools(
     soff_excluded = rasterize_polygons(soff, grid, buffer_m=abs(exclude_buffer_m)).astype(bool)
     all_polys = rasterize_polygons(gdf, grid).astype(bool)
 
-    px = max(1, int(round(abs(edge_buffer_m) / abs(grid.transform.a))))
-    crown_dilated = binary_dilation(crown, iterations=px)
+    if edge_buffer_m == 0:
+        crown_dilated = crown
+    else:
+        px = max(1, int(round(abs(edge_buffer_m) / abs(grid.transform.a))))
+        crown_dilated = binary_dilation(crown, iterations=px)
 
     living = crown & ~soff_excluded & valid
     background = ~crown_dilated & ~all_polys & ~soff_excluded & valid
@@ -143,6 +146,8 @@ def build_pools(
 
 def block_ids(grid: ReferenceGrid, block_m: float = 20.0) -> np.ndarray:
     """Integer block index per pixel, for spatially stratified subsampling."""
+    if block_m <= 0:
+        raise ValueError(f"block_m must be positive, got {block_m}")
     px = max(1, int(round(block_m / abs(grid.transform.a))))
     rows = np.arange(grid.height)[:, None] // px
     cols = np.arange(grid.width)[None, :] // px
@@ -196,7 +201,13 @@ def draw_samples(
     """
     rng = np.random.default_rng(seed)
     blocks = block_ids(grid, block_m).ravel()
-    poly_raster = rasterize_polygons(gdf, grid, values=gdf["poly_idx"]).ravel()
+    # Attribution for deadwood pixels must come from the soff subset only — the
+    # deadwood pool is exactly the eroded soff geometry, and rasterizing the full
+    # gdf (son + soff together) resolves overlaps last-shape-wins, which can hand
+    # a deadwood pixel a neighbouring LIVING tree's id, species and group_id.
+    soff_raster = rasterize_polygons(
+        gdf[gdf["crown_category"] == "soff"], grid, values=gdf.loc[gdf["crown_category"] == "soff", "poly_idx"]
+    ).ravel()
     attrs = gdf.set_index("poly_idx")
 
     dead_idx = np.flatnonzero(pools["deadwood"].ravel())
@@ -227,7 +238,7 @@ def draw_samples(
             }
         )
         if name == "deadwood":
-            poly = poly_raster[idx]
+            poly = soff_raster[idx]
             frame["tree_id"] = attrs.loc[poly, "tree_id"].to_numpy()
             frame["species"] = attrs.loc[poly, "species"].to_numpy()
             frame["certaintyLP"] = attrs.loc[poly, "certaintyLP"].to_numpy()
