@@ -1,0 +1,57 @@
+paths:
+  reference: datafiles/process_out/masks/crown_mask.tif
+  stack_dir: datafiles/process_out/timeseries
+  samples: datafiles/process_out/spectral/samples.parquet
+  ndsm: <ndsm-path>
+  out_dir: out/spectral
+  model_dir: out/spectral/model
+
+classify:
+  # Explicit list — no implicit date window. Every date here must have an
+  # aligned stack and a column in samples.parquet.
+  cycle:
+    dates:
+      - "20230824"
+      - "20230906"
+      - "20230918"
+      - "20231018"
+      - "20231103"
+      - "20231115"
+      - "20231129"
+      - "20231206"
+      - "20231219"
+      - "20240116"
+      - "20240130"
+      - "20240212"
+  # null = the highest-AUC date from the stage B separability table.
+  baseline_date: null
+  variants: [full, reduced, baseline]
+  # The field-label quality filter (certaintyLP >= 50 and coverage == 'nc')
+  # leaves only 7 of the 18 deadwood ground-truth trees on the real data — far
+  # more costly than expected. Train and compare both label sets so it stays
+  # visible whether the 11 uncertain trees carry signal or noise.
+  #   filtered = rows where quality_ok is True
+  #   all      = every row
+  label_sets: [filtered, all]
+  # The variant whose model is persisted and used by apply.py.
+  primary_variant: full
+  # The label set whose model is persisted. Six (variant x label_set) models
+  # are trained; this plus primary_variant picks the one that ships.
+  primary_label_set: filtered
+  n_splits: 5
+  n_estimators: 400
+  seed: 0
+  permutation_repeats: 5
+
+apply:
+  tile_size: 1024
+  stride: 896
+  min_object_m2: 0.5
+  prob_raster: out/spectral/deadwood_prob.tif
+  class_raster: out/spectral/deadwood_class.tif
+  objects: out/spectral/deadwood_objects.gpkg
+
+retrospect:
+  enabled: false
+  cycles: {}
+  out_dir: out/spectral/retrospect
