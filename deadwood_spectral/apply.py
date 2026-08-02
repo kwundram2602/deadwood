@@ -96,8 +96,12 @@ def predict_scene(
 
         values = matrix.to_numpy(dtype=np.float64)
         finite = np.isfinite(values).all(axis=1)
-        tile = np.zeros((height * width, N_CLASSES), dtype=np.float32)
+        # Non-finite pixels (outside the source footprint) must stay NaN, not
+        # fall back to a zero vector: argmax(zeros) picks class 0 (background),
+        # which would silently turn "unknown" into a confident prediction.
+        tile = np.full((height * width, N_CLASSES), np.nan, dtype=np.float32)
         if finite.any():
+            tile[finite] = 0.0
             predicted = model.predict_proba(values[finite])
             for column, class_label in enumerate(np.asarray(model.classes_, dtype=int)):
                 tile[finite, class_label] = predicted[:, column]

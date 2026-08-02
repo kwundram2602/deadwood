@@ -124,6 +124,44 @@ def test_predict_scene_rejects_mismatched_features(tmp_path):
         )
 
 
+def _stack_dir_with_nan_pixel(tmp_path):
+    """The regular fixture stack, with pixel (0, 0) NaN on every date.
+
+    Simulates the off-footprint area of a real aligned stack: a pixel whose
+    features can never be finite, regardless of date.
+    """
+    d = _stack_dir(tmp_path)
+    for date in DATES:
+        path = d / f"{date}_stack.tif"
+        with rasterio.open(path, "r+") as dst:
+            data = dst.read()
+            data[:, 0, 0] = np.nan
+            dst.write(data)
+    return d
+
+
+def test_predict_scene_reports_unknown_for_nonfinite_pixels(tmp_path):
+    """A pixel with non-finite features must not be a confident prediction.
+
+    Regression for the bug where invalid pixels kept an all-zero probability
+    vector and silently argmax'd to class 0 (background) downstream.
+    """
+    from deadwood_spectral.features import feature_names
+
+    features = feature_names(DATES)
+    model = _ConstantModel(features.index("ndsm"))
+    proba = predict_scene(
+        _stack_dir_with_nan_pixel(tmp_path), DATES, GRID, model, features, _ndsm(tmp_path),
+        {"per_date": True, "temporal": True, "static": True},
+        tile_size=8, stride=8,
+    )
+    # The unknown pixel: no class holds any probability mass at all.
+    assert np.all(np.isnan(proba[:, 0, 0]))
+    # Distinguishable from an ordinary finite pixel, which still sums to 1.
+    assert np.isfinite(proba[:, 0, 1]).all()
+    assert proba[:, 0, 1].sum() == pytest.approx(1.0, abs=1e-5)
+
+
 def test_aggregate_objects_finds_one_blob():
     class_raster = np.zeros(GRID.shape, dtype=np.uint8)
     class_raster[2:8, 2:8] = 2
@@ -162,3 +200,23 @@ def test_aggregate_objects_carries_mean_height():
     ndsm = np.full(GRID.shape, 5.0, dtype=np.float32)
     objects = aggregate_objects(class_raster, prob, GRID, ndsm=ndsm)
     assert objects["mean_height_m"].iloc[0] == pytest.approx(5.0, abs=1e-6)
+
+
+def test_class_raster_from_proba_marks_nonfinite_pixels_unknown():
+    """Entrypoint-level regression: NaN pixels must become 255, not 0.
+
+    scripts/spectral_apply.py derives the class raster from the probability
+    raster via argmax. A pixel whose features were non-finite carries NaN in
+    every class channel; that must map to the 255 nodata sentinel the class
+    raster's GeoTIFF profile declares, not to class 0 (background).
+    """
+    from scripts.spectral_apply import class_raster_from_proba
+
+    proba = np.zeros((3, 4, 4), dtype=np.float32)
+    proba[0] = 1.0  # confident background everywhere, before the NaN patch
+    proba[:, 1, 1] = np.nan  # simulates an off-footprint pixel
+
+    class_raster = class_raster_from_proba(proba)
+
+    assert class_raster[1, 1] == 255
+    assert class_raster[0, 0] == 0

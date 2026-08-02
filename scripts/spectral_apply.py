@@ -19,6 +19,23 @@ from deadwood_spectral.grid import load_reference_grid  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+_NODATA_CLASS = 255
+
+
+def class_raster_from_proba(proba: np.ndarray) -> np.ndarray:
+    """argmax over classes; non-finite (off-footprint) pixels stay unknown.
+
+    Precedent: scripts/predict.py's `binarize` sets invalid pixels to a 255
+    sentinel via an explicit valid mask rather than letting them fall out of
+    an argmax. `proba` already carries NaN at pixels predict_scene could not
+    classify, so validity is read straight off it rather than reconstructed
+    from a separate source.
+    """
+    valid = np.isfinite(proba).all(axis=0)
+    out = np.full(proba.shape[1:], _NODATA_CLASS, dtype=np.uint8)
+    out[valid] = np.argmax(proba[:, valid], axis=0).astype(np.uint8)
+    return out
+
 
 def _write(path, data, grid, dtype, nodata):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -48,10 +65,10 @@ def main() -> None:
         cfg.paths.stack_dir, variant_dates, grid, model, features, cfg.paths.ndsm, switches,
         tile_size=int(cfg.apply.tile_size), stride=int(cfg.apply.stride),
     )
-    class_raster = proba.argmax(axis=0).astype(np.uint8)
+    class_raster = class_raster_from_proba(proba)
 
     _write(cfg.apply.prob_raster, proba, grid, "float32", np.nan)
-    _write(cfg.apply.class_raster, class_raster, grid, "uint8", 255)
+    _write(cfg.apply.class_raster, class_raster, grid, "uint8", _NODATA_CLASS)
 
     with rasterio.open(cfg.paths.ndsm) as src:
         ndsm = src.read(1).astype(np.float32)
