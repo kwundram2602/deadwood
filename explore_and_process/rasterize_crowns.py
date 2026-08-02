@@ -58,6 +58,23 @@ def target_grid(src, gsd):
     return h, w, from_bounds(*src.bounds, w, h)
 
 
+def assert_same_bounds(src, reference_bounds, tol: float = 1e-6) -> None:
+    """Fail if a source raster does not share the reference extent.
+
+    read_scaled_bands resamples a source's own extent onto the target shape; it
+    does not reproject onto the target transform. That is correct only when the
+    source and the reference cover the same ground. A differently-bounded source
+    would be silently shifted while keeping a correct-looking georeference.
+    """
+    deltas = [abs(a - b) for a, b in zip(src.bounds, reference_bounds)]
+    if max(deltas) > tol:
+        raise ValueError(
+            f"{src.name}: bounds {tuple(src.bounds)} differ from the reference "
+            f"{tuple(reference_bounds)} by up to {max(deltas):.3f} m. "
+            f"read_scaled_bands cannot reproject; use deadwood_spectral.align instead."
+        )
+
+
 def write_tif(path, data, transform, crs, nodata=None, descriptions=None):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if data.ndim == 2:
@@ -185,6 +202,11 @@ def main(args):
                 for f in os.listdir(args.raster_dir)
                 if "_OM_" in f and f.endswith(".tif")
             )
+            with rasterio.open(args.reference) as _ref:
+                _ref_bounds = _ref.bounds
+            for _f in om_files:
+                with rasterio.open(_f) as _src:
+                    assert_same_bounds(_src, _ref_bounds)
             _, bands, band_names = specs[0]
             jobs = [([(f, bands, band_names)], f) for f in om_files]
         else:
