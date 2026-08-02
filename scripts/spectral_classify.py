@@ -25,7 +25,12 @@ from omegaconf import OmegaConf  # noqa: E402
 from sklearn.inspection import permutation_importance  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from deadwood_spectral.classify import apply_label_set, save_model, train_variant  # noqa: E402
+from deadwood_spectral.classify import (  # noqa: E402
+    apply_label_set,
+    save_model,
+    train_variant,
+    variant_spec,
+)
 from deadwood_spectral.features import build_features  # noqa: E402
 from deadwood_spectral.report import best_date, separability_table  # noqa: E402
 
@@ -38,16 +43,6 @@ def _resolve_baseline(cfg, table, dates: list[str]) -> str:
     chosen = best_date(separability_table(table, dates, measures=["ndvi"]))
     logger.info("baseline_date not set — using highest-AUC date %s", chosen)
     return chosen
-
-
-def _variant_switches(variant: str) -> dict[str, bool]:
-    """The feature-group switches variant_spec uses, mirrored for rebuilding
-    the matrix that permutation importance needs."""
-    return {
-        "per_date": variant != "reduced",
-        "temporal": variant != "baseline",
-        "static": True,
-    }
 
 
 def main() -> None:
@@ -65,14 +60,17 @@ def main() -> None:
     label_sets = [str(s) for s in cfg.classify.label_sets]
     summaries = []
     results = {}
+    baselines = {}
     for label_set in label_sets:
         label_table = apply_label_set(table, label_set)
         baseline = _resolve_baseline(cfg, label_table, dates)
+        baselines[label_set] = baseline
         for variant in cfg.classify.variants:
             variant = str(variant)
             result = train_variant(
                 label_table, dates, variant, baseline,
                 seed=int(cfg.classify.seed), n_splits=int(cfg.classify.n_splits),
+                n_estimators=int(cfg.classify.n_estimators),
             )
             key = (variant, label_set)
             results[key] = result
@@ -106,8 +104,10 @@ def main() -> None:
         cfg.classify.primary_variant, cfg.classify.primary_label_set, cfg.paths.model_dir,
     )
 
-    primary_table = apply_label_set(table, str(cfg.classify.primary_label_set))
-    matrix = build_features(primary_table, primary["dates"], **_variant_switches(primary["variant"]))
+    primary_label_set = str(cfg.classify.primary_label_set)
+    primary_table = apply_label_set(table, primary_label_set)
+    _, primary_switches = variant_spec(primary["variant"], dates, baselines[primary_label_set])
+    matrix = build_features(primary_table, primary["dates"], **primary_switches)
     finite = matrix.notna().all(axis=1)
     importance = permutation_importance(
         primary["model"],

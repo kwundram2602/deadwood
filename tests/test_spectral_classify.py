@@ -192,12 +192,23 @@ def test_apply_label_set_filtered_keeps_only_quality_ok_rows():
 
 def test_apply_label_set_filtered_only_ever_removes_deadwood_rows():
     """The subtlety the human partner flagged: living/background are quality_ok
-    by construction, so a quality filter must never touch them."""
-    df = _table(quality_ok_trees={0, 1, 2})
-    dropped = df[~df["quality_ok"]]
-    assert (dropped["class_name"] == "deadwood").all()
-    # apply_label_set must not raise on well-formed data.
-    apply_label_set(df, "filtered")
+    by construction, so a quality filter must never touch them. Asserted on the
+    frame apply_label_set actually returns, not on the input."""
+    df = _table(quality_ok_trees={0, 1, 2}, n_dead_trees=6)
+    out = apply_label_set(df, "filtered")
+
+    # Every non-deadwood row survives untouched — the filter removed nothing
+    # but deadwood rows.
+    input_non_deadwood = df[df["class_name"] != "deadwood"]
+    output_non_deadwood = out[out["class_name"] != "deadwood"]
+    assert len(output_non_deadwood) == len(input_non_deadwood)
+
+    # The surviving deadwood rows are exactly those with quality_ok True —
+    # trees 0, 1, 2 — and nothing else.
+    surviving_deadwood_trees = set(out.loc[out["class_name"] == "deadwood", "tree_id"])
+    assert surviving_deadwood_trees == {"0", "1", "2"}
+    assert out["quality_ok"].all()
+    assert len(out) < len(df)
 
 
 def test_apply_label_set_raises_if_quality_filter_drops_a_non_deadwood_row():
@@ -240,3 +251,36 @@ def test_train_variant_accepts_a_pre_filtered_table():
     result = train_variant(filtered, DATES, "full", "20260212")
     assert result["model"] is not None
     assert result["n_samples"] <= len(df)
+
+
+def test_train_variant_threads_n_estimators_to_the_persisted_model():
+    """n_estimators is a config knob (classify.n_estimators). If train_variant
+    ignores it and always falls back to make_model's own default, changing the
+    config silently does nothing — this must fail if that regresses."""
+    result = train_variant(_table(), DATES, "full", "20260212", n_estimators=17)
+    assert result["model"].n_estimators == 17
+
+
+def test_train_variant_threads_n_estimators_into_grouped_cv_and_loto():
+    """The CV numbers must describe the same forest that gets shipped — not a
+    different one built with a hardcoded default. Patch make_model in the
+    classify module and check every call it receives during train_variant
+    carries the requested n_estimators."""
+    import deadwood_spectral.classify as classify_mod
+
+    seen_n_estimators = []
+    real_make_model = classify_mod.make_model
+
+    def spying_make_model(seed=0, n_estimators=400):
+        seen_n_estimators.append(n_estimators)
+        return real_make_model(seed=seed, n_estimators=n_estimators)
+
+    original = classify_mod.make_model
+    classify_mod.make_model = spying_make_model
+    try:
+        classify_mod.train_variant(_table(), DATES, "full", "20260212", n_estimators=17)
+    finally:
+        classify_mod.make_model = original
+
+    assert seen_n_estimators, "make_model was never called"
+    assert set(seen_n_estimators) == {17}

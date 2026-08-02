@@ -148,6 +148,7 @@ def grouped_cv(
     groups: np.ndarray,
     seed: int = 0,
     n_splits: int = 5,
+    n_estimators: int = 400,
 ) -> tuple[np.ndarray, pd.DataFrame]:
     """Out-of-fold probabilities and per-class metrics, grouped by tree/block."""
     n_splits = _safe_n_splits(y, groups, n_splits)
@@ -155,7 +156,7 @@ def grouped_cv(
 
     proba = np.zeros((len(y), len(CODE_TO_NAME)), dtype=np.float64)
     for train_idx, test_idx in splitter.split(X, y, groups):
-        model = make_model(seed)
+        model = make_model(seed, n_estimators=n_estimators)
         model.fit(X[train_idx], y[train_idx])
         fold_proba = model.predict_proba(X[test_idx])
         # A fold can miss a class entirely; map columns back by class label.
@@ -166,7 +167,7 @@ def grouped_cv(
 
 
 def leave_one_tree_out(
-    X: np.ndarray, y: np.ndarray, groups: np.ndarray, seed: int = 0
+    X: np.ndarray, y: np.ndarray, groups: np.ndarray, seed: int = 0, n_estimators: int = 400
 ) -> pd.DataFrame:
     """Per-tree deadwood recall when that tree is held out entirely.
 
@@ -177,7 +178,7 @@ def leave_one_tree_out(
     records = []
     for tree in tree_groups:
         held_out = groups == tree
-        model = make_model(seed)
+        model = make_model(seed, n_estimators=n_estimators)
         model.fit(X[~held_out], y[~held_out])
         predicted = model.predict(X[held_out])
         records.append(
@@ -197,6 +198,7 @@ def train_variant(
     baseline_date: str,
     seed: int = 0,
     n_splits: int = 5,
+    n_estimators: int = 400,
 ) -> dict:
     """Build features, run grouped CV and leave-one-tree-out, fit the final model."""
     variant_dates, switches = variant_spec(variant, dates, baseline_date)
@@ -212,10 +214,12 @@ def train_variant(
     y = table["class_code"].to_numpy()[finite]
     groups = table["group_id"].to_numpy()[finite]
 
-    proba, metrics = grouped_cv(X, y, groups, seed=seed, n_splits=n_splits)
-    loto = leave_one_tree_out(X, y, groups, seed=seed)
+    proba, metrics = grouped_cv(
+        X, y, groups, seed=seed, n_splits=n_splits, n_estimators=n_estimators
+    )
+    loto = leave_one_tree_out(X, y, groups, seed=seed, n_estimators=n_estimators)
 
-    model = make_model(seed)
+    model = make_model(seed, n_estimators=n_estimators)
     model.fit(X, y)
 
     logger.info(
