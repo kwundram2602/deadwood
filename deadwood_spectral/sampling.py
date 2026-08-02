@@ -125,6 +125,14 @@ def build_pools(
     """Three disjoint boolean pools on the reference grid."""
     soff = gdf[gdf["crown_category"] == "soff"]
 
+    eroded_geoms = soff.geometry.buffer(-abs(erode_m)) if len(soff) else soff.geometry
+    emptied = soff.loc[eroded_geoms.isna() | eroded_geoms.is_empty, "tree_id"]
+    if len(emptied):
+        logger.warning(
+            "erode_m=%.3f emptied %d/%d soff crown(s): %s",
+            erode_m, len(emptied), len(soff), list(emptied),
+        )
+
     deadwood = rasterize_polygons(soff, grid, buffer_m=-abs(erode_m)).astype(bool) & valid
     soff_excluded = rasterize_polygons(soff, grid, buffer_m=abs(exclude_buffer_m)).astype(bool)
     all_polys = rasterize_polygons(gdf, grid).astype(bool)

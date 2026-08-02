@@ -1,0 +1,31 @@
+paths:
+  reference: datafiles/process_out/masks/crown_mask.tif
+  stack_dir: datafiles/process_out/timeseries
+  coreg_report: datafiles/process_out/timeseries/coreg_report.csv
+  crowns:
+    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
+  # Produced by a GPU run of scripts/predict.py over the full scene — not run yet.
+  crown_prediction: <predicted-mask-path>
+  # Matching file under datafiles/process_out/ndsm_in_m/ — not on disk yet.
+  ndsm: <ndsm-path>
+  samples: datafiles/process_out/spectral/samples.parquet
+  out_dir: out/spectral
+
+sampling:
+  crown_threshold: 0.5
+  erode_m: 0.10
+  exclude_buffer_m: 1.0
+  edge_buffer_m: 0.25
+  block_m: 20.0
+  negative_ratio: 5.0
+  max_pixels_per_class: 200000
+  seed: 0
+  quality_filter:
+    enabled: true
+    min_certainty: 50
+    coverages: [nc]
+
+extract:
+  # Drop dates the co-registration report flagged.
+  exclude_flagged_dates: true
+  chunk_rows: 2048

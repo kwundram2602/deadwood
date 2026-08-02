@@ -263,6 +263,29 @@ def test_block_ids_rejects_non_positive_block_m():
         block_ids(GRID, block_m=-5.0)
 
 
+def test_build_pools_logs_soff_crowns_emptied_by_erosion(tmp_path, caplog):
+    # A tiny soff crown (3x3 m) is fully consumed by the default 0.10 m erosion
+    # applied on both sides of its boundary via buffer(); it must not vanish
+    # from ground truth silently — the smallest real soff crown is 0.02 m^2
+    # and erosion destroys it completely, so this must be logged.
+    rows = _default_rows() + [("7001", "soff", 100, "nc", "acanig", 1050.0, 1950.0, 3.0)]
+    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
+    crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
+    with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
+        build_pools(crown, valid, gdf, GRID, erode_m=2.0)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("7001" in r.getMessage() for r in warnings)
+
+
+def test_build_pools_does_not_log_when_nothing_is_emptied(tmp_path, caplog):
+    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
+    with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
+        build_pools(crown, valid, gdf, GRID, erode_m=0.10)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert not warnings
+
+
 def test_empty_deadwood_pool_raises(tmp_path):
     rows = [("4345", "son", 100, "nc", "diccin", 1060.0, 1910.0, 10.0)]
     gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
