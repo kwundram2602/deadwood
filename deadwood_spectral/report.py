@@ -67,7 +67,23 @@ def separability_table(
     class_a: str = "deadwood",
     class_b: str = "living",
 ) -> pd.DataFrame:
-    """JM distance and AUC per date and measure, class_a vs. class_b."""
+    """JM distance and AUC per date and measure, class_a vs. class_b.
+
+    Two AUC columns, deliberately:
+
+    - `auc_raw` is directional — P(a > b), i.e. the probability that a random
+      `class_a` pixel scores above a random `class_b` one. Deadwood ndvi sits
+      BELOW living ndvi, so a well-separated date shows `auc_raw` near 0.
+    - `auc_sep` is the folded magnitude, max(auc_raw, 1 - auc_raw): "how well
+      separated", regardless of which class sits on top. `best_date` selects
+      on this one.
+
+    The folded value used to be published under the plain name `auc`, which
+    reads as P(a > b) to anyone who knows the metric: a reader seeing
+    `auc = 0.97` for deadwood-vs-living would conclude deadwood is the
+    BRIGHTER class, the exact opposite of the truth. Both are reported now, so
+    the direction is recoverable from `summary.csv`.
+    """
     measures = list(measures) if measures is not None else list(DEFAULT_MEASURES)
     a_rows = df["class_name"] == class_a
     b_rows = df["class_name"] == class_b
@@ -81,17 +97,14 @@ def separability_table(
             a = df.loc[a_rows, column].to_numpy()
             b = df.loc[b_rows, column].to_numpy()
             raw_auc = class_auc(a, b)
-            # class_auc is directional (a scoring above b): whichever class happens to
-            # have the lower mean on a given date would otherwise report auc < 0.5 even
-            # when separation is perfect. Report the magnitude, like jm, so "highest
-            # auc" means "best separated" regardless of which class sits on top.
             magnitude_auc = raw_auc if np.isnan(raw_auc) else max(raw_auc, 1.0 - raw_auc)
             records.append(
                 {
                     "date": date,
                     "measure": measure,
                     "jm": jeffries_matusita(a, b),
-                    "auc": magnitude_auc,
+                    "auc_sep": magnitude_auc,
+                    "auc_raw": raw_auc,
                     "n_a": int(np.isfinite(a).sum()),
                     "n_b": int(np.isfinite(b).sum()),
                 }
@@ -102,25 +115,76 @@ def separability_table(
 def seasonal_amplitude(
     df: pd.DataFrame, dates: list[str], measure: str = "ndvi"
 ) -> pd.Series:
-    """max - min of one measure across the given dates, per row."""
+    """max - min of one measure across the given dates, per row. NaN-propagating.
+
+    A row observed on only some of the dates gets NaN, not a partial
+    amplitude. This deliberately matches `features.build_features`'
+    `<measure>_amplitude`, which is plain numpy max/min over the date matrix
+    and so propagates NaN; the two used to disagree (pandas skipna=True here),
+    and on real stacks — 45.7% NaN, with a different footprint per date — that
+    meant the descriptive plot summarised amplitudes computed over 12 dates
+    and over 2 dates in the same box, i.e. a statistic driven by how often a
+    pixel happened to be observed rather than by phenology.
+
+    An amplitude over a partial, row-dependent set of dates is not comparable
+    across rows, so it is not reported. The cost is that a pixel missing on a
+    single date drops out entirely — `amplitude_population` counts exactly how
+    many rows that leaves, and `run_report` writes those counts next to the
+    plot so the population is never implicit.
+    """
     columns = [feature_column(measure, d) for d in dates if feature_column(measure, d) in df]
     if not columns:
         raise ValueError(f"no {measure} columns for dates {dates}")
-    values = df[columns]
-    return values.max(axis=1) - values.min(axis=1)
+    values = df[columns].to_numpy(dtype=np.float64)
+    return pd.Series(values.max(axis=1) - values.min(axis=1), index=df.index)
+
+
+def amplitude_population(df: pd.DataFrame, dates: list[str], measures=("ndvi", "ndre")):
+    """How many rows per class survive the "observed on every date" rule.
+
+    `seasonal_amplitude` is only defined for rows with a finite value on all
+    of `dates`. This reports, per measure and class, how many rows that is out
+    of how many exist, so a reader of `seasonal_amplitude.png` can see whether
+    a box summarises the whole class or a well-observed corner of it.
+    """
+    records = []
+    for measure in measures:
+        columns = [feature_column(measure, d) for d in dates if feature_column(measure, d) in df]
+        if not columns:
+            continue
+        complete = np.isfinite(df[columns].to_numpy(dtype=np.float64)).all(axis=1)
+        for class_name, index in df.groupby("class_name").groups.items():
+            rows = df.index.get_indexer(index)
+            records.append(
+                {
+                    "measure": measure,
+                    "class_name": class_name,
+                    "n_dates": len(columns),
+                    "n_rows": int(len(rows)),
+                    "n_complete": int(complete[rows].sum()),
+                }
+            )
+    out = pd.DataFrame(records)
+    if not out.empty:
+        out["complete_frac"] = out["n_complete"] / out["n_rows"].where(out["n_rows"] > 0)
+    return out
 
 
 def best_date(sep: pd.DataFrame, measure: str = "ndvi") -> str:
-    """Date with the highest AUC for one measure — the single-date baseline.
+    """Best-separated date for one measure — the single-date baseline.
+
+    Selection is on `auc_sep`, the folded separation magnitude, NOT on the
+    directional `auc_raw`: deadwood ndvi sits below living ndvi, so an argmax
+    over the directional value would pick the WORST-separated date.
 
     Ties (e.g. two dates both at perfect separation) break toward the later
-    date: sorting by (auc, date) ascending and taking the last row picks the
-    max auc, and among equal auc values, the chronologically latest date.
+    date: sorting by (auc_sep, date) ascending and taking the last row picks
+    the max, and among equal values, the chronologically latest date.
     """
-    subset = sep[sep["measure"] == measure].dropna(subset=["auc"])
+    subset = sep[sep["measure"] == measure].dropna(subset=["auc_sep"])
     if subset.empty:
         raise ValueError(f"no finite AUC for measure {measure!r}")
-    return str(subset.sort_values(["auc", "date"]).iloc[-1]["date"])
+    return str(subset.sort_values(["auc_sep", "date"]).iloc[-1]["date"])
 
 
 def _plot_trajectories(df, dates, measure, out_dir) -> None:
@@ -160,29 +224,60 @@ def _plot_separability_heatmap(sep, out_dir) -> None:
 
 
 def _plot_amplitude(df, dates, out_dir) -> None:
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    classes = ("deadwood", "living", "background")
+    fig, ax = plt.subplots(figsize=(7.5, 5.0))
+    n_dates = 0
+    kept = {c: 0 for c in classes}
+    total = {c: int((df["class_name"] == c).sum()) for c in classes}
     for measure in ("ndvi", "ndre"):
         try:
             amplitude = seasonal_amplitude(df, dates, measure)
         except ValueError:
             continue
-        data = [amplitude[df["class_name"] == c].dropna() for c in ("deadwood", "living", "background")]
+        n_dates = max(
+            n_dates, len([d for d in dates if feature_column(measure, d) in df])
+        )
+        data = [amplitude[df["class_name"] == c].dropna() for c in classes]
+        if measure == "ndvi":
+            kept = {c: int(len(s)) for c, s in zip(classes, data)}
         positions = np.arange(3) + (0.0 if measure == "ndvi" else 0.35)
         ax.boxplot(data, positions=positions, widths=0.3, tick_labels=None, showfliers=False)
     ax.set_xticks(np.arange(3) + 0.175)
-    ax.set_xticklabels(["deadwood", "living", "background"])
+    # The population is on the axis, not just in a sidecar file: the amplitude
+    # is only defined for pixels observed on ALL dates, and on real stacks
+    # (45.7% NaN, different footprint per date) that can be a small and
+    # class-dependent subset. A box over an unstated population is not a
+    # statistic a reader can compare.
+    ax.set_xticklabels([f"{c}\nn={kept.get(c, 0)}/{total.get(c, 0)}" for c in classes])
     ax.set_ylabel("seasonal amplitude (max - min)")
-    ax.set_title("Seasonal amplitude — left box ndvi, right box ndre")
+    ax.set_title(
+        "Seasonal amplitude — left box ndvi, right box ndre\n"
+        f"pixels observed on all {n_dates} date(s) only (NaN-propagating, "
+        "same definition as the classifier feature)",
+        fontsize=10,
+    )
     fig.tight_layout()
     fig.savefig(Path(out_dir) / "seasonal_amplitude.png", dpi=140)
     plt.close(fig)
+    logger.info(
+        "seasonal amplitude computed over pixels observed on all %d date(s): %s",
+        n_dates,
+        ", ".join(f"{c} {kept.get(c, 0)}/{total.get(c, 0)}" for c in classes),
+    )
 
 
 def _plot_by_group(df, dates, out_dir, column, filename, title) -> None:
+    # A plot that never appears must leave a trace: only 7 of the 18 deadwood
+    # trees pass the default quality filter, so an empty group here is a
+    # plausible outcome, not an impossible one.
     if column not in df.columns:
+        logger.warning("skipping %s: no %r column in the sample table", filename, column)
         return
     subset = df[df["class_name"] == "deadwood"].dropna(subset=[column])
     if subset.empty:
+        logger.warning(
+            "skipping %s: no deadwood rows with a non-null %r value", filename, column
+        )
         return
     columns = [feature_column("ndvi", d) for d in dates if feature_column("ndvi", d) in df]
     x = np.arange(len(columns))
@@ -216,6 +311,9 @@ def run_report(df: pd.DataFrame, dates: list[str], out_dir: str | Path) -> Path:
         .unstack(fill_value=0)
     )
     coverage.to_csv(out_dir / "coverage.csv")
+
+    population = amplitude_population(df, dates)
+    population.to_csv(out_dir / "amplitude_population.csv", index=False)
 
     for measure in ("ndvi", "ndre", "NIR", "brightness"):
         _plot_trajectories(df, dates, measure, out_dir)

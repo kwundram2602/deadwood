@@ -284,3 +284,51 @@ def test_train_variant_threads_n_estimators_into_grouped_cv_and_loto():
 
     assert seen_n_estimators, "make_model was never called"
     assert set(seen_n_estimators) == {17}
+
+
+def test_nan_drop_names_a_group_it_empties_and_reports_per_class(caplog):
+    """A bare dropped-row count hides a change of ground truth.
+
+    Real stacks are ~45% NaN with a different footprint per date, so the NaN
+    drop can remove every pixel of one soff tree and take the filtered label
+    set from 7 deadwood groups to 6 with nothing in the log but a row count.
+    """
+    import logging
+
+    df = _table(n_per_class=30)
+    doomed = df["group_id"] == "tree:0"
+    df.loc[doomed, f"ndvi_{DATES[1]}"] = np.nan
+    # ... plus a few living rows, so the per-class breakdown has something to say.
+    living = df.index[df["class_name"] == "living"][:5]
+    df.loc[living, f"ndvi_{DATES[1]}"] = np.nan
+
+    with caplog.at_level(logging.WARNING, logger="deadwood_spectral.classify"):
+        result = train_variant(df, DATES, "full", DATES[2], n_estimators=10)
+
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "tree:0" in messages                      # the emptied group is named
+    assert "lost ALL their rows" in messages
+    assert "deadwood" in messages and "living" in messages   # per-class breakdown
+    # And the surviving population is reported, not just the dropped count.
+    assert result["n_deadwood_groups"] == 5
+    assert "tree:0" not in result["deadwood_groups"]
+
+
+def test_variant_results_expose_the_population_they_were_fitted_on():
+    """variant_comparison.csv's confound must be visible per row.
+
+    The 1-date `baseline` keeps rows the 12-date `full` drops, so the two are
+    fitted on different populations — exactly the comparison this pipeline
+    exists to make. n_samples/n_deadwood_groups make that visible.
+    """
+    df = _table(n_per_class=30)
+    # A gap on the middle date only: `full` loses tree:0, `baseline` (last
+    # date) keeps it.
+    df.loc[df["group_id"] == "tree:0", f"ndvi_{DATES[1]}"] = np.nan
+
+    full = train_variant(df, DATES, "full", DATES[2], n_estimators=10)
+    baseline = train_variant(df, DATES, "baseline", DATES[2], n_estimators=10)
+
+    assert full["n_deadwood_groups"] == 5
+    assert baseline["n_deadwood_groups"] == 6
+    assert baseline["n_samples"] > full["n_samples"]

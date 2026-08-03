@@ -26,6 +26,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import StratifiedGroupKFold
 
+from deadwood_spectral.extract import NDSM_REFERENCE_FILE, save_ndsm_reference
 from deadwood_spectral.features import (
     build_features,
     feature_names,
@@ -206,13 +207,39 @@ def train_variant(
     features = feature_names(variant_dates, **switches)
 
     finite = matrix.notna().all(axis=1).to_numpy()
+    all_y = table["class_code"].to_numpy()
+    all_groups = table["group_id"].to_numpy()
     dropped = int((~finite).sum())
     if dropped:
-        logger.warning("%s: dropping %d row(s) with NaN features", variant, dropped)
+        # A bare count hides the thing that actually matters. Real stacks are
+        # ~45% NaN with a different footprint per date, so a 12-date variant
+        # can drop every pixel of one soff tree and quietly take the filtered
+        # label set from 7 deadwood groups to 6 — a change of ground truth,
+        # reported as a number of rows.
+        per_class = {
+            CODE_TO_NAME.get(int(c), str(c)): int(((all_y == c) & ~finite).sum())
+            for c in np.unique(all_y)
+        }
+        kept_groups = set(all_groups[finite].tolist())
+        touched = set(np.unique(all_groups[~finite]).tolist())
+        emptied = sorted(g for g in touched if g not in kept_groups)
+        logger.warning(
+            "%s: dropping %d row(s) with NaN features — per class %s; "
+            "%d group(s) lost rows, %d group(s) lost ALL their rows",
+            variant, dropped, per_class, len(touched), len(emptied),
+        )
+        if emptied:
+            logger.warning(
+                "%s: group(s) removed entirely by the NaN drop: %s — the "
+                "population this variant is fitted and scored on is no longer "
+                "the full label set",
+                variant, emptied,
+            )
 
     X = matrix.to_numpy(dtype=np.float64)[finite]
-    y = table["class_code"].to_numpy()[finite]
-    groups = table["group_id"].to_numpy()[finite]
+    y = all_y[finite]
+    groups = all_groups[finite]
+    deadwood_groups = sorted({g for g, label in zip(groups, y) if label == DEADWOOD_CODE})
 
     proba, metrics = grouped_cv(
         X, y, groups, seed=seed, n_splits=n_splits, n_estimators=n_estimators
@@ -223,9 +250,9 @@ def train_variant(
     model.fit(X, y)
 
     logger.info(
-        "%s: %d features, %d samples, deadwood recall %.3f (grouped CV), "
-        "per-tree recall median %.3f [%.3f-%.3f]",
-        variant, len(features), len(y),
+        "%s: %d features, %d samples, %d deadwood group(s), deadwood recall %.3f "
+        "(grouped CV), per-tree recall median %.3f [%.3f-%.3f]",
+        variant, len(features), len(y), len(deadwood_groups),
         float(metrics.set_index("class_name").loc["deadwood", "recall"]),
         float(loto["recall"].median()) if len(loto) else float("nan"),
         float(loto["recall"].min()) if len(loto) else float("nan"),
@@ -238,6 +265,13 @@ def train_variant(
         "features": features,
         "n_features": len(features),
         "n_samples": int(len(y)),
+        # Carried into variant_comparison.csv: variants use different date
+        # counts, so the NaN drop removes different rows — and can remove
+        # whole trees. Without these two columns the comparison table looks
+        # like it compares models on one population when it does not.
+        "n_groups": int(len(set(groups.tolist()))),
+        "n_deadwood_groups": int(len(deadwood_groups)),
+        "deadwood_groups": deadwood_groups,
         "metrics": metrics,
         "loto": loto,
         "oof_proba": proba,
@@ -245,11 +279,22 @@ def train_variant(
     }
 
 
-def save_model(model, feature_list: list[str], out_dir: str | Path) -> Path:
+def save_model(
+    model, feature_list: list[str], out_dir: str | Path, ndsm_reference: dict | None = None
+) -> Path:
+    """Persist the model, its feature order, and the nDSM it was trained on.
+
+    The nDSM identity travels with the model because nothing else can catch a
+    mismatch: both nDSM variants on disk sit on the reference grid, so
+    inference with the wrong one is silently wrong rather than an error.
+    `deadwood_spectral.extract.assert_same_ndsm` checks it in apply.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, out_dir / "model.joblib")
     save_feature_names(feature_list, out_dir / "feature_names.json")
+    if ndsm_reference is not None:
+        save_ndsm_reference(ndsm_reference, out_dir / NDSM_REFERENCE_FILE)
     return out_dir
 
 

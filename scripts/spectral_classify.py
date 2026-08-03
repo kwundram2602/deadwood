@@ -31,6 +31,10 @@ from deadwood_spectral.classify import (  # noqa: E402
     train_variant,
     variant_spec,
 )
+from deadwood_spectral.extract import (  # noqa: E402
+    load_ndsm_reference,
+    samples_ndsm_reference_path,
+)
 from deadwood_spectral.features import build_features  # noqa: E402
 from deadwood_spectral.report import best_date, separability_table  # noqa: E402
 
@@ -82,7 +86,17 @@ def main() -> None:
                     "variant": variant,
                     "label_set": label_set,
                     "n_features": result["n_features"],
+                    # n_samples / n_deadwood_groups make the population each
+                    # row was fitted on visible. They are NOT the same across
+                    # variants: the NaN drop in train_variant removes any row
+                    # missing on ANY of the variant's dates, so the 1-date
+                    # `baseline` keeps rows the 12-date `full` drops, and can
+                    # keep whole trees `full` loses. Compare rows with the
+                    # same two numbers; where they differ, the score
+                    # difference is partly a population difference.
                     "n_samples": result["n_samples"],
+                    "n_deadwood_groups": result["n_deadwood_groups"],
+                    "n_groups": result["n_groups"],
                     "deadwood_precision": deadwood["precision"],
                     "deadwood_recall": deadwood["recall"],
                     "deadwood_f1": deadwood["f1"],
@@ -96,9 +110,40 @@ def main() -> None:
     comparison.to_csv(out_dir / "variant_comparison.csv", index=False)
     logger.info("\n%s", comparison.to_string(index=False))
 
+    # The comparison this branch exists to make — 12 dates vs. 1 — is only
+    # honest if both models saw the same pixels. They do not have to: the
+    # NaN drop is per variant. Say so explicitly rather than leaving it to
+    # whoever reads the CSV.
+    for label_set, block in comparison.groupby("label_set"):
+        if block["n_samples"].nunique() > 1 or block["n_deadwood_groups"].nunique() > 1:
+            logger.warning(
+                "label_set=%s: variants were fitted on DIFFERENT populations "
+                "(n_samples %s, n_deadwood_groups %s). A variant using fewer "
+                "dates loses fewer rows to the NaN drop, so part of any score "
+                "difference is a population difference, not a feature-set "
+                "difference. See n_samples/n_deadwood_groups in "
+                "variant_comparison.csv.",
+                label_set,
+                dict(zip(block["variant"], block["n_samples"])),
+                dict(zip(block["variant"], block["n_deadwood_groups"])),
+            )
+
     primary_key = (str(cfg.classify.primary_variant), str(cfg.classify.primary_label_set))
     primary = results[primary_key]
-    save_model(primary["model"], primary["features"], cfg.paths.model_dir)
+    # Carry the training nDSM's identity into the model directory so apply.py
+    # can refuse a different nDSM at inference (see assert_same_ndsm).
+    ndsm_reference = load_ndsm_reference(samples_ndsm_reference_path(cfg.paths.samples))
+    if ndsm_reference is None:
+        logger.warning(
+            "no nDSM identity sidecar next to %s — apply.py will not be able to "
+            "verify that inference uses the nDSM this model was trained on. "
+            "Re-run scripts/spectral_report.py to write it.",
+            cfg.paths.samples,
+        )
+    save_model(
+        primary["model"], primary["features"], cfg.paths.model_dir,
+        ndsm_reference=ndsm_reference,
+    )
     logger.info(
         "model (variant=%s, label_set=%s) -> %s",
         cfg.classify.primary_variant, cfg.classify.primary_label_set, cfg.paths.model_dir,
