@@ -68,7 +68,12 @@ run, produce:
 1. A crown prediction over the full AOI (`scripts/predict.py`, see Prediction
    above), and fill `sampling.crown_prediction` in `analysis.yaml`.
 2. The matching nDSM under `datafiles/process_out/ndsm_in_m/`, and fill
-   `paths.ndsm` in both `analysis.yaml` and `classify.yaml`.
+   `paths.ndsm` in both `analysis.yaml` and `classify.yaml` — with the **same
+   file**. Two nDSM variants exist (metres and normalized) and both sit on the
+   reference grid, so nothing about the rasters themselves can tell them
+   apart. Stage B records the nDSM's identity next to `samples.parquet`,
+   Stage C copies it into the model directory as `ndsm_reference.json`, and
+   `spectral_apply.py` refuses to run against a different one.
 3. Stage A's aligned stacks, then a manual check: overlay one aligned date and
    `crown_mask.tif` in QGIS and confirm the crowns coincide before trusting
    anything downstream.
@@ -87,6 +92,16 @@ uv run python scripts/spectral_align.py --config configs/spectral/align.yaml
 QGIS first and list them as `[x, y]` map-coordinate pairs, or the co-registration
 report is skipped with a warning. Then, before trusting the output, overlay one
 aligned stack and the crown mask in QGIS — the crowns must coincide.
+
+List 4–6 tiles, and pick them **fully inside the source footprint**. The shift
+estimate fills NaN with the tile mean, and ~45% of a real aligned stack is NaN
+outside the footprint: a large filled block abutting real data is a step edge
+that can drag the phase-correlation peak. Tiles above `coreg.max_tile_nan_frac`
+(2% by default) are rejected per date, and a date left with fewer than
+`coreg.min_tiles` usable tiles gets no estimate at all and is flagged (and so
+excluded downstream by `extract.exclude_flagged_dates`). The report says which:
+`n_tiles`, `n_tiles_total`, `n_tiles_rejected_nan` and `status`. `spread_m` is
+NaN rather than 0 when only one tile was used — one tile agrees with itself.
 
 ### Stage B — Sample and describe
 
@@ -111,10 +126,28 @@ the numbers:
   deadwood pixels. `build_pools` logs which `tree_id`s it dropped.
 
 The key output is `seasonal_amplitude.png` (alongside `summary.csv`,
-`coverage.csv`, `separability_jm.png`, `deadwood_by_species.png` and
-`deadwood_by_quality.png` in the timestamped `out/spectral/<stamp>/` run
-directory): if deadwood and living do not separate there, the approach does
-not carry.
+`coverage.csv`, `amplitude_population.csv`, `separability_jm.png`,
+`deadwood_by_species.png` and `deadwood_by_quality.png` in the timestamped
+`out/spectral/<stamp>/` run directory): if deadwood and living do not separate
+there, the approach does not carry.
+
+Two things to know before reading those two artefacts:
+
+- **The amplitude is only computed for pixels observed on *every* date of the
+  cycle.** A partial amplitude — max − min over whatever dates a pixel
+  happened to be seen on — is not comparable between rows, and with ~45% NaN
+  per stack and a different footprint per date it would mostly measure how
+  often a pixel was observed. The plot's axis labels carry `n=<complete>/<all>`
+  per class and `amplitude_population.csv` has the full counts, so the
+  population is always stated. This is the same NaN-propagating definition the
+  classifier feature `ndvi_amplitude` uses — Stage B and Stage C no longer
+  disagree.
+- **`summary.csv` has two AUC columns.** `auc_raw` is directional,
+  P(deadwood > living): deadwood NDVI sits *below* living NDVI, so a
+  well-separated date shows `auc_raw` near 0. `auc_sep` is the folded
+  magnitude, `max(auc_raw, 1 − auc_raw)` — "how well separated", regardless of
+  which class is on top — and it is what `best_date` selects the single-date
+  baseline on. Read `auc_sep` for separation, `auc_raw` for direction.
 
 ### Stage C — Classify and map
 
@@ -130,6 +163,17 @@ persisted and used downstream. Then applies that model to the whole scene.
 uv run python scripts/spectral_classify.py --config configs/spectral/classify.yaml
 uv run python scripts/spectral_apply.py    --config configs/spectral/classify.yaml
 ```
+
+`variant_comparison.csv` carries `n_samples`, `n_groups` and
+`n_deadwood_groups` per row, and they are **not** the same across variants.
+Rows missing a value on any of a variant's dates are dropped before fitting,
+so the 1-date `baseline` keeps rows the 12-date `full` drops — and can keep
+whole trees that `full` loses. Where those numbers differ between two rows,
+part of the score difference is a population difference rather than a
+feature-set difference; the run logs a warning naming the affected label set.
+`train_variant` also logs the NaN drop per class, how many groups lost rows,
+and names any group that lost all of them — with only 7 trees in the filtered
+label set, losing one silently would matter.
 
 Outputs: `deadwood_prob.tif`, `deadwood_class.tif`, `deadwood_objects.gpkg`
 (paths set in `classify.yaml`'s `apply` block). Roughly 45% of a real aligned
