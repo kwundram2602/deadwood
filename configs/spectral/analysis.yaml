@@ -7,6 +7,12 @@ paths:
   # Produced by a GPU run of scripts/predict.py over the full scene — not run yet.
   crown_prediction: <predicted-mask-path>
   # Matching file under datafiles/process_out/ndsm_in_m/ — not on disk yet.
+  # MUST be the SAME file as paths.ndsm in classify.yaml. Two nDSM variants
+  # exist on disk (metres and normalized) and both sit on the reference grid,
+  # so the grid check cannot tell them apart; training on one and predicting
+  # with the other is silently wrong. This stage writes the nDSM's identity to
+  # samples_ndsm_reference.json next to samples.parquet, and spectral_apply.py
+  # refuses to run against a different one.
   ndsm: <ndsm-path>
   samples: datafiles/process_out/spectral/samples.parquet
   out_dir: out/spectral

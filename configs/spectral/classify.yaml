@@ -2,6 +2,13 @@ paths:
   reference: datafiles/process_out/masks/crown_mask.tif
   stack_dir: datafiles/process_out/timeseries
   samples: datafiles/process_out/spectral/samples.parquet
+  # MUST be the SAME file as paths.ndsm in analysis.yaml — the nDSM this
+  # model's training samples were extracted with. Two nDSM variants exist on
+  # disk (metres and normalized) and both sit on the reference grid, so
+  # nothing else can catch a mix-up: predictions would just be wrong.
+  # spectral_classify.py copies the training nDSM's identity into
+  # model_dir/ndsm_reference.json and spectral_apply.py fails loudly if the
+  # file named here does not match it.
   ndsm: <ndsm-path>
   out_dir: out/spectral
   model_dir: out/spectral/model

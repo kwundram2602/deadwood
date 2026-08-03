@@ -14,7 +14,13 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from deadwood_spectral.coreg import flagged_dates  # noqa: E402
-from deadwood_spectral.extract import available_dates, extract_samples  # noqa: E402
+from deadwood_spectral.extract import (  # noqa: E402
+    available_dates,
+    extract_samples,
+    ndsm_signature,
+    samples_ndsm_reference_path,
+    save_ndsm_reference,
+)
 from deadwood_spectral.grid import load_reference_grid  # noqa: E402
 from deadwood_spectral.report import run_report  # noqa: E402
 from deadwood_spectral.sampling import (  # noqa: E402
@@ -84,6 +90,14 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     table.to_parquet(out_path, index=False)
     logger.info("samples -> %s (%d rows, %d columns)", out_path, len(table), table.shape[1])
+
+    # Which nDSM these samples carry. paths.ndsm is declared independently in
+    # analysis.yaml and classify.yaml and two variants (metres, normalized)
+    # sit on the same grid, so this sidecar is the only thing that can tell
+    # apply.py it was handed the wrong one.
+    reference_path = samples_ndsm_reference_path(out_path)
+    save_ndsm_reference(ndsm_signature(cfg.paths.ndsm), reference_path)
+    logger.info("nDSM identity -> %s", reference_path)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_report(table, dates, Path(cfg.paths.out_dir) / stamp)

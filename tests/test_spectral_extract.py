@@ -135,3 +135,88 @@ def test_offgrid_stack_raises(tmp_path):
         dst.write(np.zeros((7, 8, 8), dtype="float32"))
     with pytest.raises(ValueError, match="transform"):
         extract_samples(_samples(), d, GRID)
+
+
+def _ndsm_raster(path, value=3.5):
+    profile = dict(
+        driver="GTiff", dtype="float32", width=8, height=8, count=1,
+        crs="EPSG:32736", transform=GRID.transform, nodata=np.nan,
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(np.full((1, 8, 8), value, dtype="float32"))
+    return path
+
+
+def test_bad_ndsm_path_fails_before_any_extraction_work(tmp_path, monkeypatch):
+    """Validate every input up front, not after reading every date.
+
+    On real data the stacks are ~800 MB each; validating the ndsm only after
+    the date loop throws away tens of minutes and never writes
+    samples.parquet. The guard is proven by making any raster read fatal: a
+    correct implementation raises on the missing path before reading anything.
+    """
+    import deadwood_spectral.extract as extract_mod
+
+    stack_dir = _stack_dir(tmp_path)
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("extraction started before the inputs were validated")
+
+    monkeypatch.setattr(extract_mod, "_read_at", _explode)
+
+    with pytest.raises(FileNotFoundError, match="before extraction started"):
+        extract_samples(
+            _samples(), stack_dir, GRID, ndsm_path=tmp_path / "does-not-exist.tif"
+        )
+
+
+def test_missing_stack_file_is_reported_up_front(tmp_path):
+    stack_dir = _stack_dir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="20991231_stack.tif"):
+        extract_samples(_samples(), stack_dir, GRID, dates=["20230824", "20991231"])
+
+
+def test_ndsm_signature_distinguishes_two_variants_on_the_same_grid(tmp_path):
+    """The whole point: both nDSM variants pass assert_matches_grid."""
+    from deadwood_spectral.extract import ndsm_signature
+
+    metres = ndsm_signature(_ndsm_raster(tmp_path / "ndsm_m.tif", value=7.5))
+    normalized = ndsm_signature(_ndsm_raster(tmp_path / "ndsm_norm.tif", value=0.3))
+    assert metres["window_checksum"] != normalized["window_checksum"]
+    # Same file read twice is the same signature.
+    assert ndsm_signature(tmp_path / "ndsm_m.tif")["window_checksum"] == (
+        metres["window_checksum"]
+    )
+
+
+def test_assert_same_ndsm_rejects_a_different_ndsm(tmp_path):
+    from deadwood_spectral.extract import assert_same_ndsm, ndsm_signature
+
+    trained_on = ndsm_signature(_ndsm_raster(tmp_path / "ndsm_m.tif", value=7.5))
+    other = _ndsm_raster(tmp_path / "ndsm_norm.tif", value=0.3)
+
+    assert_same_ndsm(trained_on, tmp_path / "ndsm_m.tif")  # must not raise
+    with pytest.raises(ValueError, match="nDSM mismatch"):
+        assert_same_ndsm(trained_on, other)
+
+
+def test_ndsm_reference_round_trips_and_survives_a_rename(tmp_path):
+    from deadwood_spectral.extract import (
+        assert_same_ndsm,
+        load_ndsm_reference,
+        ndsm_signature,
+        samples_ndsm_reference_path,
+        save_ndsm_reference,
+    )
+
+    signature = ndsm_signature(_ndsm_raster(tmp_path / "ndsm_m.tif", value=7.5))
+    path = samples_ndsm_reference_path(tmp_path / "samples.parquet")
+    save_ndsm_reference(signature, path)
+    assert path.name == "samples_ndsm_reference.json"
+    assert load_ndsm_reference(path) == signature
+    assert load_ndsm_reference(tmp_path / "nothing.json") is None
+
+    # Content decides, not the path: a renamed but identical file is accepted.
+    renamed = tmp_path / "ndsm_m_copy.tif"
+    renamed.write_bytes((tmp_path / "ndsm_m.tif").read_bytes())
+    assert_same_ndsm(load_ndsm_reference(path), renamed)
