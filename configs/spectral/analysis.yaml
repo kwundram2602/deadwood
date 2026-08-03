@@ -15,14 +15,16 @@ paths:
   # The 0.9 threshold is already baked into this file; sampling.crown_threshold
   # below only separates its 1s from its 0s.
   crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_pred_t0.9.tif
-  # Matching file under datafiles/process_out/ndsm_in_m/ — not on disk yet.
+  # Height above ground in METRES, not the normalized variant under
+  # process_out/ndsm/ — the feature goes into the forest unscaled, so metres
+  # keep the feature importance readable.
   # MUST be the SAME file as paths.ndsm in classify.yaml. Two nDSM variants
   # exist on disk (metres and normalized) and both sit on the reference grid,
   # so the grid check cannot tell them apart; training on one and predicting
   # with the other is silently wrong. This stage writes the nDSM's identity to
   # samples_ndsm_reference.json next to samples.parquet, and spectral_apply.py
   # refuses to run against a different one.
-  ndsm: <ndsm-path>
+  ndsm: datafiles/process_out/ndsm_in_m/20260801_174831/dsm_ndsm_dtm_raw_m.tif
   samples: datafiles/process_out/spectral/samples.parquet
   out_dir: out/spectral
 

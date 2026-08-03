@@ -9,7 +9,7 @@ paths:
   # spectral_classify.py copies the training nDSM's identity into
   # model_dir/ndsm_reference.json and spectral_apply.py fails loudly if the
   # file named here does not match it.
-  ndsm: <ndsm-path>
+  ndsm: datafiles/process_out/ndsm_in_m/20260801_174831/dsm_ndsm_dtm_raw_m.tif
   out_dir: out/spectral
   model_dir: out/spectral/model
 
