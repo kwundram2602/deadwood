@@ -253,3 +253,60 @@ def test_assert_labels_match_objects_catches_a_diverged_label_raster():
 
     with pytest.raises(ValueError, match="disagrees"):
         assert_labels_match_objects(bad_labels, objects)
+
+
+def test_aggregate_objects_geometry_lands_at_the_right_map_coordinates():
+    """The object polygon must sit where the pixels are, not at the origin.
+
+    aggregate_objects polygonises each object inside its own bounding box for
+    speed; the box's transform has to put the geometry back in map coordinates.
+    A missing offset would silently place every object near the raster origin.
+    """
+    class_raster = np.zeros(GRID.shape, dtype=np.uint8)
+    class_raster[10:14, 11:15] = 2
+    prob = np.zeros((3, *GRID.shape), dtype=np.float32)
+    prob[2] = 0.7
+    objects = aggregate_objects(class_raster, prob, GRID)
+
+    assert len(objects) == 1
+    left, bottom, right, top = objects.geometry.iloc[0].bounds
+    # GRID: origin (1000, 2000), 1 m pixels, y decreasing with row.
+    assert (left, right) == pytest.approx((1011.0, 1015.0))
+    assert (bottom, top) == pytest.approx((1986.0, 1990.0))
+
+
+def test_aggregate_objects_scales_to_many_scattered_components():
+    """Cost must scale with object size, not scene size x component count.
+
+    The original implementation built a whole-scene boolean mask per connected
+    component. On this raster (4 million pixels, 20,000 stray single-pixel
+    components) that is 20,000 full-scene masks — minutes of pure masking, and
+    on the real 6459 x 6962 grid with a 1% false-positive rate, hours. The
+    bincount/find_objects implementation touches each component's own
+    bounding box only, so this runs in well under a second.
+    """
+    import time
+
+    from rasterio.transform import from_origin
+
+    from deadwood_spectral.grid import ReferenceGrid
+
+    grid = ReferenceGrid(2000, 2000, from_origin(0.0, 2000.0, 1.0, 1.0),
+                         rasterio.crs.CRS.from_epsg(32736))
+    class_raster = np.zeros(grid.shape, dtype=np.uint8)
+    # 20,000 isolated stray pixels, every 20th row/col so none of them touch.
+    rows, cols = np.meshgrid(np.arange(0, 2000, 20), np.arange(0, 2000, 10), indexing="ij")
+    class_raster[rows.ravel(), cols.ravel()] = 2
+    # Two real objects, well above the area floor and away from the strays.
+    class_raster[1002:1008, 1002:1008] = 2
+    class_raster[1502:1510, 1502:1510] = 2
+    prob = np.full((3, *grid.shape), 0.5, dtype=np.float32)
+
+    start = time.perf_counter()
+    objects = aggregate_objects(class_raster, prob, grid, min_object_m2=4.0)
+    elapsed = time.perf_counter() - start
+
+    assert sorted(objects["n_pixels"].tolist()) == [36, 64]
+    assert sorted(objects["area_m2"].tolist()) == pytest.approx([36.0, 64.0])
+    # Generous, but far below the minutes the whole-scene-mask loop needs here.
+    assert elapsed < 15.0, f"aggregate_objects took {elapsed:.1f}s on 20k components"

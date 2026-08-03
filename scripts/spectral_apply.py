@@ -21,7 +21,13 @@ from deadwood_spectral.apply import (  # noqa: E402
     predict_scene,
 )
 from deadwood_spectral.classify import load_model, variant_spec  # noqa: E402
+from deadwood_spectral.extract import (  # noqa: E402
+    NDSM_REFERENCE_FILE,
+    assert_same_ndsm,
+    load_ndsm_reference,
+)
 from deadwood_spectral.grid import load_reference_grid  # noqa: E402
+from deadwood_spectral.labels import label_box, label_boxes, label_count  # noqa: E402
 from deadwood_spectral.retrospect import first_dead_cycle  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -64,6 +70,23 @@ def main() -> None:
 
     grid = load_reference_grid(cfg.paths.reference)
     model, features = load_model(cfg.paths.model_dir)
+
+    # paths.ndsm is set independently in analysis.yaml (training) and
+    # classify.yaml (inference), and the two nDSM variants on disk — metres
+    # and normalized — share the reference grid, so a mix-up produces
+    # silently wrong scene-wide predictions with no error. Refuse it here.
+    ndsm_reference = load_ndsm_reference(Path(cfg.paths.model_dir) / NDSM_REFERENCE_FILE)
+    if ndsm_reference is None:
+        logger.warning(
+            "%s carries no %s — cannot verify that paths.ndsm is the nDSM this "
+            "model was trained on. Re-run scripts/spectral_report.py and "
+            "scripts/spectral_classify.py to record it.",
+            cfg.paths.model_dir, NDSM_REFERENCE_FILE,
+        )
+    else:
+        assert_same_ndsm(ndsm_reference, cfg.paths.ndsm)
+        logger.info("nDSM matches the one used for training")
+
     dates = [str(d) for d in cfg.classify.cycle.dates]
     baseline = str(cfg.classify.baseline_date) if cfg.classify.baseline_date else dates[-1]
     variant_dates, switches = variant_spec(str(cfg.classify.primary_variant), dates, baseline)
@@ -99,6 +122,13 @@ def main() -> None:
     out_dir = Path(cfg.retrospect.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Bounding boxes once, for the kept objects only. The previous loop rebuilt
+    # a whole-scene `labels == object_id` mask for EVERY connected component
+    # (including the sub-threshold ones aggregate_objects discarded), once per
+    # cycle — ~59 ms per mask on the real grid, tens of thousands of components.
+    counts, boxes = label_boxes(labels)
+    kept_ids = [int(o) for o in objects["object_id"]]
+
     masks = {}
     validity_masks = {}
     for cycle_name, cycle_dates in cfg.retrospect.cycles.items():
@@ -129,14 +159,17 @@ def main() -> None:
         # so a reader of the CSV sees the uncertainty without the log.
         valid = cycle_class != _NODATA_CLASS
         validity_masks[str(cycle_name)] = valid
-        for object_id in np.unique(labels[labels > 0]):
-            footprint = labels == object_id
-            n_pixels = int(footprint.sum())
-            if n_pixels and valid[footprint].mean() < 0.5:
+        for object_id in kept_ids:
+            box = label_box(boxes, object_id)
+            if box is None:
+                continue
+            footprint = labels[box] == object_id
+            n_pixels = label_count(counts, object_id)
+            if n_pixels and valid[box][footprint].mean() < 0.5:
                 logger.warning(
                     "retrospect cycle %s: object %d has <50%% valid coverage "
                     "(nodata-heavy); its 'alive' verdict for this cycle is unreliable",
-                    cycle_name, int(object_id),
+                    cycle_name, object_id,
                 )
         logger.info("retrospect cycle %s done", cycle_name)
 

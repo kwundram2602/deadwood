@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.features import shapes as rio_shapes
+from rasterio.transform import Affine
 from rasterio.windows import Window
 from shapely.geometry import shape as shapely_shape
 from skimage.measure import label as cc_label
@@ -28,6 +29,7 @@ from deadwood_spectral.extract import feature_column
 from deadwood_spectral.features import assert_feature_names, build_features, feature_names
 from deadwood_spectral.grid import ReferenceGrid, assert_matches_grid
 from deadwood_spectral.indices import BAND_NAMES, compute_indices
+from deadwood_spectral.labels import label_box, label_boxes, label_count
 from deadwood_spectral.sampling import CLASS_CODES
 from scripts.predict import make_windows  # noqa: E402
 
@@ -132,28 +134,44 @@ def aggregate_objects(
     deadwood = class_raster == DEADWOOD_CODE
     labels = cc_label(deadwood, connectivity=2)
 
+    # Per-object work must be proportional to the object, not to the scene: a
+    # whole-scene `labels == label_id` mask per component costs ~59 ms on the
+    # real 6459 x 6962 grid, and a noisy class raster can carry tens of
+    # thousands of components. One bincount + one find_objects pass replaces
+    # every such mask (see deadwood_spectral.labels).
+    counts, boxes = label_boxes(labels)
+    deadwood_prob = prob_raster[DEADWOOD_CODE]
+
     records = []
-    for label_id in range(1, int(labels.max()) + 1):
-        mask = labels == label_id
-        area = float(mask.sum()) * pixel_area
+    for label_id in range(1, len(boxes) + 1):
+        box = label_box(boxes, label_id)
+        if box is None:
+            continue
+        n_pixels = label_count(counts, label_id)
+        area = float(n_pixels) * pixel_area
         if area < min_object_m2:
             continue
+        mask = labels[box] == label_id
+        # rio_shapes gets the cropped window, so its cost scales with the
+        # object too; the window's own transform puts the geometry back in
+        # map coordinates.
+        box_transform = grid.transform * Affine.translation(box[1].start, box[0].start)
         polygons = [
             shapely_shape(geom)
             for geom, _ in rio_shapes(
-                mask.astype(np.uint8), mask=mask, transform=grid.transform, connectivity=8
+                mask.astype(np.uint8), mask=mask, transform=box_transform, connectivity=8
             )
         ]
         geometry = polygons[0] if len(polygons) == 1 else max(polygons, key=lambda p: p.area)
         record = {
             "object_id": label_id,
             "area_m2": area,
-            "n_pixels": int(mask.sum()),
-            "mean_prob": float(prob_raster[DEADWOOD_CODE][mask].mean()),
+            "n_pixels": n_pixels,
+            "mean_prob": float(deadwood_prob[box][mask].mean()),
             "geometry": geometry,
         }
         if ndsm is not None:
-            values = ndsm[mask]
+            values = ndsm[box][mask]
             values = values[np.isfinite(values)]
             record["mean_height_m"] = float(values.mean()) if values.size else float("nan")
         records.append(record)
@@ -189,8 +207,9 @@ def assert_labels_match_objects(labels: np.ndarray, objects: gpd.GeoDataFrame) -
     equal the `n_pixels` aggregate_objects recorded for that object_id. Raises
     ValueError on any mismatch.
     """
+    counts = np.bincount(np.asarray(labels).reshape(-1))
     for object_id, expected_pixels in zip(objects["object_id"], objects["n_pixels"]):
-        actual_pixels = int((labels == int(object_id)).sum())
+        actual_pixels = label_count(counts, int(object_id))
         if actual_pixels != int(expected_pixels):
             raise ValueError(
                 f"labels raster disagrees with aggregate_objects for object "

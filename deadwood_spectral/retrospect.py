@@ -17,6 +17,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from deadwood_spectral.labels import label_box, label_boxes, label_count
+
 logger = logging.getLogger(__name__)
 
 # Cycle keys are sorted lexicographically (see `first_dead_cycle`) and that
@@ -69,20 +71,25 @@ def first_dead_cycle(
         )
 
     cycles = sorted(object_masks)
+    # One bincount + one find_objects pass instead of a whole-scene
+    # `labels == object_id` mask per object per cycle: on the real grid that
+    # mask costs ~59 ms each and is independent of how small the object is.
+    counts, boxes = label_boxes(labels)
     records = []
     for object_id in objects["object_id"].astype(int):
-        footprint = labels == object_id
-        n_pixels = int(footprint.sum())
+        box = label_box(boxes, int(object_id))
+        n_pixels = label_count(counts, int(object_id)) if box is not None else 0
+        footprint = labels[box] == object_id if box is not None else None
         dead_in = [
             cycle
             for cycle in cycles
-            if n_pixels and object_masks[cycle][footprint].mean() > 0.5
+            if n_pixels and object_masks[cycle][box][footprint].mean() > 0.5
         ]
         first_cycle = dead_in[0] if dead_in else None
 
         coverage = float("nan")
         if validity_masks is not None and first_cycle is not None and n_pixels:
-            coverage = float(validity_masks[first_cycle][footprint].mean())
+            coverage = float(validity_masks[first_cycle][box][footprint].mean())
 
         records.append(
             {
