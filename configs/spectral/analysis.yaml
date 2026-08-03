@@ -4,8 +4,17 @@ paths:
   coreg_report: datafiles/process_out/timeseries/coreg_report.csv
   crowns:
     - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
-  # Produced by a GPU run of scripts/predict.py over the full scene — not run yet.
-  crown_prediction: <predicted-mask-path>
+  # The crown-segmentation model's own output over the full 2026 scene — this is
+  # the surface the deadwood classifier meets at inference time, which is why the
+  # `living` pool comes from here and not from the son field polygons.
+  # Use the BINARISED prediction, not the *_prob.tif beside it: the probability
+  # raster carries nodata = -1.0, and binarize_crown_mask only recognises 255.
+  # A -1 pixel would read as "valid but below threshold", i.e. background rather
+  # than "not evaluated", and the 45.8% of the grid outside the source footprint
+  # would flood the background pool with all-NaN samples.
+  # The 0.9 threshold is already baked into this file; sampling.crown_threshold
+  # below only separates its 1s from its 0s.
+  crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_pred_t0.9.tif
   # Matching file under datafiles/process_out/ndsm_in_m/ — not on disk yet.
   # MUST be the SAME file as paths.ndsm in classify.yaml. Two nDSM variants
   # exist on disk (metres and normalized) and both sit on the reference grid,
