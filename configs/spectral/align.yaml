@@ -9,7 +9,17 @@ coreg:
   reference_date: null        # null = use the latest aligned date
   # Stable tiles in map coordinates (EPSG:32736) — pick hard, non-vegetated
   # features. Filled in after the first visual inspection of the AOI.
+  # List 4-6 tiles: a date needs at least `min_tiles` usable ones, and
+  # `spread_m` is meaningless (reported as NaN) with fewer than two.
   tiles: []
   tile_size_px: 512
   max_shift_m: 0.15
+  # Reject a tile whose NaN share exceeds this on either date. estimate_shift
+  # fills NaN with the tile mean; ~45% of a real aligned stack is NaN outside
+  # the source footprint, and a large filled block abutting real data is a
+  # step edge that can bias the phase-correlation peak.
+  max_tile_nan_frac: 0.02
+  # A date with fewer usable tiles than this gets no shift estimate and is
+  # flagged (and therefore excluded downstream by extract.exclude_flagged_dates).
+  min_tiles: 3
   report: datafiles/process_out/timeseries/coreg_report.csv

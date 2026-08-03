@@ -12,7 +12,11 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from deadwood_spectral.align import align_all  # noqa: E402
-from deadwood_spectral.coreg import coreg_report  # noqa: E402
+from deadwood_spectral.coreg import (  # noqa: E402
+    DEFAULT_MAX_TILE_NAN_FRAC,
+    DEFAULT_MIN_TILES,
+    coreg_report,
+)
 from deadwood_spectral.grid import load_reference_grid  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,10 @@ def main() -> None:
         tile_size_px=int(cfg.coreg.tile_size_px),
         reference_date=cfg.coreg.reference_date,
         max_shift_m=float(cfg.coreg.max_shift_m),
+        max_tile_nan_frac=float(
+            cfg.coreg.get("max_tile_nan_frac", DEFAULT_MAX_TILE_NAN_FRAC)
+        ),
+        min_tiles=int(cfg.coreg.get("min_tiles", DEFAULT_MIN_TILES)),
     )
     Path(cfg.coreg.report).parent.mkdir(parents=True, exist_ok=True)
     report.to_csv(cfg.coreg.report, index=False)
