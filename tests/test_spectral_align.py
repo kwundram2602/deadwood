@@ -146,3 +146,23 @@ def test_align_all_rejects_wrong_crs(tmp_path):
         dst.write(_marker_source())
     with pytest.raises(ValueError, match="CRS"):
         align_all(src_dir, grid, tmp_path / "out")
+
+
+def test_aligned_output_is_band_interleaved(tmp_path):
+    """Band interleaving is a correctness requirement, not a preference.
+
+    align_scene writes one band at a time. In a pixel-interleaved tiled file a
+    single tile holds all seven bands, so each band write forces a read-modify-
+    recompress-append cycle over every tile. Once the scene outgrows GDAL's
+    block cache the superseded bytes are never reclaimed: the real 6962 x 6459
+    output measured 3.35 GB against 0.78 GB of bit-identical data.
+
+    Asserted on the profile rather than on file size, because the bloat only
+    appears above the cache threshold and a size-based test would pass on a
+    small fixture regardless.
+    """
+    grid = load_reference_grid(_write_reference(tmp_path / "ref.tif"))
+    src = _write_source(tmp_path / "20230824_x.tif", _marker_source())
+    out = align_scene(src, grid, tmp_path / "20230824_stack.tif")
+    with rasterio.open(out) as dst:
+        assert dst.profile["interleave"] == "band"

@@ -55,6 +55,17 @@ def align_scene(
         height=grid.height, width=grid.width, count=len(band_names),
         crs=grid.crs, transform=grid.transform, nodata=np.nan,
         compress="lzw", tiled=True, blockxsize=512, blockysize=512,
+        # BAND interleaving is not a preference here, it is required by the
+        # band-at-a-time write below. Pixel-interleaved tiles hold all 7 bands
+        # together, so writing one band forces GDAL to read, modify, recompress
+        # and re-append every tile seven times. Once the scene outgrows the
+        # block cache (182 tiles x 7.34 MB = 1.34 GB at this grid size, against
+        # GDAL's default of 5% of RAM) each rewrite lands at a new offset and
+        # the superseded bytes stay in the file as dead space. Measured on the
+        # real 6962 x 6459 grid: 3.35 GB written versus 0.78 GB of actual data,
+        # bit-identical content. Band interleaving stores each band separately,
+        # so a band write never touches another band's tiles.
+        interleave="band",
     )
 
     with rasterio.open(src_path) as src:
