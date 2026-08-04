@@ -1,4 +1,5 @@
 align:
+# grid reference
   reference: datafiles/process_out/masks/crown_mask.tif
   src_dir: datafiles/OM_domAligned
   out_dir: datafiles/process_out/timeseries
@@ -11,7 +12,29 @@ coreg:
   # features. Filled in after the first visual inspection of the AOI.
   # List 4-6 tiles: a date needs at least `min_tiles` usable ones, and
   # `spread_m` is meaningless (reported as NaN) with fewer than two.
-  tiles: []
+  #
+  # These six were computed, not eyeballed: sampled 8 dates spread across the
+  # series at 1/16 resolution and scored every possible 512 px tile centre on
+  # low mean NDVI (non-vegetated), low NIR standard deviation across time
+  # (stable), full validity on every sampled date, >=15 m from any crown
+  # polygon and >=60 m from each other. NDVI runs 0.12-0.26 and NIR sd
+  # 0.043-0.057 across the six.
+  #
+  # CAVEAT: all six sit between northing 7238245 and 7238313, the southern
+  # third of the AOI, because the valid footprint plus the crown buffer leaves
+  # nothing usable further north. That is fine for estimating a translation but
+  # resolves rotation or scale error poorly. Add a northern tile if a visual
+  # check turns one up.
+  #
+  # Still worth a look in QGIS before trusting the report: the score cannot
+  # tell a road crossing from a bare patch that merely happened to stay bare.
+  tiles:
+    - [357741.6, 7238270.4]
+    - [357957.2, 7238268.8]
+    - [357801.7, 7238250.4]
+    - [358016.5, 7238277.6]
+    - [357902.7, 7238244.8]
+    - [357783.3, 7238312.8]
   tile_size_px: 512
   max_shift_m: 0.15
   # Reject a tile whose NaN share exceeds this on either date. estimate_shift
