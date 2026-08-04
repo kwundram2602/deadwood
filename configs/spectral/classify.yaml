@@ -15,21 +15,41 @@ paths:
 
 classify:
   # Explicit list — no implicit date window. Every date here must have an
-  # aligned stack and a column in samples.parquet.
+  # aligned stack and a column in samples.parquet. The count drives the feature
+  # width: 6 per-date measures x N, plus 12 temporal aggregates, plus ndsm.
+  #
+  # One seasonal cycle ending at 20260313 — the scene the crown mask and the
+  # field polygons come from, so the labels are valid at the end of it.
+  # Training on the older 2023/24 dates would apply 2026 labels to imagery from
+  # two and a half years earlier.
+  #
+  # Thinned from the 19 available dates to 12 (85 features instead of 127) by
+  # walking the living-crown NDVI curve and spacing picks evenly along its ARC
+  # LENGTH rather than along time: the information sits in the transitions, not
+  # the plateaus. Four dry-season dates were dropped because they repeat each
+  # other; three dates inside five weeks are kept across the green-up because
+  # the curve moves fastest there. Forced keeps: the dry trough (20250907), the
+  # wet peak (20260226), the maximum living-vs-deadwood separation (20251121)
+  # and the survey anchor (20260313).
+  #
+  # Measured median NDVI over the field polygons, for context: living and
+  # deadwood are 0.015 apart in August/September — indistinguishable — and
+  # 0.320 apart on 20251121. That gap is the entire reason this is a time
+  # series and not a single date.
   cycle:
     dates:
-      - "20230824"
-      - "20230906"
-      - "20230918"
-      - "20231018"
-      - "20231103"
-      - "20231115"
-      - "20231129"
-      - "20231206"
-      - "20231219"
-      - "20240116"
-      - "20240130"
-      - "20240212"
+      - "20250417"
+      - "20250526"
+      - "20250605"
+      - "20250719"
+      - "20250907"
+      - "20251015"
+      - "20251027"
+      - "20251121"
+      - "20251219"
+      - "20260126"
+      - "20260226"
+      - "20260313"
   # null = the highest-AUC date from the stage B separability table.
   baseline_date: null
   variants: [full, reduced, baseline]
