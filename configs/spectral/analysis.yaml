@@ -43,6 +43,25 @@ sampling:
     coverages: [nc]
 
 extract:
-  # Drop dates the co-registration report flagged.
-  exclude_flagged_dates: true
+  # DISABLED after measurement, not as a shortcut. Phase-correlation
+  # co-registration is not feasible on this site. Evidence:
+  #   - estimate_shift is correct: on real tile data it recovers a synthetic
+  #     (+3,-2) and (+40,+15) px shift exactly.
+  #   - Between real dates it returns one axis ~0 and the other absurd
+  #     (124, 240, -207 px) — the signature of a correlation peak that is a
+  #     wrap-around artifact rather than a match.
+  #   - The best inter-date Pearson r anywhere in the AOI is 0.603, median
+  #     0.222 over 38 fully-valid non-crown candidate windows. Reliable phase
+  #     correlation needs ~0.9.
+  #   - Even at that best location the estimate is unstable: 20260226 gives
+  #     (-0.0,-0.1) but 20251219 gives (-113,0) at r=0.598.
+  #   - Selecting tiles for texture instead made it worse (36 flagged vs 12).
+  # Cause: savanna at 5 cm has no hard permanent structure. Grass, soil and
+  # shadow content changes completely between flights, so there is nothing for
+  # the correlation to lock onto.
+  # Consequence: the flags are noise, and leaving this true discarded 12 dates
+  # including 3 of the 12 training-cycle dates for no reason.
+  # Registration therefore rests on the upstream _coreg alignment plus the QGIS
+  # overlay check. Residual error is UNQUANTIFIED — state that in any writeup.
+  exclude_flagged_dates: false
   chunk_rows: 2048
