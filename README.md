@@ -114,12 +114,9 @@ separability report.
 uv run python scripts/spectral_report.py --config configs/spectral/analysis.yaml
 ```
 
-Two sampling details cost real ground truth and are worth knowing before reading
-the numbers:
+Two sampling details are worth understanding:
 
-- The quality filter (`certaintyLP >= 50` and `coverage == 'nc'`) leaves only
-  **7 of the 18** `soff` trees. The real `certaintyLP` distribution is
-  0:9, 20:1, 50:3, 100:5.
+- The quality-filter fields (`certaintyLP >= 50` and `coverage == 'nc'`) represent real field-survey attributes. A strict filter using them would leave only 7 of the 18 `soff` trees (real distribution: 0:9, 20:1, 50:3, 100:5); the classifier trains on all 18 instead.
 - `sampling.erode_m` (0.10 m) shrinks each `soff` crown before rasterizing it as
   deadwood. The smallest real `soff` crown is 0.02 m² — 7 pixels at 5 cm — and
   erosion empties it completely, so only 17 of 18 trees actually contribute
@@ -145,8 +142,7 @@ Two things to know before reading those two artefacts:
   P(deadwood > living): deadwood NDVI sits *below* living NDVI, so a
   well-separated date shows `auc_raw` near 0. `auc_sep` is the folded
   magnitude, `max(auc_raw, 1 − auc_raw)` — "how well separated", regardless of
-  which class is on top — and it is what `best_date` selects the single-date
-  baseline on. Read `auc_sep` for separation, `auc_raw` for direction.
+  which class is on top. Read `auc_sep` for separation, `auc_raw` for direction.
 
 ### Stage C — Classify and map
 
@@ -187,6 +183,5 @@ a cycle where most of an object's footprint was nodata can otherwise look
 
 Only 18 deadwood trees exist in the field data, so every metric is validated
 grouped by tree and the per-tree spread matters more than the mean. The
-quality filter and the erosion step above both shrink that 18 further before
-training ever sees it. The living labels come from the model's crown
+erosion step above shrinks that 18 further before training ever sees it. The living labels come from the model's crown
 prediction, not from field polygons, and can contain undetected deadwood.
