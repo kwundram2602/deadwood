@@ -150,29 +150,21 @@ Two things to know before reading those two artefacts:
 
 ### Stage C — Classify and map
 
-Trains a RandomForest for every combination of three feature variants
-(`full`, `reduced`, `baseline`) and two label sets — `filtered` (the quality
-filter above) and `all` (every sampled row, since the filter costs 11 of 18
-ground-truth trees) — validated grouped by tree (leave-one-tree-out over the
-`soff` trees). `classify.primary_variant` / `classify.primary_label_set`
-(`full` / `filtered` by default) picks which of the trained models is
-persisted and used downstream. Then applies that model to the whole scene.
+Trains one RandomForest on the full feature set (every configured cycle date,
+per-date values + temporal aggregates + nDSM) over every sampled row —
+`certaintyLP`/`coverage`/`quality_ok` stay in the sample table as
+informational columns but no longer filter what the model trains on.
+Validated grouped by tree (`StratifiedGroupKFold` plus leave-one-tree-out over
+the `soff` trees). Then applies that model to the whole scene.
 
 ```
 uv run python scripts/spectral_classify.py --config configs/spectral/classify.yaml
 uv run python scripts/spectral_apply.py    --config configs/spectral/classify.yaml
 ```
 
-`variant_comparison.csv` carries `n_samples`, `n_groups` and
-`n_deadwood_groups` per row, and they are **not** the same across variants.
-Rows missing a value on any of a variant's dates are dropped before fitting,
-so the 1-date `baseline` keeps rows the 12-date `full` drops — and can keep
-whole trees that `full` loses. Where those numbers differ between two rows,
-part of the score difference is a population difference rather than a
-feature-set difference; the run logs a warning naming the affected label set.
-`train_variant` also logs the NaN drop per class, how many groups lost rows,
-and names any group that lost all of them — with only 7 trees in the filtered
-label set, losing one silently would matter.
+`train_model` logs the NaN drop per class, how many groups lost rows, and
+names any group that lost all of them — with only 18 trees total, losing one
+silently would matter.
 
 Outputs: `deadwood_prob.tif`, `deadwood_class.tif`, `deadwood_objects.gpkg`
 (paths set in `classify.yaml`'s `apply` block). Roughly 45% of a real aligned
