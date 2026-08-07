@@ -320,8 +320,6 @@ def run_report(df: pd.DataFrame, dates: list[str], out_dir: str | Path) -> Path:
     if not sep.empty:
         _plot_separability_heatmap(sep, out_dir)
     _plot_amplitude(df, dates, out_dir)
-    _plot_by_group(df, dates, out_dir, "species", "deadwood_by_species.png",
-                   "Deadwood ndvi by species (median)")
     _plot_by_group(df, dates, out_dir, "quality_ok", "deadwood_by_quality.png",
                    "Deadwood ndvi by label-quality group (median)")
 

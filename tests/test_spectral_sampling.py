@@ -27,16 +27,15 @@ GRID = ReferenceGrid(100, 100, from_origin(1000.0, 2000.0, 1.0, 1.0), rasterio.c
 
 
 def _gdf(tmp_path, rows):
-    """rows: list of (tree_id, category, certainty, coverage, species, x, y, size)."""
+    """rows: list of (tree_id, category, certainty, coverage, x, y, size)."""
     records = []
-    for tree_id, cat, cert, cov, species, x, y, size in rows:
+    for tree_id, cat, cert, cov, x, y, size in rows:
         records.append(
             {
                 "tree_id": tree_id,
                 "crown_category": cat,
                 "certaintyLP": cert,
                 "coverage": cov,
-                "species": species,
                 "geometry": box(x, y, x + size, y + size),
             }
         )
@@ -47,10 +46,10 @@ def _gdf(tmp_path, rows):
 
 def _default_rows():
     return [
-        ("4170", "soff", 100, "nc", "acanig", 1010.0, 1910.0, 10.0),
-        ("4178", "soff", 0, "pc ", "sclbir", 1030.0, 1910.0, 10.0),
-        ("4345", "son", 100, "nc", "diccin", 1060.0, 1910.0, 10.0),
-        ("4999", "dead_fallen", 100, "nc", "terser", 1080.0, 1910.0, 10.0),
+        ("4170", "soff", 100, "nc", 1010.0, 1910.0, 10.0),
+        ("4178", "soff", 0, "pc ", 1030.0, 1910.0, 10.0),
+        ("4345", "son", 100, "nc", 1060.0, 1910.0, 10.0),
+        ("4999", "dead_fallen", 100, "nc", 1080.0, 1910.0, 10.0),
     ]
 
 
@@ -78,7 +77,7 @@ def test_load_crowns_keeps_only_son_and_soff(tmp_path):
 
 def test_load_crowns_normalises_coverage_whitespace_and_case(tmp_path):
     rows = _default_rows()
-    rows[1] = ("4178", "soff", 0, "NC ", "sclbir", 1030.0, 1910.0, 10.0)
+    rows[1] = ("4178", "soff", 0, "NC ", 1030.0, 1910.0, 10.0)
     gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     assert gdf.loc[gdf["tree_id"] == "4178", "coverage"].item() == "nc"
 
@@ -135,7 +134,7 @@ def test_pools_are_disjoint_and_nonempty(tmp_path):
 def test_living_pool_excludes_buffered_soff(tmp_path):
     # A soff polygon placed inside the crown blob must be removed from `living`
     # together with its exclusion buffer.
-    rows = _default_rows() + [("5000", "soff", 100, "nc", "acanig", 1010.0, 1905.0, 6.0)]
+    rows = _default_rows() + [("5000", "soff", 100, "nc", 1010.0, 1905.0, 6.0)]
     gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools = build_pools(crown, valid, gdf, GRID, exclude_buffer_m=3.0)
@@ -173,7 +172,7 @@ def test_draw_samples_columns_and_class_codes(tmp_path):
     df = draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)
     expected = {
         "row", "col", "class_name", "class_code", "tree_id",
-        "group_id", "species", "certaintyLP", "coverage", "quality_ok",
+        "group_id", "certaintyLP", "coverage", "quality_ok",
     }
     assert expected <= set(df.columns)
     assert set(df["class_name"]) == set(CLASS_CODES)
@@ -221,11 +220,11 @@ def test_draw_samples_deadwood_attribution_survives_son_overlap(tmp_path):
     # soff crown. rasterize() resolves overlaps last-shape-wins, so if the
     # deadwood pool were attributed off a raster burned from the *full* gdf
     # (son + soff together), most of the soff tree's pixels would silently
-    # pick up the overlapping son tree's id/species/group_id and the grouped
+    # pick up the overlapping son tree's id/group_id and the grouped
     # CV guarantee (no tree's pixels split across train/test) would break.
     rows = _default_rows() + [
-        ("9001", "soff", 100, "nc", "acanig", 1005.0, 1905.0, 8.0),
-        ("9002", "son", 100, "nc", "diccin", 1007.0, 1905.0, 8.0),
+        ("9001", "soff", 100, "nc", 1005.0, 1905.0, 8.0),
+        ("9002", "son", 100, "nc", 1007.0, 1905.0, 8.0),
     ]
     gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
@@ -268,7 +267,7 @@ def test_build_pools_logs_soff_crowns_emptied_by_erosion(tmp_path, caplog):
     # applied on both sides of its boundary via buffer(); it must not vanish
     # from ground truth silently — the smallest real soff crown is 0.02 m^2
     # and erosion destroys it completely, so this must be logged.
-    rows = _default_rows() + [("7001", "soff", 100, "nc", "acanig", 1050.0, 1950.0, 3.0)]
+    rows = _default_rows() + [("7001", "soff", 100, "nc", 1050.0, 1950.0, 3.0)]
     gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
@@ -287,7 +286,7 @@ def test_build_pools_does_not_log_when_nothing_is_emptied(tmp_path, caplog):
 
 
 def test_empty_deadwood_pool_raises(tmp_path):
-    rows = [("4345", "son", 100, "nc", "diccin", 1060.0, 1910.0, 10.0)]
+    rows = [("4345", "son", 100, "nc", 1060.0, 1910.0, 10.0)]
     gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     with pytest.raises(ValueError, match="deadwood"):

@@ -224,13 +224,3 @@ def test_run_report_writes_the_amplitude_population(tmp_path):
     row = population[(population["measure"] == "ndvi")
                      & (population["class_name"] == "deadwood")].iloc[0]
     assert (row["n_rows"], row["n_complete"]) == (40, 30)
-
-
-def test_empty_group_plot_leaves_a_log_trace(tmp_path, caplog):
-    """A vanished plot must not be silent — 11 of 18 trees can be filtered out."""
-    import logging
-
-    df = _table().assign(species=np.nan)
-    with caplog.at_level(logging.WARNING, logger="deadwood_spectral.report"):
-        run_report(df, DATES, tmp_path / "rep")
-    assert any("deadwood_by_species.png" in r.getMessage() for r in caplog.records)

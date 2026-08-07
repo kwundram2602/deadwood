@@ -119,17 +119,16 @@ the numbers:
 
 - The quality filter (`certaintyLP >= 50` and `coverage == 'nc'`) leaves only
   **7 of the 18** `soff` trees. The real `certaintyLP` distribution is
-  0:9, 20:1, 50:3, 100:5, and species coverage drops from 6 species to 4.
+  0:9, 20:1, 50:3, 100:5.
 - `sampling.erode_m` (0.10 m) shrinks each `soff` crown before rasterizing it as
   deadwood. The smallest real `soff` crown is 0.02 m² — 7 pixels at 5 cm — and
   erosion empties it completely, so only 17 of 18 trees actually contribute
   deadwood pixels. `build_pools` logs which `tree_id`s it dropped.
 
 The key output is `seasonal_amplitude.png` (alongside `summary.csv`,
-`coverage.csv`, `amplitude_population.csv`, `separability_jm.png`,
-`deadwood_by_species.png` and `deadwood_by_quality.png` in the timestamped
-`out/spectral/<stamp>/` run directory): if deadwood and living do not separate
-there, the approach does not carry.
+`coverage.csv`, `amplitude_population.csv` and `separability_jm.png` in the
+timestamped `out/spectral/<stamp>/` run directory): if deadwood and living do
+not separate there, the approach does not carry.
 
 Two things to know before reading those two artefacts:
 

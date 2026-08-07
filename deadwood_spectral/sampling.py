@@ -212,7 +212,7 @@ def draw_samples(
     # Attribution for deadwood pixels must come from the soff subset only — the
     # deadwood pool is exactly the eroded soff geometry, and rasterizing the full
     # gdf (son + soff together) resolves overlaps last-shape-wins, which can hand
-    # a deadwood pixel a neighbouring LIVING tree's id, species and group_id.
+    # a deadwood pixel a neighbouring LIVING tree's id and group_id.
     soff_raster = rasterize_polygons(
         gdf[gdf["crown_category"] == "soff"], grid, values=gdf.loc[gdf["crown_category"] == "soff", "poly_idx"]
     ).ravel()
@@ -248,14 +248,12 @@ def draw_samples(
         if name == "deadwood":
             poly = soff_raster[idx]
             frame["tree_id"] = attrs.loc[poly, "tree_id"].to_numpy()
-            frame["species"] = attrs.loc[poly, "species"].to_numpy()
             frame["certaintyLP"] = attrs.loc[poly, "certaintyLP"].to_numpy()
             frame["coverage"] = attrs.loc[poly, "coverage"].to_numpy()
             frame["quality_ok"] = attrs.loc[poly, "quality_ok"].to_numpy()
             frame["group_id"] = "tree:" + frame["tree_id"].astype(str)
         else:
             frame["tree_id"] = pd.NA
-            frame["species"] = pd.NA
             frame["certaintyLP"] = pd.NA
             frame["coverage"] = pd.NA
             frame["quality_ok"] = True

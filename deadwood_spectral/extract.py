@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 LABEL_COLUMNS = (
     "row", "col", "class_name", "class_code", "tree_id",
-    "group_id", "species", "certaintyLP", "coverage", "quality_ok",
+    "group_id", "certaintyLP", "coverage", "quality_ok",
 )
 
 
