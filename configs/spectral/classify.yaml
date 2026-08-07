@@ -50,21 +50,6 @@ classify:
       - "20260126"
       - "20260226"
       - "20260313"
-  # null = the highest-AUC date from the stage B separability table.
-  baseline_date: null
-  variants: [full, reduced, baseline]
-  # The field-label quality filter (certaintyLP >= 50 and coverage == 'nc')
-  # leaves only 7 of the 18 deadwood ground-truth trees on the real data — far
-  # more costly than expected. Train and compare both label sets so it stays
-  # visible whether the 11 uncertain trees carry signal or noise.
-  #   filtered = rows where quality_ok is True
-  #   all      = every row
-  label_sets: [filtered, all]
-  # The variant whose model is persisted and used by apply.py.
-  primary_variant: full
-  # The label set whose model is persisted. Six (variant x label_set) models
-  # are trained; this plus primary_variant picks the one that ships.
-  primary_label_set: filtered
   n_splits: 5
   n_estimators: 400
   seed: 0
