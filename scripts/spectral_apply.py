@@ -20,7 +20,7 @@ from deadwood_spectral.apply import (  # noqa: E402
     assert_labels_match_objects,
     predict_scene,
 )
-from deadwood_spectral.classify import load_model, variant_spec  # noqa: E402
+from deadwood_spectral.classify import load_model  # noqa: E402
 from deadwood_spectral.extract import (  # noqa: E402
     NDSM_REFERENCE_FILE,
     assert_same_ndsm,
@@ -88,11 +88,10 @@ def main() -> None:
         logger.info("nDSM matches the one used for training")
 
     dates = [str(d) for d in cfg.classify.cycle.dates]
-    baseline = str(cfg.classify.baseline_date) if cfg.classify.baseline_date else dates[-1]
-    variant_dates, switches = variant_spec(str(cfg.classify.primary_variant), dates, baseline)
+    switches = {"per_date": True, "temporal": True, "static": True}
 
     proba = predict_scene(
-        cfg.paths.stack_dir, variant_dates, grid, model, features, cfg.paths.ndsm, switches,
+        cfg.paths.stack_dir, dates, grid, model, features, cfg.paths.ndsm, switches,
         tile_size=int(cfg.apply.tile_size), stride=int(cfg.apply.stride),
     )
     class_raster = class_raster_from_proba(proba)
@@ -133,10 +132,10 @@ def main() -> None:
     validity_masks = {}
     for cycle_name, cycle_dates in cfg.retrospect.cycles.items():
         cycle_dates = [str(d) for d in cycle_dates]
-        if len(cycle_dates) != len(variant_dates):
+        if len(cycle_dates) != len(dates):
             raise ValueError(
                 f"retrospect cycle {cycle_name!r} has {len(cycle_dates)} dates; "
-                f"the model needs exactly {len(variant_dates)} dates (the same "
+                f"the model needs exactly {len(dates)} dates (the same "
                 "count as the training cycle) because the feature vector has a "
                 "fixed length"
             )
