@@ -266,34 +266,6 @@ def _plot_amplitude(df, dates, out_dir) -> None:
     )
 
 
-def _plot_by_group(df, dates, out_dir, column, filename, title) -> None:
-    # A plot that never appears must leave a trace: only 7 of the 18 deadwood
-    # trees pass the default quality filter, so an empty group here is a
-    # plausible outcome, not an impossible one.
-    if column not in df.columns:
-        logger.warning("skipping %s: no %r column in the sample table", filename, column)
-        return
-    subset = df[df["class_name"] == "deadwood"].dropna(subset=[column])
-    if subset.empty:
-        logger.warning(
-            "skipping %s: no deadwood rows with a non-null %r value", filename, column
-        )
-        return
-    columns = [feature_column("ndvi", d) for d in dates if feature_column("ndvi", d) in df]
-    x = np.arange(len(columns))
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    for key, group in subset.groupby(column):
-        ax.plot(x, group[columns].median(), marker="o", label=f"{column}={key}")
-    ax.set_xticks(x)
-    ax.set_xticklabels([c.rsplit("_", 1)[1] for c in columns], rotation=60, ha="right")
-    ax.set_ylabel("ndvi")
-    ax.set_title(title)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(Path(out_dir) / filename, dpi=140)
-    plt.close(fig)
-
-
 def run_report(df: pd.DataFrame, dates: list[str], out_dir: str | Path) -> Path:
     """Write every plot and summary.csv; return the output directory."""
     out_dir = Path(out_dir)
@@ -320,8 +292,6 @@ def run_report(df: pd.DataFrame, dates: list[str], out_dir: str | Path) -> Path:
     if not sep.empty:
         _plot_separability_heatmap(sep, out_dir)
     _plot_amplitude(df, dates, out_dir)
-    _plot_by_group(df, dates, out_dir, "quality_ok", "deadwood_by_quality.png",
-                   "Deadwood ndvi by label-quality group (median)")
 
     logger.info("report written to %s", out_dir)
     return out_dir

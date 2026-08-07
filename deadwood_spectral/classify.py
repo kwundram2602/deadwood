@@ -1,16 +1,10 @@
 """Train the deadwood classifier and validate it honestly.
 
-Three feature variants run side by side: the full feature set, the temporal
-aggregates alone, and a single-date baseline. The baseline is the bar the time
-series has to clear — if one flight does as well as twelve, that is the result
-worth reporting, not a disappointment.
-
-Two label sets run alongside them. The default field-label quality filter
-(`certaintyLP >= 50` and `coverage == 'nc'`) is far more costly than expected
-on the real data: it leaves only 7 of the 18 deadwood trees. `apply_label_set`
-lets the caller compare `filtered` against `all` so it stays visible whether
-the 11 uncertain trees carry signal or noise, rather than quietly assuming the
-filter is free.
+One RandomForest, the full feature set (every configured cycle date, per-date
+values plus temporal aggregates plus nDSM), trained on every sampled row —
+no quality-filter split. `certaintyLP`/`coverage`/`quality_ok` stay in the
+sample table as informational columns; they no longer gate what the
+classifier trains on.
 
 All validation is grouped by tree. Pixels of one crown are near-duplicates, so
 an ungrouped score would look excellent and mean nothing.
@@ -37,54 +31,8 @@ from deadwood_spectral.sampling import CLASS_CODES
 
 logger = logging.getLogger(__name__)
 
-VARIANTS: tuple[str, ...] = ("full", "reduced", "baseline")
-LABEL_SETS: tuple[str, ...] = ("filtered", "all")
 CODE_TO_NAME = {code: name for name, code in CLASS_CODES.items()}
 DEADWOOD_CODE = CLASS_CODES["deadwood"]
-
-
-def variant_spec(
-    name: str, dates: list[str], baseline_date: str
-) -> tuple[list[str], dict[str, bool]]:
-    """The dates and feature-group switches a variant uses."""
-    if name == "full":
-        return list(dates), {"per_date": True, "temporal": True, "static": True}
-    if name == "reduced":
-        return list(dates), {"per_date": False, "temporal": True, "static": True}
-    if name == "baseline":
-        if baseline_date not in dates:
-            raise ValueError(f"baseline_date {baseline_date!r} is not in the cycle {dates}")
-        # Temporal aggregates over a single date are degenerate by definition.
-        return [baseline_date], {"per_date": True, "temporal": False, "static": True}
-    raise ValueError(f"unknown variant {name!r}; expected one of {VARIANTS}")
-
-
-def apply_label_set(table: pd.DataFrame, label_set: str) -> pd.DataFrame:
-    """Select the rows a label set is allowed to train/validate on.
-
-    `all` keeps every row. `filtered` keeps only rows with `quality_ok`. The
-    negative classes (living, background) are `quality_ok=True` by
-    construction — they never came through the field certainty/coverage
-    filter — so a well-formed table's quality filter should only ever drop
-    deadwood rows. That is checked here rather than assumed: if it does not
-    hold, the label sets would silently compare different negative-class
-    populations too, which would confound the comparison.
-    """
-    if label_set == "all":
-        return table
-    if label_set != "filtered":
-        raise ValueError(f"unknown label_set {label_set!r}; expected one of {LABEL_SETS}")
-
-    mask = table["quality_ok"].astype(bool)
-    dropped = table.loc[~mask]
-    if not dropped.empty and not (dropped["class_code"] == DEADWOOD_CODE).all():
-        offenders = sorted(dropped.loc[dropped["class_code"] != DEADWOOD_CODE, "class_code"].unique())
-        raise ValueError(
-            "quality_ok filter dropped non-deadwood rows (class codes "
-            f"{offenders}) — the negative classes are expected to be quality_ok "
-            "by construction; check apply_quality_filter and the sampling pipeline"
-        )
-    return table.loc[mask].reset_index(drop=True)
 
 
 def make_model(seed: int = 0, n_estimators: int = 400) -> RandomForestClassifier:
@@ -192,19 +140,16 @@ def leave_one_tree_out(
     return pd.DataFrame(records)
 
 
-def train_variant(
+def train_model(
     table: pd.DataFrame,
     dates: list[str],
-    variant: str,
-    baseline_date: str,
     seed: int = 0,
     n_splits: int = 5,
     n_estimators: int = 400,
 ) -> dict:
     """Build features, run grouped CV and leave-one-tree-out, fit the final model."""
-    variant_dates, switches = variant_spec(variant, dates, baseline_date)
-    matrix = build_features(table, variant_dates, **switches)
-    features = feature_names(variant_dates, **switches)
+    matrix = build_features(table, dates, per_date=True, temporal=True, static=True)
+    features = feature_names(dates, per_date=True, temporal=True, static=True)
 
     finite = matrix.notna().all(axis=1).to_numpy()
     all_y = table["class_code"].to_numpy()
@@ -212,9 +157,8 @@ def train_variant(
     dropped = int((~finite).sum())
     if dropped:
         # A bare count hides the thing that actually matters. Real stacks are
-        # ~45% NaN with a different footprint per date, so a 12-date variant
-        # can drop every pixel of one soff tree and quietly take the filtered
-        # label set from 7 deadwood groups to 6 — a change of ground truth,
+        # ~45% NaN with a different footprint per date, so a 12-date cycle
+        # can drop every pixel of one soff tree — a change of ground truth,
         # reported as a number of rows.
         per_class = {
             CODE_TO_NAME.get(int(c), str(c)): int(((all_y == c) & ~finite).sum())
@@ -224,16 +168,16 @@ def train_variant(
         touched = set(np.unique(all_groups[~finite]).tolist())
         emptied = sorted(g for g in touched if g not in kept_groups)
         logger.warning(
-            "%s: dropping %d row(s) with NaN features — per class %s; "
+            "dropping %d row(s) with NaN features — per class %s; "
             "%d group(s) lost rows, %d group(s) lost ALL their rows",
-            variant, dropped, per_class, len(touched), len(emptied),
+            dropped, per_class, len(touched), len(emptied),
         )
         if emptied:
             logger.warning(
-                "%s: group(s) removed entirely by the NaN drop: %s — the "
-                "population this variant is fitted and scored on is no longer "
+                "group(s) removed entirely by the NaN drop: %s — the "
+                "population this model is fitted and scored on is no longer "
                 "the full label set",
-                variant, emptied,
+                emptied,
             )
 
     X = matrix.to_numpy(dtype=np.float64)[finite]
@@ -250,25 +194,19 @@ def train_variant(
     model.fit(X, y)
 
     logger.info(
-        "%s: %d features, %d samples, %d deadwood group(s), deadwood recall %.3f "
+        "%d features, %d samples, %d deadwood group(s), deadwood recall %.3f "
         "(grouped CV), per-tree recall median %.3f [%.3f-%.3f]",
-        variant, len(features), len(y), len(deadwood_groups),
+        len(features), len(y), len(deadwood_groups),
         float(metrics.set_index("class_name").loc["deadwood", "recall"]),
         float(loto["recall"].median()) if len(loto) else float("nan"),
         float(loto["recall"].min()) if len(loto) else float("nan"),
         float(loto["recall"].max()) if len(loto) else float("nan"),
     )
     return {
-        "variant": variant,
-        "dates": variant_dates,
         "model": model,
         "features": features,
         "n_features": len(features),
         "n_samples": int(len(y)),
-        # Carried into variant_comparison.csv: variants use different date
-        # counts, so the NaN drop removes different rows — and can remove
-        # whole trees. Without these two columns the comparison table looks
-        # like it compares models on one population when it does not.
         "n_groups": int(len(set(groups.tolist()))),
         "n_deadwood_groups": int(len(deadwood_groups)),
         "deadwood_groups": deadwood_groups,
