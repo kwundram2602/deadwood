@@ -109,7 +109,7 @@ def aggregate_series(series: dict[str, np.ndarray], min_valid_dates: int = 4) ->
         raise ValueError(f"missing measure(s) in series: {missing}")
 
     stacked = np.stack([np.asarray(series[m], dtype=np.float64) for m in MEASURES])
-    valid = np.isfinite(stacked).all(axis=0)
+    valid = np.asarray(np.isfinite(stacked).all(axis=0))
     n_valid = valid.sum(axis=1)
     enough = n_valid >= max(1, int(min_valid_dates))
 
