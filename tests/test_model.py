@@ -385,3 +385,48 @@ def test_aggregate_crowns_reports_mean_height():
     ndsm = np.full((8, 8), 9.0, dtype="float32")
     out = aggregate_crowns(crown, rows, cols, _one_crown_proba(), GRID, ndsm=ndsm)
     assert out.loc[0, "mean_height_m"] == pytest.approx(9.0, abs=1e-6)
+
+
+def test_aggregate_crowns_computes_fractions_over_evaluated_pixels_only():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    proba = np.array(
+        [
+            [np.nan, np.nan, np.nan],
+            [np.nan, np.nan, np.nan],
+            [0.0, 0.0, 1.0],  # deadwood
+            [0.0, 1.0, 0.0],  # living
+        ]
+    )
+    out = aggregate_crowns(crown, rows, cols, proba, GRID)
+    total = out.loc[0, "dead_frac"] + out.loc[0, "living_frac"] + out.loc[0, "background_frac"]
+    assert total == pytest.approx(1.0)
+    # Denominator must be the 2 evaluated pixels, not the 4 total pixels:
+    # over 2, dead_frac == 0.5; over 4 (wrong), it would come out as 0.25.
+    assert out.loc[0, "dead_frac"] == pytest.approx(0.5)
+    assert out.loc[0, "living_frac"] == pytest.approx(0.5)
+    assert out.loc[0, "n_px"] == 4
+    assert out.loc[0, "label"] != "unevaluated"
+
+
+def test_aggregate_crowns_handles_no_components():
+    crown = np.zeros((8, 8), dtype=bool)
+    rows, cols = np.nonzero(crown)
+    proba = np.zeros((0, 3))
+    out = aggregate_crowns(crown, rows, cols, proba, GRID)
+    assert len(out) == 0
+    assert out.crs == GRID.crs
+    assert list(out.columns) == [
+        "crown_id",
+        "n_px",
+        "area_m2",
+        "dead_frac",
+        "living_frac",
+        "background_frac",
+        "p_dead_mean",
+        "p_dead_median",
+        "mean_height_m",
+        "label",
+        "geometry",
+    ]
