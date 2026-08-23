@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deadwood_spectral.grid import ReferenceGrid  # noqa: E402
 from deadwood_spectral.model import (  # noqa: E402
     DEADWOOD_CODE,
+    aggregate_crowns,
     grouped_cv,
     leave_one_tree_out,
     load_model,
@@ -312,3 +313,75 @@ def test_write_probability_raster_leaves_non_crown_pixels_nan(tmp_path):
     assert data[1, 2] == pytest.approx(0.7, abs=1e-6)
     assert data[1, 3] == pytest.approx(0.1, abs=1e-6)
     assert np.isnan(data[0, 0])
+
+
+def _one_crown_proba(dead=1.0, living=0.0, background=0.0, n=4):
+    return np.tile(np.array([background, living, dead], dtype=float), (n, 1))
+
+
+def test_aggregate_crowns_labels_a_dead_crown():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    out = aggregate_crowns(crown, rows, cols, _one_crown_proba(), GRID)
+    assert len(out) == 1
+    assert out.loc[0, "label"] == "deadwood"
+    assert out.loc[0, "dead_frac"] == pytest.approx(1.0)
+    assert out.loc[0, "n_px"] == 4
+    assert out.loc[0, "area_m2"] == pytest.approx(4.0)  # 1 px == 1 m im Test-Grid
+
+
+def test_aggregate_crowns_labels_a_living_crown():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    out = aggregate_crowns(crown, rows, cols, _one_crown_proba(dead=0.1, living=0.9), GRID)
+    assert out.loc[0, "label"] == "living"
+
+
+def test_aggregate_crowns_rejects_a_crown_the_classifier_reads_as_background():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    out = aggregate_crowns(crown, rows, cols, _one_crown_proba(dead=0.0, background=1.0), GRID)
+    assert out.loc[0, "label"] == "rejected"
+
+
+def test_aggregate_crowns_separates_two_components():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[0:2, 0:2] = True
+    crown[5:7, 5:7] = True
+    rows, cols = np.nonzero(crown)
+    proba = np.zeros((rows.size, 3))
+    proba[rows < 3] = [0.0, 0.0, 1.0]  # erste Komponente tot
+    proba[rows >= 3] = [0.0, 1.0, 0.0]  # zweite lebend
+    out = aggregate_crowns(crown, rows, cols, proba, GRID)
+    assert len(out) == 2
+    assert sorted(out["label"]) == ["deadwood", "living"]
+
+
+def test_aggregate_crowns_fractions_sum_to_one():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    proba = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0], [0, 0, 1.0]])
+    out = aggregate_crowns(crown, rows, cols, proba, GRID)
+    total = out.loc[0, "dead_frac"] + out.loc[0, "living_frac"] + out.loc[0, "background_frac"]
+    assert total == pytest.approx(1.0)
+
+
+def test_aggregate_crowns_marks_a_crown_with_no_usable_pixel():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    out = aggregate_crowns(crown, rows, cols, np.full((4, 3), np.nan), GRID)
+    assert out.loc[0, "label"] == "unevaluated"
+
+
+def test_aggregate_crowns_reports_mean_height():
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    rows, cols = np.nonzero(crown)
+    ndsm = np.full((8, 8), 9.0, dtype="float32")
+    out = aggregate_crowns(crown, rows, cols, _one_crown_proba(), GRID, ndsm=ndsm)
+    assert out.loc[0, "mean_height_m"] == pytest.approx(9.0, abs=1e-6)

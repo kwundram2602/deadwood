@@ -11,10 +11,14 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
+import geopandas as gpd
 import joblib
 import numpy as np
 import pandas as pd
 import rasterio
+from rasterio.features import shapes as rio_shapes
+from shapely.geometry import shape as shapely_shape
+from skimage.measure import label as cc_label
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import precision_recall_fscore_support
@@ -351,3 +355,133 @@ def write_probability_raster(
         dst.write(raster, 1)
         dst.set_band_description(1, "p_deadwood")
     return path
+
+
+CROWN_COLUMNS = [
+    "crown_id",
+    "n_px",
+    "area_m2",
+    "dead_frac",
+    "living_frac",
+    "background_frac",
+    "p_dead_mean",
+    "p_dead_median",
+    "mean_height_m",
+    "label",
+    "geometry",
+]
+
+
+def aggregate_crowns(
+    crown: np.ndarray,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    proba: np.ndarray,
+    grid: ReferenceGrid,
+    ndsm: np.ndarray | None = None,
+    dead_frac_threshold: float = 0.5,
+) -> gpd.GeoDataFrame:
+    """Zusammenhangskomponenten der Kronen-Prediction -> ein Datensatz je Krone.
+
+    Zusammenhangskomponenten statt Watershed: eine bewusste Vereinfachung.
+    Sich berührende Kronen verschmelzen zu einem Objekt, was ehrlich ist
+    gegenüber dem, was 18 Trainingsbäume tragen.
+    """
+    labels = cc_label(crown, connectivity=2)
+    pixel_area = abs(grid.transform.a) * abs(grid.transform.e)
+    per_pixel_label = labels[rows, cols]
+    usable = np.isfinite(proba).all(axis=1)
+    predicted = np.full(rows.size, -1, dtype=np.int64)
+    predicted[usable] = proba[usable].argmax(axis=1)
+
+    records = []
+    for crown_id in range(1, int(labels.max()) + 1):
+        member = per_pixel_label == crown_id
+        n_px = int(member.sum())
+        if n_px == 0:
+            continue
+        evaluated = member & usable
+        n_evaluated = int(evaluated.sum())
+
+        record = {
+            "crown_id": crown_id,
+            "n_px": n_px,
+            "area_m2": float(n_px) * pixel_area,
+            "geometry": _component_polygon(labels, crown_id, grid),
+        }
+        if n_evaluated == 0:
+            record.update(
+                dead_frac=float("nan"),
+                living_frac=float("nan"),
+                background_frac=float("nan"),
+                p_dead_mean=float("nan"),
+                p_dead_median=float("nan"),
+                label="unevaluated",
+            )
+        else:
+            classes = predicted[evaluated]
+            fractions = {
+                name: float(np.mean(classes == code)) for code, name in CODE_TO_NAME.items()
+            }
+            dead_probability = proba[evaluated, DEADWOOD_CODE]
+            record.update(
+                dead_frac=fractions["deadwood"],
+                living_frac=fractions["living"],
+                background_frac=fractions["background"],
+                p_dead_mean=float(dead_probability.mean()),
+                p_dead_median=float(np.median(dead_probability)),
+                label=_crown_label(fractions, dead_frac_threshold),
+            )
+
+        if ndsm is None:
+            record["mean_height_m"] = float("nan")
+        else:
+            heights = ndsm[rows[member], cols[member]]
+            heights = heights[np.isfinite(heights)]
+            record["mean_height_m"] = float(heights.mean()) if heights.size else float("nan")
+        records.append(record)
+
+    logger.info(
+        "aggregated %d crown(s): %s",
+        len(records),
+        dict(pd.Series([r["label"] for r in records]).value_counts()) if records else {},
+    )
+    if not records:
+        return gpd.GeoDataFrame(
+            {c: pd.Series(dtype="object") for c in CROWN_COLUMNS if c != "geometry"},
+            geometry=gpd.GeoSeries([], crs=grid.crs),
+            crs=grid.crs,
+        )[CROWN_COLUMNS]
+    return gpd.GeoDataFrame(records, geometry="geometry", crs=grid.crs)[CROWN_COLUMNS]
+
+
+def _crown_label(fractions: dict[str, float], dead_frac_threshold: float) -> str:
+    """`rejected` schlägt `deadwood`: eine überwiegend als Hintergrund gelesene
+    Krone ist keine Krone, und ihr Totholz-Anteil ist dann bedeutungslos."""
+    if fractions["background"] >= 0.5:
+        return "rejected"
+    if fractions["deadwood"] >= dead_frac_threshold:
+        return "deadwood"
+    return "living"
+
+
+def _component_polygon(labels: np.ndarray, crown_id: int, grid: ReferenceGrid):
+    """Polygon einer Komponente, gerechnet in ihrer Bounding Box.
+
+    Eine szenenweite `labels == crown_id`-Maske je Komponente kostet auf dem
+    realen Gitter ~59 ms; über einige Tausend Kronen ist das Minuten für nichts.
+    """
+    from rasterio.transform import Affine
+    from scipy import ndimage
+
+    boxes = ndimage.find_objects(labels, max_label=crown_id)
+    box = boxes[crown_id - 1]
+    mask = labels[box] == crown_id
+    box_transform = grid.transform * Affine.translation(box[1].start, box[0].start)
+    polygons = [
+        shapely_shape(geom)
+        for geom, _ in rio_shapes(
+            mask.astype(np.uint8), mask=mask, transform=box_transform, connectivity=8
+        )
+    ]
+    return polygons[0] if len(polygons) == 1 else max(polygons, key=lambda p: p.area)
