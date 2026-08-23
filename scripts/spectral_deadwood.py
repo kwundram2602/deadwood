@@ -62,6 +62,11 @@ def _sample_table(cfg, grid, dates) -> pd.DataFrame:
     params["min_valid_dates"] = int(cfg.window.min_valid_dates)
     params["ndsm"] = str(cfg.paths.ndsm)
     params["crown_prediction"] = str(cfg.paths.crown_prediction)
+    params["reference"] = str(cfg.paths.reference)
+    params["crowns"] = [
+        [str(Path(p).resolve()), Path(p).stat().st_size, Path(p).stat().st_mtime_ns]
+        for p in cfg.paths.crowns
+    ]
     fingerprint = sampling_fingerprint(dates, params)
 
     if cache.exists():
