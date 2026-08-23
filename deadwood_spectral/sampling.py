@@ -39,7 +39,6 @@ def load_crowns(paths: Sequence[str | Path], grid: ReferenceGrid) -> gpd.GeoData
     gdf = gdf[gdf["crown_category"].isin(INCLUDE_CATEGORIES)].copy()
     # The field table contains 'nc ' with a trailing space and mixed case.
     gdf["coverage"] = gdf["coverage"].astype("string").str.strip().str.lower()
-    gdf["certaintyLP"] = pd.to_numeric(gdf["certaintyLP"], errors="coerce").fillna(0).astype(int)
     gdf["tree_id"] = gdf["tree_id"].astype("string")
     gdf = gdf[gdf.geometry.notna() & gdf.geometry.is_valid].reset_index(drop=True)
     # 1-based: 0 is the rasterize fill value meaning "no polygon".
@@ -48,27 +47,6 @@ def load_crowns(paths: Sequence[str | Path], grid: ReferenceGrid) -> gpd.GeoData
         "%d crown polygons (%s)",
         len(gdf),
         dict(gdf["crown_category"].value_counts()),
-    )
-    return gdf
-
-
-def apply_quality_filter(
-    gdf: gpd.GeoDataFrame,
-    min_certainty: int = 50,
-    coverages: Sequence[str] = ("nc",),
-) -> gpd.GeoDataFrame:
-    """Flag polygons that pass the label-quality bar. Drops nothing.
-
-    With 18 positives it must stay visible what the filter costs, so the
-    excluded trees are carried through and reported separately.
-    """
-    gdf = gdf.copy()
-    gdf["quality_ok"] = (gdf["certaintyLP"] >= min_certainty) & gdf["coverage"].isin(
-        list(coverages)
-    )
-    logger.info(
-        "quality filter: %d/%d polygons pass (certaintyLP >= %d, coverage in %s)",
-        int(gdf["quality_ok"].sum()), len(gdf), min_certainty, list(coverages),
     )
     return gdf
 
@@ -248,15 +226,11 @@ def draw_samples(
         if name == "deadwood":
             poly = soff_raster[idx]
             frame["tree_id"] = attrs.loc[poly, "tree_id"].to_numpy()
-            frame["certaintyLP"] = attrs.loc[poly, "certaintyLP"].to_numpy()
             frame["coverage"] = attrs.loc[poly, "coverage"].to_numpy()
-            frame["quality_ok"] = attrs.loc[poly, "quality_ok"].to_numpy()
             frame["group_id"] = "tree:" + frame["tree_id"].astype(str)
         else:
             frame["tree_id"] = pd.NA
-            frame["certaintyLP"] = pd.NA
             frame["coverage"] = pd.NA
-            frame["quality_ok"] = True
             frame["group_id"] = "block:" + pd.Series(blocks[idx]).astype(str)
         frames.append(frame)
 

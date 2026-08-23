@@ -1,10 +1,7 @@
 """Train the deadwood classifier and validate it honestly.
 
 One RandomForest, the full feature set (every configured cycle date, per-date
-values plus temporal aggregates plus nDSM), trained on every sampled row —
-no quality-filter split. `certaintyLP`/`coverage`/`quality_ok` stay in the
-sample table as informational columns; they no longer gate what the
-classifier trains on.
+values plus temporal aggregates plus nDSM), trained on every sampled row.
 
 All validation is grouped by tree. Pixels of one crown are near-duplicates, so
 an ungrouped score would look excellent and mean nothing.
@@ -35,7 +32,7 @@ CODE_TO_NAME = {code: name for name, code in CLASS_CODES.items()}
 DEADWOOD_CODE = CLASS_CODES["deadwood"]
 
 
-def make_model(seed: int = 0, n_estimators: int = 400) -> RandomForestClassifier:
+def make_model(seed: int = 0, n_estimators: int = 400, verbose: int = 0) -> RandomForestClassifier:
     """Class-balanced forest. Balancing matters even after subsampling."""
     return RandomForestClassifier(
         n_estimators=n_estimators,
@@ -43,6 +40,7 @@ def make_model(seed: int = 0, n_estimators: int = 400) -> RandomForestClassifier
         min_samples_leaf=2,
         n_jobs=-1,
         random_state=seed,
+        verbose=verbose,
     )
 
 
@@ -98,14 +96,19 @@ def grouped_cv(
     seed: int = 0,
     n_splits: int = 5,
     n_estimators: int = 400,
+    verbose: int = 0,
 ) -> tuple[np.ndarray, pd.DataFrame]:
     """Out-of-fold probabilities and per-class metrics, grouped by tree/block."""
     n_splits = _safe_n_splits(y, groups, n_splits)
     splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
     proba = np.zeros((len(y), len(CODE_TO_NAME)), dtype=np.float64)
-    for train_idx, test_idx in splitter.split(X, y, groups):
-        model = make_model(seed, n_estimators=n_estimators)
+    for fold, (train_idx, test_idx) in enumerate(splitter.split(X, y, groups), start=1):
+        logger.info(
+            "grouped_cv: fold %d/%d (%d train, %d test)",
+            fold, n_splits, len(train_idx), len(test_idx),
+        )
+        model = make_model(seed, n_estimators=n_estimators, verbose=verbose)
         model.fit(X[train_idx], y[train_idx])
         fold_proba = model.predict_proba(X[test_idx])
         # A fold can miss a class entirely; map columns back by class label.
@@ -116,7 +119,12 @@ def grouped_cv(
 
 
 def leave_one_tree_out(
-    X: np.ndarray, y: np.ndarray, groups: np.ndarray, seed: int = 0, n_estimators: int = 400
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    seed: int = 0,
+    n_estimators: int = 400,
+    verbose: int = 0,
 ) -> pd.DataFrame:
     """Per-tree deadwood recall when that tree is held out entirely.
 
@@ -125,9 +133,13 @@ def leave_one_tree_out(
     """
     tree_groups = sorted({g for g, label in zip(groups, y) if label == DEADWOOD_CODE})
     records = []
-    for tree in tree_groups:
+    for i, tree in enumerate(tree_groups, start=1):
         held_out = groups == tree
-        model = make_model(seed, n_estimators=n_estimators)
+        logger.info(
+            "leave_one_tree_out: tree %d/%d (%s, %d pixels held out)",
+            i, len(tree_groups), tree, int(held_out.sum()),
+        )
+        model = make_model(seed, n_estimators=n_estimators, verbose=verbose)
         model.fit(X[~held_out], y[~held_out])
         predicted = model.predict(X[held_out])
         records.append(
@@ -146,6 +158,7 @@ def train_model(
     seed: int = 0,
     n_splits: int = 5,
     n_estimators: int = 400,
+    verbose: int = 0,
 ) -> dict:
     """Build features, run grouped CV and leave-one-tree-out, fit the final model."""
     matrix = build_features(table, dates, per_date=True, temporal=True, static=True)
@@ -186,11 +199,14 @@ def train_model(
     deadwood_groups = sorted({g for g, label in zip(groups, y) if label == DEADWOOD_CODE})
 
     proba, metrics = grouped_cv(
-        X, y, groups, seed=seed, n_splits=n_splits, n_estimators=n_estimators
+        X, y, groups, seed=seed, n_splits=n_splits, n_estimators=n_estimators, verbose=verbose
     )
-    loto = leave_one_tree_out(X, y, groups, seed=seed, n_estimators=n_estimators)
+    loto = leave_one_tree_out(
+        X, y, groups, seed=seed, n_estimators=n_estimators, verbose=verbose
+    )
 
-    model = make_model(seed, n_estimators=n_estimators)
+    logger.info("fitting final model on all %d samples", len(y))
+    model = make_model(seed, n_estimators=n_estimators, verbose=verbose)
     model.fit(X, y)
 
     logger.info(

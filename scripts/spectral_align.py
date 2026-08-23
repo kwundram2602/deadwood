@@ -1,5 +1,6 @@
 """Stage A: bring every time-series scene onto the crown-mask grid.
-
+    Although the the orginal files are DTM aligned, the need to be realigned since the crown
+    tif is on 5cm spatial resolution
   uv run python scripts/spectral_align.py --config configs/spectral/align.yaml
 """
 

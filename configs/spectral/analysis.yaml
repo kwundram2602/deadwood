@@ -1,4 +1,6 @@
 paths:
+  # Only the grid geometry (shape/transform/CRS) — the crown content itself
+  # comes from crown_prediction below.
   reference: datafiles/process_out/masks/crown_mask.tif
   stack_dir: datafiles/process_out/timeseries
   coreg_report: datafiles/process_out/timeseries/coreg_report.csv
@@ -37,10 +39,6 @@ sampling:
   negative_ratio: 5.0
   max_pixels_per_class: 200000
   seed: 0
-  quality_filter:
-    enabled: true
-    min_certainty: 50
-    coverages: [nc]
 
 extract:
   # DISABLED after measurement, not as a shortcut. Phase-correlation

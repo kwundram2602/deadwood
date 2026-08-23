@@ -24,7 +24,6 @@ from deadwood_spectral.extract import (  # noqa: E402
 from deadwood_spectral.grid import load_reference_grid  # noqa: E402
 from deadwood_spectral.report import run_report  # noqa: E402
 from deadwood_spectral.sampling import (  # noqa: E402
-    apply_quality_filter,
     binarize_crown_mask,
     build_pools,
     draw_samples,
@@ -52,14 +51,6 @@ def main() -> None:
 
     grid = load_reference_grid(cfg.paths.reference)
     gdf = load_crowns(list(cfg.paths.crowns), grid)
-    if cfg.sampling.quality_filter.enabled:
-        gdf = apply_quality_filter(
-            gdf,
-            min_certainty=int(cfg.sampling.quality_filter.min_certainty),
-            coverages=list(cfg.sampling.quality_filter.coverages),
-        )
-    else:
-        gdf = gdf.assign(quality_ok=True)
 
     crown, valid = binarize_crown_mask(
         cfg.paths.crown_prediction, grid, threshold=float(cfg.sampling.crown_threshold)

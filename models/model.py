@@ -63,6 +63,7 @@ def _freeze_input_channels(
     backward pass; the forward pass is untouched. The optimizer must put this
     weight in a weight_decay=0 group, otherwise AdamW still shrinks the
     frozen slices via decoupled weight decay.
+    During backward pass the hook multiplies the gradient by a mask that is 0 for frozen channels and 1 for others. This means that the frozen channels will not be updated during training, effectively freezing them.
     """
     bad = [c for c in channels if not 0 <= c < in_channels]
     if bad:
@@ -71,6 +72,7 @@ def _freeze_input_channels(
         )
 
     name, conv = _find_first_conv(encoder)
+    # for every input channel set to 0 if it is supposed to be frozen
     mask = torch.ones_like(conv.weight)
     mask[:, channels] = 0.0
     # non-persistent buffer: moves with .to(device), stays out of the state_dict
@@ -87,6 +89,7 @@ def _adapt_first_conv(
     assignment maps input position → pretrained slot column (0=R, 1=G, 2=B);
     those columns are copied from the pretrained conv, all other input
     positions are kaiming-initialised.
+    Old encoder remains but with changed first conv.
     """
     name, old = _find_first_conv(encoder)
     new = nn.Conv2d(

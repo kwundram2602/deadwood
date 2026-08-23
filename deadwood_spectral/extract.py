@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 LABEL_COLUMNS = (
     "row", "col", "class_name", "class_code", "tree_id",
-    "group_id", "certaintyLP", "coverage", "quality_ok",
+    "group_id", "coverage",
 )
 
 
@@ -151,7 +151,20 @@ def extract_samples(
     ndsm_path: str | Path | None = None,
     chunk_rows: int = 2048,
 ) -> pd.DataFrame:
-    """Attach every band and index, for every date, to the sample table."""
+    """Attach every band and index, for every date, to the sample table.
+
+    Ziel: Für jede Sample-Position (row/col) alle Band- und Index-Werte aus
+    den zeitlichen Stacks (und optional dem nDSM) in eine flache Feature-
+    Tabelle zusammenführen.
+
+    Ablauf: Erst werden alle Eingabe-Raster (Stacks + nDSM) auf Existenz und
+    Grid-Kompatibilität geprüft, bevor irgendetwas gelesen wird – so bricht
+    ein fehlerhafter Pfad sofort ab, statt erst nach dem Einlesen mehrerer
+    großer Stacks. Danach werden je Datum die Bandwerte an den Sample-
+    Koordinaten extrahiert, Indizes daraus berechnet und beides als neue
+    Spalten angehängt; optional wird zuletzt das nDSM an denselben
+    Koordinaten ausgelesen und ergänzt.
+    """
     stack_dir = Path(stack_dir)
     dates = list(dates) if dates is not None else available_dates(stack_dir, exclude_dates)
     if not dates:

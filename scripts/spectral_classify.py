@@ -46,7 +46,7 @@ def main() -> None:
     result = train_model(
         table, dates,
         seed=int(cfg.classify.seed), n_splits=int(cfg.classify.n_splits),
-        n_estimators=int(cfg.classify.n_estimators),
+        n_estimators=int(cfg.classify.n_estimators), verbose=int(cfg.classify.verbose),
     )
     result["metrics"].to_csv(out_dir / "metrics.csv", index=False)
     result["loto"].to_csv(out_dir / "loto.csv", index=False)

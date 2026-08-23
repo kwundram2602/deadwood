@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deadwood_spectral.grid import ReferenceGrid  # noqa: E402
 from deadwood_spectral.sampling import (  # noqa: E402
     CLASS_CODES,
-    apply_quality_filter,
     binarize_crown_mask,
     block_ids,
     build_pools,
@@ -27,14 +26,13 @@ GRID = ReferenceGrid(100, 100, from_origin(1000.0, 2000.0, 1.0, 1.0), rasterio.c
 
 
 def _gdf(tmp_path, rows):
-    """rows: list of (tree_id, category, certainty, coverage, x, y, size)."""
+    """rows: list of (tree_id, category, coverage, x, y, size)."""
     records = []
-    for tree_id, cat, cert, cov, x, y, size in rows:
+    for tree_id, cat, cov, x, y, size in rows:
         records.append(
             {
                 "tree_id": tree_id,
                 "crown_category": cat,
-                "certaintyLP": cert,
                 "coverage": cov,
                 "geometry": box(x, y, x + size, y + size),
             }
@@ -46,10 +44,10 @@ def _gdf(tmp_path, rows):
 
 def _default_rows():
     return [
-        ("4170", "soff", 100, "nc", 1010.0, 1910.0, 10.0),
-        ("4178", "soff", 0, "pc ", 1030.0, 1910.0, 10.0),
-        ("4345", "son", 100, "nc", 1060.0, 1910.0, 10.0),
-        ("4999", "dead_fallen", 100, "nc", 1080.0, 1910.0, 10.0),
+        ("4170", "soff", "nc", 1010.0, 1910.0, 10.0),
+        ("4178", "soff", "pc ", 1030.0, 1910.0, 10.0),
+        ("4345", "son", "nc", 1060.0, 1910.0, 10.0),
+        ("4999", "dead_fallen", "nc", 1080.0, 1910.0, 10.0),
     ]
 
 
@@ -77,7 +75,7 @@ def test_load_crowns_keeps_only_son_and_soff(tmp_path):
 
 def test_load_crowns_normalises_coverage_whitespace_and_case(tmp_path):
     rows = _default_rows()
-    rows[1] = ("4178", "soff", 0, "NC ", 1030.0, 1910.0, 10.0)
+    rows[1] = ("4178", "soff", "NC ", 1030.0, 1910.0, 10.0)
     gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     assert gdf.loc[gdf["tree_id"] == "4178", "coverage"].item() == "nc"
 
@@ -85,13 +83,6 @@ def test_load_crowns_normalises_coverage_whitespace_and_case(tmp_path):
 def test_load_crowns_assigns_unique_poly_idx(tmp_path):
     gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     assert sorted(gdf["poly_idx"]) == [1, 2, 3]
-
-
-def test_quality_filter_flags_but_does_not_drop(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
-    assert len(gdf) == 3
-    assert gdf.loc[gdf["tree_id"] == "4170", "quality_ok"].item()
-    assert not gdf.loc[gdf["tree_id"] == "4178", "quality_ok"].item()
 
 
 def test_rasterize_polygons_burns_poly_idx(tmp_path):
@@ -120,7 +111,7 @@ def test_binarize_crown_mask_splits_crown_and_validity(tmp_path):
 
 
 def test_pools_are_disjoint_and_nonempty(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools = build_pools(crown, valid, gdf, GRID)
     assert set(pools) == set(CLASS_CODES)
@@ -134,8 +125,8 @@ def test_pools_are_disjoint_and_nonempty(tmp_path):
 def test_living_pool_excludes_buffered_soff(tmp_path):
     # A soff polygon placed inside the crown blob must be removed from `living`
     # together with its exclusion buffer.
-    rows = _default_rows() + [("5000", "soff", 100, "nc", 1010.0, 1905.0, 6.0)]
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
+    rows = _default_rows() + [("5000", "soff", "nc", 1010.0, 1905.0, 6.0)]
+    gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools = build_pools(crown, valid, gdf, GRID, exclude_buffer_m=3.0)
     soff_area = rasterize_polygons(gdf[gdf["crown_category"] == "soff"], GRID).astype(bool)
@@ -143,7 +134,7 @@ def test_living_pool_excludes_buffered_soff(tmp_path):
 
 
 def test_background_excludes_all_crown_polygons(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools = build_pools(crown, valid, gdf, GRID)
     all_polys = rasterize_polygons(gdf, GRID).astype(bool)
@@ -151,7 +142,7 @@ def test_background_excludes_all_crown_polygons(tmp_path):
 
 
 def test_pools_never_include_invalid_pixels(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path, nodata_corner=True), GRID)
     pools = build_pools(crown, valid, gdf, GRID)
     for pool in pools.values():
@@ -167,12 +158,12 @@ def test_block_ids_partition_the_grid():
 
 
 def test_draw_samples_columns_and_class_codes(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     df = draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)
     expected = {
         "row", "col", "class_name", "class_code", "tree_id",
-        "group_id", "certaintyLP", "coverage", "quality_ok",
+        "group_id", "coverage",
     }
     assert expected <= set(df.columns)
     assert set(df["class_name"]) == set(CLASS_CODES)
@@ -180,7 +171,7 @@ def test_draw_samples_columns_and_class_codes(tmp_path):
 
 
 def test_draw_samples_respects_negative_ratio(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     df = draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID, negative_ratio=2.0)
     counts = df["class_name"].value_counts()
@@ -189,7 +180,7 @@ def test_draw_samples_respects_negative_ratio(tmp_path):
 
 
 def test_draw_samples_assigns_tree_id_groups_to_deadwood(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     df = draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)
     dead = df[df["class_name"] == "deadwood"]
@@ -198,7 +189,7 @@ def test_draw_samples_assigns_tree_id_groups_to_deadwood(tmp_path):
 
 
 def test_draw_samples_assigns_block_groups_to_negatives(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     df = draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)
     neg = df[df["class_name"] != "deadwood"]
@@ -207,7 +198,7 @@ def test_draw_samples_assigns_block_groups_to_negatives(tmp_path):
 
 
 def test_draw_samples_is_deterministic_for_a_seed(tmp_path):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools = build_pools(crown, valid, gdf, GRID)
     a = draw_samples(pools, gdf, GRID, seed=7)
@@ -223,10 +214,10 @@ def test_draw_samples_deadwood_attribution_survives_son_overlap(tmp_path):
     # pick up the overlapping son tree's id/group_id and the grouped
     # CV guarantee (no tree's pixels split across train/test) would break.
     rows = _default_rows() + [
-        ("9001", "soff", 100, "nc", 1005.0, 1905.0, 8.0),
-        ("9002", "son", 100, "nc", 1007.0, 1905.0, 8.0),
+        ("9001", "soff", "nc", 1005.0, 1905.0, 8.0),
+        ("9002", "son", "nc", 1007.0, 1905.0, 8.0),
     ]
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
+    gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools = build_pools(crown, valid, gdf, GRID)
     df = draw_samples(pools, gdf, GRID)
@@ -247,7 +238,7 @@ def test_build_pools_zero_edge_buffer_skips_dilation(tmp_path):
     # soff exclusion buffer: the default edge_buffer_m dilates the crown by
     # 1 px and swallows it out of `background`; with an explicit zero buffer
     # it must remain background.
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     pools_default = build_pools(crown, valid, gdf, GRID, edge_buffer_m=0.25)
     pools_zero = build_pools(crown, valid, gdf, GRID, edge_buffer_m=0.0)
@@ -267,8 +258,8 @@ def test_build_pools_logs_soff_crowns_emptied_by_erosion(tmp_path, caplog):
     # applied on both sides of its boundary via buffer(); it must not vanish
     # from ground truth silently — the smallest real soff crown is 0.02 m^2
     # and erosion destroys it completely, so this must be logged.
-    rows = _default_rows() + [("7001", "soff", 100, "nc", 1050.0, 1950.0, 3.0)]
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
+    rows = _default_rows() + [("7001", "soff", "nc", 1050.0, 1950.0, 3.0)]
+    gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
         build_pools(crown, valid, gdf, GRID, erode_m=2.0)
@@ -277,7 +268,7 @@ def test_build_pools_logs_soff_crowns_emptied_by_erosion(tmp_path, caplog):
 
 
 def test_build_pools_does_not_log_when_nothing_is_emptied(tmp_path, caplog):
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, _default_rows())], GRID))
+    gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
         build_pools(crown, valid, gdf, GRID, erode_m=0.10)
@@ -286,8 +277,8 @@ def test_build_pools_does_not_log_when_nothing_is_emptied(tmp_path, caplog):
 
 
 def test_empty_deadwood_pool_raises(tmp_path):
-    rows = [("4345", "son", 100, "nc", 1060.0, 1910.0, 10.0)]
-    gdf = apply_quality_filter(load_crowns([_gdf(tmp_path, rows)], GRID))
+    rows = [("4345", "son", "nc", 1060.0, 1910.0, 10.0)]
+    gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     with pytest.raises(ValueError, match="deadwood"):
         draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)

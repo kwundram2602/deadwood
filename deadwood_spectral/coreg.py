@@ -1,10 +1,11 @@
 """Residual co-registration between aligned dates.
 
-Alignment puts every date on the reference grid, but that only fixes the
-georeference — it cannot fix an image that was georeferenced wrongly upstream.
+Alignment puts every date on the reference grid,
+but that only fixes the georeference — it cannot fix an image that was georeferenced wrongly upstream.
 This measures what is left over on stable, non-vegetated tiles.
 
-The report is diagnosis; the consequence is exclusion. A shift correction is
+The report is diagnosis; the consequence is exclusion.
+A shift correction is
 deliberately not applied: correcting a badly estimated shift is worse than
 dropping the date, and with 18 positives a corrupted date costs more than a
 missing one.
@@ -43,8 +44,7 @@ def estimate_shift(
 ) -> tuple[float, float]:
     """(drow, dcol) in pixels that `moving` sits away from `reference`.
 
-    NaNs are replaced by the tile mean: phase correlation needs a filled array,
-    and a constant fill contributes no cross-correlation peak of its own.
+    NaNs are replaced by the tile mean: phase correlation needs a filled array.
 
     That argument only holds for a SMALL NaN share. A real aligned stack is
     ~45% NaN outside the source footprint, and a large filled region abutting

@@ -26,7 +26,10 @@ datafiles/dtm
 configs/user/
 configs/**/user/
 wandb
+.claudeignore
 sample_exp/**/*.tif
 experiments/
 deadwood_notes/
 **/*.aux.xml
+.claude
+datafiles/OM_domAligned

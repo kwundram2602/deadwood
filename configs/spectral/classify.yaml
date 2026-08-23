@@ -1,4 +1,8 @@
 paths:
+  # Only the grid geometry (shape/transform/CRS) for the output raster —
+  # not crown content. The crown content (torch predict output) only feeds
+  # the `living` sample pool during training, as paths.crown_prediction in
+  # analysis.yaml; spectral_apply.py never reads it.
   reference: datafiles/process_out/masks/crown_mask.tif
   stack_dir: datafiles/process_out/timeseries
   samples: datafiles/process_out/spectral/samples.parquet
@@ -50,10 +54,14 @@ classify:
       - "20260126"
       - "20260226"
       - "20260313"
-  n_splits: 5
-  n_estimators: 400
+  n_splits: 3
+  n_estimators: 200
   seed: 0
-  permutation_repeats: 5
+  permutation_repeats: 2
+  # sklearn RandomForestClassifier verbosity: 0 = silent, 1 = a line per tree
+  # batch, 2+ = per-tree timing too. Applies to every one of the 24
+  # sequential fits (grouped CV folds + leave-one-tree-out + final model).
+  verbose: 1
 
 apply:
   tile_size: 1024

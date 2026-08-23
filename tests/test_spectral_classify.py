@@ -156,9 +156,9 @@ def test_train_model_threads_n_estimators_into_grouped_cv_and_loto():
     seen_n_estimators = []
     real_make_model = classify_mod.make_model
 
-    def spying_make_model(seed=0, n_estimators=400):
+    def spying_make_model(seed=0, n_estimators=400, verbose=0):
         seen_n_estimators.append(n_estimators)
-        return real_make_model(seed=seed, n_estimators=n_estimators)
+        return real_make_model(seed=seed, n_estimators=n_estimators, verbose=verbose)
 
     original = classify_mod.make_model
     classify_mod.make_model = spying_make_model

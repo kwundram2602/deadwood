@@ -1,11 +1,7 @@
 """Bring every time-series orthomosaic onto the reference grid.
-
-The source scenes are ~2.2 GB each and sit 2.08 m off the reference extent, so
-this reprojects band by band with rasterio.warp.reproject rather than reading a
+reprojects band by band with rasterio.warp.reproject rather than reading a
 scene into memory or rescaling its own extent onto the target shape.
-
-Idempotent by design: the 2023-2026 upload is still in progress, so this is
-expected to be re-run as dates arrive.
+Align : Reprojection mainly.
 """
 
 import json
@@ -43,9 +39,7 @@ def align_scene(
     band_names: Sequence[str] = BAND_NAMES,
 ) -> Path:
     """Reproject one scene onto the reference grid as float32 [0,1].
-
-    Reads and writes one band at a time: a full 7-band float32 scene on the
-    reference grid is ~1.2 GB, and the native source is far larger.
+    Reads and writes one band at a time.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +108,7 @@ def is_aligned(out_path: str | Path, grid: ReferenceGrid) -> bool:
         return False
     try:
         with rasterio.open(out_path) as src:
+            # checks grid and crs
             assert_matches_grid(src, grid, str(out_path))
     except (ValueError, rasterio.errors.RasterioIOError):
         return False
