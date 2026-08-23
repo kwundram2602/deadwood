@@ -9,8 +9,12 @@ an der Auswahl der Aufnahmen.
 import calendar
 import datetime as dt
 import logging
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 from deadwood_spectral.align import parse_date
 
@@ -65,3 +69,78 @@ def stack_paths(stack_dir: str | Path, dates: Sequence[str]) -> list[Path]:
     if missing:
         raise FileNotFoundError("missing aligned stack(s): " + ", ".join(missing))
     return paths
+
+
+def _slope(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Kleinste-Quadrate-Steigung je Zeile über die gültigen Termine.
+
+    Termine gelten als gleich beabstandete Schritte, nicht als Kalendertage:
+    die Befliegungen sind grob zweiwöchentlich, und eine Tagesskalierung würde
+    von den gelegentlichen langen Lücken dominiert statt von der Phänologie.
+    """
+    n_dates = values.shape[1]
+    x = np.arange(n_dates, dtype=np.float64)
+    weights = valid.astype(np.float64)
+    n_valid = weights.sum(axis=1)
+    safe = np.where(n_valid > 0, n_valid, 1.0)
+
+    y = np.where(valid, np.nan_to_num(values.astype(np.float64), nan=0.0), 0.0)
+    x_mean = (weights * x).sum(axis=1) / safe
+    y_mean = y.sum(axis=1) / safe
+
+    dx = (x[None, :] - x_mean[:, None]) * weights
+    dy = (y - y_mean[:, None]) * weights
+    denominator = (dx * dx).sum(axis=1)
+    out = np.full(values.shape[0], np.nan, dtype=np.float64)
+    np.divide((dx * dy).sum(axis=1), denominator, out=out, where=denominator > 0)
+    return out
+
+
+def aggregate_series(series: dict[str, np.ndarray], min_valid_dates: int = 4) -> pd.DataFrame:
+    """Zeitreihen je Messgröße -> 30 datums-invariante Statistiken.
+
+    Gültigkeit wird über die Messgrößen hinweg geteilt: ein Termin, an dem
+    auch nur eine Messgröße NaN ist, zählt für keine. Andernfalls würden
+    `mean` und `slope` verschiedener Messgrößen über verschiedene Terminmengen
+    laufen und wären nicht mehr vergleichbar.
+    """
+    missing = [m for m in MEASURES if m not in series]
+    if missing:
+        raise ValueError(f"missing measure(s) in series: {missing}")
+
+    stacked = np.stack([np.asarray(series[m], dtype=np.float64) for m in MEASURES])
+    valid = np.isfinite(stacked).all(axis=0)
+    n_valid = valid.sum(axis=1)
+    enough = n_valid >= max(1, int(min_valid_dates))
+
+    out = pd.DataFrame(index=pd.RangeIndex(stacked.shape[1]))
+    for measure, values in zip(MEASURES, stacked):
+        masked = np.where(valid, values, np.nan)
+        with warnings.catch_warnings():
+            # Eine Zeile ohne einen einzigen gültigen Termin ist erwartet, nicht
+            # aussergewöhnlich; sie wird unten ohnehin auf NaN gesetzt.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            v_max = np.nanmax(masked, axis=1)
+            v_min = np.nanmin(masked, axis=1)
+            v_mean = np.nanmean(masked, axis=1)
+            v_std = np.nanstd(masked, axis=1)
+        stats = {
+            "max": v_max,
+            "min": v_min,
+            "amplitude": v_max - v_min,
+            "mean": v_mean,
+            "std": v_std,
+            "greenup_slope": _slope(values, valid),
+        }
+        for stat in STATS:
+            out[f"{measure}_{stat}"] = np.where(enough, stats[stat], np.nan)
+
+    dropped = int((~enough).sum())
+    if dropped:
+        logger.info(
+            "%d/%d pixel(s) with fewer than %d valid date(s) -> NaN features",
+            dropped,
+            len(enough),
+            min_valid_dates,
+        )
+    return out
