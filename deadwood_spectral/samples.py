@@ -9,6 +9,8 @@ exclusion buffer removes the deadwood we know about, the rest is residual risk.
 Every sample carries a group_id so no tree's pixels can straddle a CV split.
 """
 
+import hashlib
+import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -62,7 +64,9 @@ def rasterize_polygons(
     if len(gdf) == 0:
         return np.full(grid.shape, fill, dtype=np.int32)
     geoms = gdf.geometry.buffer(buffer_m) if buffer_m else gdf.geometry
-    burn = np.ones(len(gdf), dtype=np.int32) if values is None else np.asarray(values, dtype=np.int32)
+    burn = (
+        np.ones(len(gdf), dtype=np.int32) if values is None else np.asarray(values, dtype=np.int32)
+    )
     shapes = [(g, int(v)) for g, v in zip(geoms, burn) if g is not None and not g.is_empty]
     if not shapes:
         return np.full(grid.shape, fill, dtype=np.int32)
@@ -86,7 +90,9 @@ def binarize_crown_mask(
     crown = valid & (data >= threshold)
     logger.info(
         "crown mask: %d crown px, %d valid px of %d",
-        int(crown.sum()), int(valid.sum()), data.size,
+        int(crown.sum()),
+        int(valid.sum()),
+        data.size,
     )
     return crown, valid
 
@@ -108,7 +114,10 @@ def build_pools(
     if len(emptied):
         logger.warning(
             "erode_m=%.3f emptied %d/%d soff crown(s): %s",
-            erode_m, len(emptied), len(soff), list(emptied),
+            erode_m,
+            len(emptied),
+            len(soff),
+            list(emptied),
         )
 
     deadwood = rasterize_polygons(soff, grid, buffer_m=-abs(erode_m)).astype(bool) & valid
@@ -192,7 +201,9 @@ def draw_samples(
     # gdf (son + soff together) resolves overlaps last-shape-wins, which can hand
     # a deadwood pixel a neighbouring LIVING tree's id and group_id.
     soff_raster = rasterize_polygons(
-        gdf[gdf["crown_category"] == "soff"], grid, values=gdf.loc[gdf["crown_category"] == "soff", "poly_idx"]
+        gdf[gdf["crown_category"] == "soff"],
+        grid,
+        values=gdf.loc[gdf["crown_category"] == "soff", "poly_idx"],
     ).ravel()
     attrs = gdf.set_index("poly_idx")
 
@@ -238,3 +249,19 @@ def draw_samples(
     out = out.reset_index(drop=True)
     logger.info("samples drawn: %s", dict(out["class_name"].value_counts()))
     return out
+
+
+def sampling_fingerprint(dates: Sequence[str], params: dict) -> str:
+    """Identität einer Ziehung: Zeitfenster plus Sampling-Parameter.
+
+    Der Cache neben dem Modell darf nur wiederverwendet werden, wenn beides
+    übereinstimmt — eine geänderte `erode_m` oder ein anderes Fenster ergibt
+    eine andere Stichprobe, und eine stillschweigend wiederverwendete alte
+    wäre nicht als Fehler erkennbar.
+    """
+    payload = json.dumps(
+        {"dates": list(dates), "params": {k: params[k] for k in sorted(params)}},
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()

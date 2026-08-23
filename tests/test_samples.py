@@ -10,7 +10,7 @@ from shapely.geometry import box
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deadwood_spectral.grid import ReferenceGrid  # noqa: E402
-from deadwood_spectral.sampling import (  # noqa: E402
+from deadwood_spectral.samples import (  # noqa: E402
     CLASS_CODES,
     binarize_crown_mask,
     block_ids,
@@ -18,11 +18,14 @@ from deadwood_spectral.sampling import (  # noqa: E402
     draw_samples,
     load_crowns,
     rasterize_polygons,
+    sampling_fingerprint,
 )
 
 # 100 x 100 px at 1 m, origin (1000, 2000) — 1 px == 1 m keeps the arithmetic
 # in the tests readable.
-GRID = ReferenceGrid(100, 100, from_origin(1000.0, 2000.0, 1.0, 1.0), rasterio.crs.CRS.from_epsg(32736))
+GRID = ReferenceGrid(
+    100, 100, from_origin(1000.0, 2000.0, 1.0, 1.0), rasterio.crs.CRS.from_epsg(32736)
+)
 
 
 def _gdf(tmp_path, rows):
@@ -54,13 +57,19 @@ def _default_rows():
 def _crown_mask(tmp_path, value=1.0, nodata_corner=False):
     path = tmp_path / "crown_pred.tif"
     data = np.zeros((1, 100, 100), dtype="float32")
-    data[0, 80:100, 0:50] = value          # a crown blob, rows 80-99, cols 0-49
-    data[0, 0:20, 60:100] = value          # a second blob
+    data[0, 80:100, 0:50] = value  # a crown blob, rows 80-99, cols 0-49
+    data[0, 0:20, 60:100] = value  # a second blob
     if nodata_corner:
         data[0, 0:5, 0:5] = 255.0
     profile = dict(
-        driver="GTiff", dtype="float32", width=100, height=100, count=1,
-        crs="EPSG:32736", transform=GRID.transform, nodata=255.0,
+        driver="GTiff",
+        dtype="float32",
+        width=100,
+        height=100,
+        count=1,
+        crs="EPSG:32736",
+        transform=GRID.transform,
+        nodata=255.0,
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(data)
@@ -106,7 +115,7 @@ def test_binarize_crown_mask_splits_crown_and_validity(tmp_path):
     assert crown.dtype == bool and valid.dtype == bool
     assert crown[90, 10]
     assert not crown[50, 50]
-    assert not valid[2, 2]      # the 255 corner
+    assert not valid[2, 2]  # the 255 corner
     assert valid[50, 50]
 
 
@@ -162,8 +171,13 @@ def test_draw_samples_columns_and_class_codes(tmp_path):
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     df = draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)
     expected = {
-        "row", "col", "class_name", "class_code", "tree_id",
-        "group_id", "coverage",
+        "row",
+        "col",
+        "class_name",
+        "class_code",
+        "tree_id",
+        "group_id",
+        "coverage",
     }
     assert expected <= set(df.columns)
     assert set(df["class_name"]) == set(CLASS_CODES)
@@ -282,3 +296,23 @@ def test_empty_deadwood_pool_raises(tmp_path):
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
     with pytest.raises(ValueError, match="deadwood"):
         draw_samples(build_pools(crown, valid, gdf, GRID), gdf, GRID)
+
+
+def test_sampling_fingerprint_is_stable_and_order_independent():
+    params = {"erode_m": 0.1, "negative_ratio": 5.0, "seed": 0}
+    a = sampling_fingerprint(["20250417", "20260313"], params)
+    b = sampling_fingerprint(["20250417", "20260313"], dict(reversed(list(params.items()))))
+    assert a == b
+
+
+def test_sampling_fingerprint_changes_with_the_window():
+    params = {"erode_m": 0.1, "seed": 0}
+    assert sampling_fingerprint(["20250417"], params) != sampling_fingerprint(
+        ["20250417", "20260313"], params
+    )
+
+
+def test_sampling_fingerprint_changes_with_a_parameter():
+    assert sampling_fingerprint(["20260313"], {"erode_m": 0.1}) != sampling_fingerprint(
+        ["20260313"], {"erode_m": 0.2}
+    )
