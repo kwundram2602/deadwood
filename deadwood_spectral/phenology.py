@@ -11,12 +11,17 @@ import datetime as dt
 import logging
 import warnings
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import rasterio
+from rasterio.windows import Window
 
 from deadwood_spectral.align import parse_date
+from deadwood_spectral.grid import ReferenceGrid, assert_matches_grid
+from deadwood_spectral.indices import BAND_NAMES, compute_indices
 
 logger = logging.getLogger(__name__)
 
@@ -144,3 +149,92 @@ def aggregate_series(series: dict[str, np.ndarray], min_valid_dates: int = 4) ->
             min_valid_dates,
         )
     return out
+
+
+def measure_series(
+    stack_paths_: Sequence[Path],
+    grid: ReferenceGrid,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    chunk_rows: int = 512,
+) -> dict[str, np.ndarray]:
+    """Rohe Zeitreihe je Messgroesse fuer eine Pixelmenge -> {measure: (n_px, n_dates)}.
+
+    Gelesen wird in Zeilen-Chunks ueber alle Aufnahmen gleichzeitig, damit die
+    Zeitreihe eines Pixels entsteht, ohne je einen ganzen Stack im Speicher zu
+    halten. Getrennt von `pixel_features`, weil der Phaenologie-Plot den rohen
+    Verlauf braucht und nicht die Aggregate.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    if rows.shape != cols.shape:
+        raise ValueError(f"rows/cols length mismatch: {rows.shape} vs {cols.shape}")
+    n_dates = len(stack_paths_)
+    if n_dates == 0:
+        raise ValueError("no stacks given")
+
+    series = {m: np.full((rows.size, n_dates), np.nan, dtype=np.float32) for m in MEASURES}
+    order = np.argsort(rows, kind="stable")
+
+    with ExitStack() as stack:
+        sources = []
+        for path in stack_paths_:
+            src = stack.enter_context(rasterio.open(path))
+            assert_matches_grid(src, grid, str(path))
+            sources.append(src)
+
+        for start in range(0, grid.height, chunk_rows):
+            stop = min(start + chunk_rows, grid.height)
+            sel = order[(rows[order] >= start) & (rows[order] < stop)]
+            if sel.size == 0:
+                continue
+            local_rows, local_cols = rows[sel] - start, cols[sel]
+            window = Window.from_slices((start, stop), (0, grid.width))
+            for date_idx, src in enumerate(sources):
+                block = src.read(window=window).astype(np.float32)
+                names = [d or n for d, n in zip(src.descriptions, BAND_NAMES)]
+                values = dict(zip(names, block))
+                values.update(compute_indices(block, names))
+                for measure in MEASURES:
+                    series[measure][sel, date_idx] = values[measure][local_rows, local_cols]
+    return series
+
+
+def pixel_features(
+    stack_paths_: Sequence[Path],
+    grid: ReferenceGrid,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    ndsm_path: str | Path | None = None,
+    chunk_rows: int = 512,
+    min_valid_dates: int = 4,
+) -> pd.DataFrame:
+    """Feature-Matrix für eine beliebige Pixelmenge — ein Pfad für Training und Inferenz.
+
+    Gelesen wird in Zeilen-Chunks über alle Aufnahmen gleichzeitig, damit die
+    Zeitreihe eines Pixels entsteht, ohne je einen ganzen Stack im Speicher zu
+    halten. Die Ausgabe steht in Eingabereihenfolge, nicht in Chunk-Reihenfolge.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    series = measure_series(stack_paths_, grid, rows, cols, chunk_rows=chunk_rows)
+    n_pixels = rows.size
+    out = aggregate_series(series, min_valid_dates=min_valid_dates)
+
+    if ndsm_path is None:
+        out["ndsm"] = np.full(n_pixels, np.nan, dtype=np.float64)
+    else:
+        heights = np.full(n_pixels, np.nan, dtype=np.float64)
+        order = np.argsort(rows, kind="stable")
+        with rasterio.open(ndsm_path) as src:
+            assert_matches_grid(src, grid, str(ndsm_path))
+            for start in range(0, grid.height, chunk_rows):
+                stop = min(start + chunk_rows, grid.height)
+                sel = order[(rows[order] >= start) & (rows[order] < stop)]
+                if sel.size == 0:
+                    continue
+                block = src.read(1, window=Window.from_slices((start, stop), (0, grid.width)))
+                heights[sel] = block[rows[sel] - start, cols[sel]]
+        out["ndsm"] = heights
+
+    return out[list(FEATURE_NAMES)]
