@@ -275,7 +275,7 @@ def test_build_pools_logs_soff_crowns_emptied_by_erosion(tmp_path, caplog):
     rows = _default_rows() + [("7001", "soff", "nc", 1050.0, 1950.0, 3.0)]
     gdf = load_crowns([_gdf(tmp_path, rows)], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
-    with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
+    with caplog.at_level("WARNING", logger="deadwood_spectral.samples"):
         build_pools(crown, valid, gdf, GRID, erode_m=2.0)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any("7001" in r.getMessage() for r in warnings)
@@ -284,7 +284,7 @@ def test_build_pools_logs_soff_crowns_emptied_by_erosion(tmp_path, caplog):
 def test_build_pools_does_not_log_when_nothing_is_emptied(tmp_path, caplog):
     gdf = load_crowns([_gdf(tmp_path, _default_rows())], GRID)
     crown, valid = binarize_crown_mask(_crown_mask(tmp_path), GRID)
-    with caplog.at_level("WARNING", logger="deadwood_spectral.sampling"):
+    with caplog.at_level("WARNING", logger="deadwood_spectral.samples"):
         build_pools(crown, valid, gdf, GRID, erode_m=0.10)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert not warnings
