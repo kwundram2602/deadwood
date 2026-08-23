@@ -3,17 +3,23 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
+import rasterio
+from rasterio.transform import from_origin
 from sklearn.model_selection import StratifiedGroupKFold
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from deadwood_spectral.grid import ReferenceGrid  # noqa: E402
 from deadwood_spectral.model import (  # noqa: E402
     DEADWOOD_CODE,
     grouped_cv,
     leave_one_tree_out,
     load_model,
     n_splits_for,
+    predict_crown_pixels,
     save_model,
     train,
+    write_probability_raster,
 )
 from deadwood_spectral.phenology import FEATURE_NAMES  # noqa: E402
 
@@ -125,3 +131,112 @@ def test_save_and_load_model_round_trip(tmp_path):
     assert (tmp_path / "model" / "importances.csv").exists()
     predicted = loaded.predict(features.iloc[:5].to_numpy())
     assert len(predicted) == 5
+
+
+GRID = ReferenceGrid(8, 8, from_origin(1000.0, 2000.0, 1.0, 1.0), rasterio.crs.CRS.from_epsg(32736))
+BANDS = ("R", "G", "B", "Green", "Red", "RedEdge", "NIR")
+
+
+def _write_stack(path, nir, red=0.1, nan_pixel=None):
+    data = np.zeros((7, 8, 8), dtype="float32")
+    data[0], data[1], data[2] = 0.1, 0.2, 0.3  # R, G, B
+    data[3] = 0.2  # Green
+    data[4] = red
+    data[5] = 0.3  # RedEdge
+    data[6] = nir
+    if nan_pixel is not None:
+        data[:, nan_pixel[0], nan_pixel[1]] = np.nan
+    profile = dict(
+        driver="GTiff",
+        dtype="float32",
+        width=8,
+        height=8,
+        count=7,
+        crs="EPSG:32736",
+        transform=GRID.transform,
+        nodata=np.nan,
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(data)
+        for i, name in enumerate(BANDS, start=1):
+            dst.set_band_description(i, name)
+    return path
+
+
+def _write_ndsm(path, value=7.0):
+    profile = dict(
+        driver="GTiff",
+        dtype="float32",
+        width=8,
+        height=8,
+        count=1,
+        crs="EPSG:32736",
+        transform=GRID.transform,
+        nodata=np.nan,
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(np.full((1, 8, 8), value, dtype="float32"))
+    return path
+
+
+def _three_stacks(tmp_path, nan_pixel=None):
+    d = tmp_path / "ts"
+    d.mkdir()
+    paths = []
+    for date, nir in (("20250417", 0.3), ("20250907", 0.5), ("20260313", 0.7)):
+        paths.append(_write_stack(d / f"{date}_stack.tif", nir=nir, nan_pixel=nan_pixel))
+    return paths
+
+
+def test_predict_crown_pixels_returns_one_row_per_crown_pixel(tmp_path):
+    paths = _three_stacks(tmp_path)
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:5] = True  # 6 Kronenpixel
+    features, meta = _toy(n_groups_per_class=4)
+    result = train(features, meta, n_splits=3, n_estimators=20, permutation_repeats=1)
+
+    rows, cols, proba = predict_crown_pixels(
+        result["model"],
+        paths,
+        GRID,
+        crown,
+        ndsm_path=_write_ndsm(tmp_path / "ndsm.tif"),
+        min_valid_dates=1,
+    )
+    assert rows.size == 6 and cols.size == 6
+    assert proba.shape == (6, 3)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+
+
+def test_predict_crown_pixels_marks_unusable_pixels_nan(tmp_path):
+    paths = _three_stacks(tmp_path, nan_pixel=(2, 2))
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:4] = True
+    features, meta = _toy(n_groups_per_class=4)
+    result = train(features, meta, n_splits=3, n_estimators=20, permutation_repeats=1)
+
+    rows, cols, proba = predict_crown_pixels(
+        result["model"],
+        paths,
+        GRID,
+        crown,
+        ndsm_path=_write_ndsm(tmp_path / "ndsm.tif"),
+        min_valid_dates=1,
+    )
+    at_nan = (rows == 2) & (cols == 2)
+    assert np.isnan(proba[at_nan]).all()
+    assert np.isfinite(proba[~at_nan]).all()
+
+
+def test_write_probability_raster_leaves_non_crown_pixels_nan(tmp_path):
+    import rasterio
+
+    rows = np.array([1, 1])
+    cols = np.array([2, 3])
+    proba = np.array([[0.1, 0.2, 0.7], [0.6, 0.3, 0.1]])
+    path = write_probability_raster(rows, cols, proba, GRID, tmp_path / "p.tif")
+    with rasterio.open(path) as src:
+        data = src.read(1)
+    assert data[1, 2] == pytest.approx(0.7, abs=1e-6)
+    assert data[1, 3] == pytest.approx(0.1, abs=1e-6)
+    assert np.isnan(data[0, 0])

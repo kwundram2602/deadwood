@@ -8,17 +8,20 @@ Totholz-Bäume, nicht die Pixel.
 
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
+import rasterio
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import StratifiedGroupKFold
 
-from deadwood_spectral.phenology import FEATURE_NAMES
+from deadwood_spectral.grid import ReferenceGrid
+from deadwood_spectral.phenology import FEATURE_NAMES, pixel_features
 from deadwood_spectral.samples import CLASS_CODES
 
 logger = logging.getLogger(__name__)
@@ -255,3 +258,96 @@ def save_model(result: dict, model_dir: str | Path) -> Path:
 
 def load_model(model_dir: str | Path) -> RandomForestClassifier:
     return joblib.load(Path(model_dir) / "model.joblib")
+
+
+def predict_crown_pixels(
+    fitted: RandomForestClassifier,
+    stack_paths_: Sequence[Path],
+    grid: ReferenceGrid,
+    crown: np.ndarray,
+    ndsm_path: str | Path | None = None,
+    chunk_rows: int = 512,
+    min_valid_dates: int = 4,
+    pixel_batch: int = 2_000_000,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Klassenwahrscheinlichkeiten für jedes Pixel der Kronen-Prediction.
+
+    Vorhergesagt wird nur innerhalb der Kronen — das ist der Grund, drei Klassen
+    zu führen: eine Krone, die überwiegend als `background` gelesen wird, ist
+    eine falsch-positive Krone des Torch-Modells und wird als solche ausgewiesen.
+
+    Die Pixel werden in Stapeln von `pixel_batch` verarbeitet: eine ganze
+    5-cm-Szene hat einige Millionen Kronenpixel, und deren Zeitreihen über alle
+    Aufnahmen passen sonst nicht in den Speicher.
+    """
+    rows, cols = np.nonzero(crown)
+    proba = np.full((rows.size, len(CODE_TO_NAME)), np.nan, dtype=np.float64)
+    if rows.size == 0:
+        logger.warning("crown mask is empty — nothing to predict")
+        return rows, cols, proba
+
+    for start in range(0, rows.size, pixel_batch):
+        stop = min(start + pixel_batch, rows.size)
+        logger.info("predicting pixels %d-%d of %d", start, stop, rows.size)
+        features = pixel_features(
+            stack_paths_,
+            grid,
+            rows[start:stop],
+            cols[start:stop],
+            ndsm_path=ndsm_path,
+            chunk_rows=chunk_rows,
+            min_valid_dates=min_valid_dates,
+        )
+        matrix = features[list(FEATURE_NAMES)].to_numpy(dtype=np.float64)
+        usable = np.isfinite(matrix).all(axis=1)
+        if not usable.any():
+            continue
+        batch = fitted.predict_proba(matrix[usable])
+        target = np.full((int(usable.sum()), len(CODE_TO_NAME)), 0.0)
+        for column, label in enumerate(fitted.classes_):
+            target[:, int(label)] = batch[:, column]
+        proba[np.arange(start, stop)[usable]] = target
+
+    unusable = int(np.isnan(proba[:, 0]).sum())
+    if unusable:
+        logger.warning(
+            "%d/%d crown pixel(s) had too few valid dates and stay unevaluated",
+            unusable,
+            rows.size,
+        )
+    return rows, cols, proba
+
+
+def write_probability_raster(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    proba: np.ndarray,
+    grid: ReferenceGrid,
+    path: str | Path,
+) -> Path:
+    """p(deadwood) über die Kronenpixel; ausserhalb NaN.
+
+    Das ist die Ebene, an der die Schwelle in QGIS tatsächlich eingestellt wird.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raster = np.full(grid.shape, np.nan, dtype=np.float32)
+    raster[rows, cols] = proba[:, DEADWOOD_CODE].astype(np.float32)
+    profile = dict(
+        driver="GTiff",
+        dtype="float32",
+        height=grid.height,
+        width=grid.width,
+        count=1,
+        crs=grid.crs,
+        transform=grid.transform,
+        nodata=np.nan,
+        compress="lzw",
+        tiled=True,
+        blockxsize=512,
+        blockysize=512,
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(raster, 1)
+        dst.set_band_description(1, "p_deadwood")
+    return path
