@@ -3,6 +3,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import StratifiedGroupKFold
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deadwood_spectral.model import (  # noqa: E402
@@ -77,6 +78,16 @@ def test_grouped_cv_separates_a_well_separated_problem():
     )
     recall = metrics.set_index("class_name").loc["deadwood", "recall"]
     assert recall > 0.9
+
+
+def test_grouped_cv_never_splits_a_group_across_train_and_test():
+    features, meta = _toy()
+    groups = meta["group_id"].to_numpy()
+    y = meta["class_code"].to_numpy()
+    n_splits = n_splits_for(y, groups, requested=3)
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=0)
+    for train_idx, test_idx in splitter.split(features.to_numpy(), y, groups):
+        assert not set(groups[train_idx]) & set(groups[test_idx])
 
 
 def test_leave_one_tree_out_reports_one_row_per_deadwood_tree():
