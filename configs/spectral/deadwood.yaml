@@ -1,0 +1,49 @@
+# Einzige Config für Stage B. Sie ersetzt analysis.yaml und classify.yaml:
+# der nDSM-Pfad stand dort zweimal und musste übereinstimmen, ohne dass etwas
+# das erzwang. Bei einer Config ist diese Fehlerklasse nicht mehr möglich.
+paths:
+  # Nur die Gittergeometrie (Form/Transform/CRS), nicht der Kroneninhalt.
+  reference: datafiles/process_out/masks/crown_mask.tif
+  stack_dir: datafiles/process_out/timeseries
+  crowns:
+    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
+  # Die BINARISIERTE Ausgabe des Kronenmodells, nicht das *_prob.tif daneben:
+  # das Wahrscheinlichkeitsraster trägt nodata = -1.0, und binarize_crown_mask
+  # kennt nur 255. Ein -1-Pixel läse sich als "gültig, aber unter der Schwelle".
+  crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_pred_t0.9.tif
+  # Höhe über Grund in METERN, nicht die normalisierte Variante: das Feature
+  # geht unskaliert in den Forest, Meter halten die Importance lesbar.
+  ndsm: datafiles/process_out/ndsm_in_m/20260801_174831/dsm_ndsm_dtm_raw_m.tif
+  out_dir: out/spectral
+  model_dir: out/spectral/model
+
+window:
+  # Keine Datumsliste: die Features sind Aggregate über das Fenster und haben
+  # feste Breite, egal wie viele Aufnahmen darin liegen.
+  # Halboffen — (label_date - window_months, label_date].
+  label_date: "20260313"
+  window_months: 12
+  # Pixel mit weniger gültigen Aufnahmen bekommen NaN-Features und werden beim
+  # Training verworfen bzw. bei der Vorhersage als unevaluated ausgewiesen.
+  min_valid_dates: 4
+
+sampling:
+  crown_threshold: 0.5
+  erode_m: 0.10
+  exclude_buffer_m: 1.0
+  edge_buffer_m: 0.25
+  block_m: 20.0
+  negative_ratio: 5.0
+  max_pixels_per_class: 200000
+  seed: 0
+
+model:
+  n_estimators: 400
+  n_splits: 5
+  permutation_repeats: 5
+  seed: 0
+
+predict:
+  dead_frac_threshold: 0.5
+  chunk_rows: 512
+  pixel_batch: 2000000
