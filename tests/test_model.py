@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -188,6 +189,79 @@ def _three_stacks(tmp_path, nan_pixel=None):
     return paths
 
 
+def _write_gradient_stack(path, nir_base):
+    """Wie `_write_stack`, aber NIR variiert pro Spalte — jedes Kronenpixel bekommt
+    eine eigene Feature-Signatur, damit eine vertauschte Batch-Zuordnung sichtbar wird."""
+    columns = np.arange(8, dtype="float32")
+    data = np.zeros((7, 8, 8), dtype="float32")
+    data[0], data[1], data[2] = 0.1, 0.2, 0.3  # R, G, B
+    data[3] = 0.2  # Green
+    data[4] = 0.1  # Red
+    data[5] = 0.3  # RedEdge
+    data[6] = nir_base + 0.03 * columns[np.newaxis, :]  # NIR, Spaltengradient
+    profile = dict(
+        driver="GTiff",
+        dtype="float32",
+        width=8,
+        height=8,
+        count=7,
+        crs="EPSG:32736",
+        transform=GRID.transform,
+        nodata=np.nan,
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(data)
+        for i, name in enumerate(BANDS, start=1):
+            dst.set_band_description(i, name)
+    return path
+
+
+def _three_gradient_stacks(tmp_path):
+    d = tmp_path / "ts_gradient"
+    d.mkdir()
+    paths = []
+    for date, nir_base in (("20250417", 0.3), ("20250907", 0.5), ("20260313", 0.7)):
+        paths.append(_write_gradient_stack(d / f"{date}_stack.tif", nir_base=nir_base))
+    return paths
+
+
+def test_predict_crown_pixels_matches_across_batch_sizes(tmp_path, caplog):
+    paths = _three_gradient_stacks(tmp_path)
+    crown = np.zeros((8, 8), dtype=bool)
+    crown[2:4, 2:5] = True  # 6 Kronenpixel, 3 verschiedene Spalten
+    features, meta = _toy(n_groups_per_class=4)
+    result = train(features, meta, n_splits=3, n_estimators=20, permutation_repeats=1)
+    ndsm = _write_ndsm(tmp_path / "ndsm.tif")
+
+    rows_single, cols_single, proba_single = predict_crown_pixels(
+        result["model"],
+        paths,
+        GRID,
+        crown,
+        ndsm_path=ndsm,
+        min_valid_dates=1,
+    )
+
+    with caplog.at_level(logging.INFO, logger="deadwood_spectral.model"):
+        rows_batched, cols_batched, proba_batched = predict_crown_pixels(
+            result["model"],
+            paths,
+            GRID,
+            crown,
+            ndsm_path=ndsm,
+            min_valid_dates=1,
+            pixel_batch=2,
+        )
+    n_batches = sum(
+        1 for record in caplog.records if record.getMessage().startswith("predicting pixels")
+    )
+    assert n_batches == 3  # 6 Kronenpixel / pixel_batch=2
+
+    np.testing.assert_array_equal(rows_single, rows_batched)
+    np.testing.assert_array_equal(cols_single, cols_batched)
+    np.testing.assert_allclose(proba_single, proba_batched, equal_nan=True)
+
+
 def test_predict_crown_pixels_returns_one_row_per_crown_pixel(tmp_path):
     paths = _three_stacks(tmp_path)
     crown = np.zeros((8, 8), dtype=bool)
@@ -229,8 +303,6 @@ def test_predict_crown_pixels_marks_unusable_pixels_nan(tmp_path):
 
 
 def test_write_probability_raster_leaves_non_crown_pixels_nan(tmp_path):
-    import rasterio
-
     rows = np.array([1, 1])
     cols = np.array([2, 3])
     proba = np.array([[0.1, 0.2, 0.7], [0.6, 0.3, 0.1]])
