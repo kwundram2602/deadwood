@@ -105,7 +105,17 @@ saved model across every crown and writes:
 - `out/spectral/p_deadwood.tif` — per-pixel deadwood probability, NaN outside
   the valid footprint.
 - `out/spectral/crowns.gpkg` — one row per crown, with the aggregated dead
-  fraction and a `label` column (`alive` / `deadwood` / `unevaluated`).
+  fraction and a `label` column with four values, decided in this order:
+  - `rejected` — the crown's `background_frac >= 0.5`, i.e. the spectral
+    classifier read most of the crown as background. This almost always means
+    the crown itself is a false positive from the upstream torch segmentation
+    model, not that the tree is alive or dead — which is why the label set
+    keeps three outcomes instead of a simple living/dead binary.
+  - `deadwood` — checked only once a crown is not `rejected`: its
+    `dead_frac >= dead_frac_threshold`.
+  - `living` — neither of the above.
+  - `unevaluated` — no pixel of the crown had enough valid dates to be
+    classified at all (see `min_valid_dates` above).
 
 *"When did a tree die?"* is no longer answered by dedicated code. Since the
 features are date-invariant (bound only to a window's end, not to a fixed
@@ -115,8 +125,15 @@ predicted state changed.
 
 ### Caveats
 
-Only 18 deadwood trees exist in the field data, so every metric is validated
-grouped by tree and the per-tree spread matters more than the mean. The
-erosion step above shrinks that 18 further before training ever sees it. The
-living labels come from the model's crown prediction, not from field polygons,
-and can contain undetected deadwood.
+The field data holds 18 `soff` (deadwood) crown polygons, one per tree, but
+the one real training run so far reported 17 distinct deadwood tree groups —
+one tree silently dropped out somewhere between the polygon file and the
+sample table. Two mechanisms in this pipeline can do that: `erode_m` can erode
+a small crown down to an empty geometry, and pixels with fewer than
+`min_valid_dates` observations are dropped before labels are assigned. Which
+of the two (or something else) accounts for the missing tree has not been
+confirmed. Either way, every metric is validated grouped by tree
+(`StratifiedGroupKFold` plus leave-one-tree-out over the `soff` trees) because
+the deadwood group count is this small, so the per-tree spread matters more
+than the mean. The living labels come from the model's crown prediction, not
+from field polygons, and can contain undetected deadwood.
