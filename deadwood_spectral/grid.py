@@ -38,9 +38,7 @@ def load_reference_grid(path: str | Path) -> ReferenceGrid:
 def assert_matches_grid(src, grid: ReferenceGrid, context: str) -> None:
     """Fail unless an open raster sits on exactly the reference grid."""
     if (src.height, src.width) != grid.shape:
-        raise ValueError(
-            f"{context}: shape {(src.height, src.width)} != reference {grid.shape}"
-        )
+        raise ValueError(f"{context}: shape {(src.height, src.width)} != reference {grid.shape}")
     if src.crs != grid.crs:
         raise ValueError(f"{context}: CRS {src.crs} != reference {grid.crs}")
     deltas = [abs(a - b) for a, b in zip(tuple(src.transform), tuple(grid.transform))]

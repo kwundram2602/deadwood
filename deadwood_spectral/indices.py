@@ -51,9 +51,7 @@ def _select(stack: np.ndarray, band_names: Sequence[str], name: str) -> np.ndarr
         ) from None
 
 
-def compute_indices(
-    stack: np.ndarray, band_names: Sequence[str]
-) -> dict[str, np.ndarray]:
+def compute_indices(stack: np.ndarray, band_names: Sequence[str]) -> dict[str, np.ndarray]:
     """Compute every index in INDEX_NAMES from a (C, H, W) float32 stack."""
     r = _select(stack, band_names, "R")
     g = _select(stack, band_names, "G")

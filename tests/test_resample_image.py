@@ -1,5 +1,4 @@
 # tests/test_resample_image.py
-import json
 import sys
 from pathlib import Path
 

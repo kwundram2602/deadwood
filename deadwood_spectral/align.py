@@ -45,10 +45,18 @@ def align_scene(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     profile = dict(
-        driver="GTiff", dtype="float32",
-        height=grid.height, width=grid.width, count=len(band_names),
-        crs=grid.crs, transform=grid.transform, nodata=np.nan,
-        compress="lzw", tiled=True, blockxsize=512, blockysize=512,
+        driver="GTiff",
+        dtype="float32",
+        height=grid.height,
+        width=grid.width,
+        count=len(band_names),
+        crs=grid.crs,
+        transform=grid.transform,
+        nodata=np.nan,
+        compress="lzw",
+        tiled=True,
+        blockxsize=512,
+        blockysize=512,
         # BAND interleaving is not a preference here, it is required by the
         # band-at-a-time write below. Pixel-interleaved tiles hold all 7 bands
         # together, so writing one band forces GDAL to read, modify, recompress
@@ -66,9 +74,7 @@ def align_scene(
         if src.crs != grid.crs:
             raise ValueError(f"{src_path}: CRS {src.crs} != reference {grid.crs}")
         if src.count < len(band_names):
-            raise ValueError(
-                f"{src_path}: {src.count} bands, expected at least {len(band_names)}"
-            )
+            raise ValueError(f"{src_path}: {src.count} bands, expected at least {len(band_names)}")
         tmp_path = out_path.with_suffix(".tif.part")
         with rasterio.open(tmp_path, "w", **profile) as dst:
             for out_idx, name in enumerate(band_names, start=1):
@@ -90,7 +96,9 @@ def align_scene(
                 if n_bad:
                     logger.warning(
                         "%s band %s: clipped %d out-of-range value(s)",
-                        Path(src_path).name, name, n_bad,
+                        Path(src_path).name,
+                        name,
+                        n_bad,
                     )
                 np.clip(buffer, 0.0, 1.0, out=buffer)
                 dst.write(buffer, out_idx)
@@ -137,7 +145,5 @@ def align_all(
         align_scene(src_path, grid, out_path, band_names)
         written.append(out_path)
 
-    (out_dir / "channels.json").write_text(
-        json.dumps({"names": list(band_names)}, indent=2)
-    )
+    (out_dir / "channels.json").write_text(json.dumps({"names": list(band_names)}, indent=2))
     return written

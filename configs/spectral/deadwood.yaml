@@ -21,15 +21,36 @@ window:
   # Keine Datumsliste: die Features sind Aggregate über das Fenster und haben
   # feste Breite, egal wie viele Aufnahmen darin liegen.
   # Halboffen — (label_date - window_months, label_date].
+  # eg (20250313,20260313]
   label_date: "20260313"
   window_months: 12
   # Pixel mit weniger gültigen Aufnahmen bekommen NaN-Features und werden beim
   # Training verworfen bzw. bei der Vorhersage als unevaluated ausgewiesen.
   min_valid_dates: 4
 
+  # Saisonkontrast: mean(Regenzeit) - mean(Trockenzeit) je Messgröße.
+  # Trockenzeit = südafrikanischer Winter, Regenzeit = südafrikanischer Sommer.
+  # April und Oktober sind Übergang und gehören keiner Saison an; sie zählen
+  # weiter in die Fensterstatistiken, aber nicht in den Kontrast.
+  #
+  # Gemessen dieselbe Größe wie `<m>_amplitude`, nur als Differenz zweier
+  # Saisonmittel (9 bzw. 7 Termine im 12-Monats-Fenster) statt als Spanne
+  # zweier Extremtermine. Deshalb ist die Erwartung eine bessere Trennung
+  # lebend/tot — für tot/Boden schwingen beide Klassen kaum, dort hilft es nicht.
+  dry_months: [5, 6, 7, 8, 9]
+  wet_months: [11, 12, 1, 2, 3]
+  # Eine Differenz aus einem Termin gegen einen Termin wäre wieder der
+  # Extremwert-Schätzer, den der Kontrast gerade ersetzen soll.
+  min_dates_per_season: 2
+
 sampling:
   crown_threshold: 0.5
   erode_m: 0.10
+  # Erodiert wird nur, was danach noch etwas ist. Die soff-Polygone reichen von
+  # 0.02 bis 13.9 m2; 10 cm von 0.02 m2 abzuziehen loescht den Baum, und genau
+  # das ist mit 4157 passiert — das Modell meldete 17 Totholzgruppen statt 18.
+  # Darunter bleibt die rohe Geometrie samt Rand-Mischpixeln stehen.
+  erode_min_area_m2: 1.0
   exclude_buffer_m: 1.0
   edge_buffer_m: 0.25
   block_m: 20.0
@@ -44,6 +65,19 @@ model:
   seed: 0
 
 predict:
-  dead_frac_threshold: 0.5
+  # Prädiziert wird auf dem gesamten Bildbereich, nicht auf der Kronen-
+  # Prediction: die enthaelt 11 der 18 Referenzbaeume gar nicht, weil das
+  # Kronenmodell auf belaubten Kronen trainiert ist. Ein nDSM-Hoehenschnitt
+  # hilft nicht — der Median-nDSM INNERHALB der soff-Polygone ist 0.27 m
+  # (lebende Kronen: 2.57 m), weil eine blattlose Krone der Photogrammetrie
+  # keine Oberflaeche zum Matchen gibt. Boden von Vegetation zu trennen ist
+  # Aufgabe der `background`-Klasse, nicht die einer Maske.
+
+  # Schwelle, ab der ein Pixel zu einem Detektionsobjekt gehoert. Die Zahl ist
+  # NICHT kalibriert; sie wird an p_deadwood.tif in QGIS eingestellt.
+  p_threshold: 0.5
+  # Verwirft die 1-5-Pixel-Fragmente, die vorher die Haelfte der Objekte
+  # stellten. 0.05 m2 = 20 Pixel bei 5 cm.
+  min_area_m2: 0.05
   chunk_rows: 512
   pixel_batch: 2000000

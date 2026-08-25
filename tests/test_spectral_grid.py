@@ -15,8 +15,13 @@ from deadwood_spectral.grid import (  # noqa: E402
 
 def _write(path, left=1000.0, top=2000.0, res=0.05, size=8, crs="EPSG:32736", count=1):
     profile = dict(
-        driver="GTiff", dtype="float32", width=size, height=size, count=count,
-        crs=crs, transform=from_origin(left, top, res, res),
+        driver="GTiff",
+        dtype="float32",
+        width=size,
+        height=size,
+        count=count,
+        crs=crs,
+        transform=from_origin(left, top, res, res),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(np.zeros((count, size, size), dtype="float32"))

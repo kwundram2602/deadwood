@@ -1,0 +1,42 @@
+# Stage B1 — spectral overview. Descriptive only: no model, no threshold, no
+# detections. It answers whether the seasonal signal the project rests on is
+# actually in the data, before anything is trained on it.
+overview:
+  # Only the grid geometry (shape/transform/CRS), not the mask's content. This
+  # is the training ground truth, not what the model sees.
+  reference: datafiles/process_out/masks/crown_mask.tif
+  stack_dir: datafiles/process_out/timeseries
+  crowns:
+    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
+  # The BINARIZED output of the crown model, not the *_prob.tif beside it: the
+  # probability raster carries nodata = -1.0, and binarize_crown_mask only knows
+  # 255, so a -1 pixel would read as "valid, but below the threshold".
+  crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_pred_t0.9.tif
+  out_dir: out/spectral/overview
+
+sampling:
+  crown_threshold: 0.5
+  erode_m: 0.10
+  # Erode only what is still something afterwards. The soff polygons run from
+  # 0.02 to 13.9 m2; taking 10 cm off 0.02 m2 deletes the tree, and that is
+  # exactly what happened to 4157. Below this area the raw geometry stays,
+  # edge mixed pixels and all.
+  erode_min_area_m2: 1.0
+  exclude_buffer_m: 1.0
+  edge_buffer_m: 0.25
+  # Per reference class, not in total. The deadwood mask is always taken whole.
+  # Drawn once and reused at every date: a sample redrawn per acquisition would
+  # make every step in a curve ambiguous between phenology and resampling.
+  max_pixels_per_class: 50000
+  seed: 0
+
+read:
+  # Row block height for the streaming read. Bounds memory, not accuracy.
+  chunk_rows: 512
+
+season:
+  # Dry season = southern-hemisphere winter, wet = summer. April and October
+  # are transitional and belong to neither; they still appear in the time-series
+  # curves, but they are left out of the band signature.
+  dry_months: [5, 6, 7, 8, 9]
+  wet_months: [11, 12, 1, 2, 3]

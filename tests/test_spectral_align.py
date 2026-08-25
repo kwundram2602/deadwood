@@ -21,8 +21,13 @@ BANDS = ("R", "G", "B", "Green", "Red", "RedEdge", "NIR")
 
 def _write_reference(path, left=1000.0, top=2000.0, res=1.0, size=4):
     profile = dict(
-        driver="GTiff", dtype="float32", width=size, height=size, count=1,
-        crs="EPSG:32736", transform=from_origin(left, top, res, res),
+        driver="GTiff",
+        dtype="float32",
+        width=size,
+        height=size,
+        count=1,
+        crs="EPSG:32736",
+        transform=from_origin(left, top, res, res),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(np.zeros((1, size, size), dtype="float32"))
@@ -32,8 +37,13 @@ def _write_reference(path, left=1000.0, top=2000.0, res=1.0, size=4):
 def _write_source(path, data_uint16, left=1000.0, top=2000.0, res=1.0):
     count, h, w = data_uint16.shape
     profile = dict(
-        driver="GTiff", dtype="uint16", width=w, height=h, count=count,
-        crs="EPSG:32736", transform=from_origin(left, top, res, res),
+        driver="GTiff",
+        dtype="uint16",
+        width=w,
+        height=h,
+        count=count,
+        crs="EPSG:32736",
+        transform=from_origin(left, top, res, res),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(data_uint16)
@@ -75,9 +85,7 @@ def test_offset_source_lands_in_the_correct_pixel(tmp_path):
     distance must land one pixel over, not be rescaled onto the same corner."""
     grid = load_reference_grid(_write_reference(tmp_path / "ref.tif", size=4))
     # Source origin is one 1 m pixel right and one down from the reference.
-    src = _write_source(
-        tmp_path / "20230824_x.tif", _marker_source(), left=1001.0, top=1999.0
-    )
+    src = _write_source(tmp_path / "20230824_x.tif", _marker_source(), left=1001.0, top=1999.0)
     out = align_scene(src, grid, tmp_path / "20230824_stack.tif")
     with rasterio.open(out) as dst:
         band = dst.read(1)
@@ -139,8 +147,13 @@ def test_align_all_rejects_wrong_crs(tmp_path):
     src_dir.mkdir()
     path = src_dir / "20230824_a_OM_coreg.tif"
     profile = dict(
-        driver="GTiff", dtype="uint16", width=4, height=4, count=7,
-        crs="EPSG:4326", transform=from_origin(30.0, -24.0, 0.001, 0.001),
+        driver="GTiff",
+        dtype="uint16",
+        width=4,
+        height=4,
+        count=7,
+        crs="EPSG:4326",
+        transform=from_origin(30.0, -24.0, 0.001, 0.001),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(_marker_source())

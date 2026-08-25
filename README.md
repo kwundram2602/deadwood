@@ -1,5 +1,8 @@
 # Deadwood
-
+This project aims to detect deadwood based on sparse labeled field data. The code was tested on field data retrieved in the Kruger Nationalpark in South Afric.
+Besides corwn field data
+In a first step a TorchGeo UNet with pretrained weights () is used for a binary crown segmentation. 
+The crown segmentation output mask and the crowns that were classified as deadwood in the field campaign then feed the spectral analysis step. The different amplitude in the spectral signal over time 
 ## Installation 
 
 1. Install uv 
@@ -53,87 +56,49 @@ uv run python scripts/predict.py --config configs/predict/predict_sample_rgb_ms.
 
 ## Spectral Analysis
 
-Standing deadwood detection from the multi-year orthomosaic time series. The
-crown segmentation above supplies the living-vegetation reference; the `soff`
-field polygons supply the deadwood ground truth. Because a deciduous savanna
-tree is leafless in the dry season too, a single date cannot separate dead from
-dormant — a window of dates can.
-
-The pipeline is two scripts, one config each.
-
+Standing deadwood detection from the multi-year orthomosaic time series.
 ### Stage A — Align the time series
 
 Reprojects every scene in `datafiles/OM_domAligned/` onto the `crown_mask.tif`
-grid (5 cm, EPSG:32736). Idempotent: re-run it as new dates arrive.
+grid (5 cm, EPSG:32736). 
 
-```
 uv run python scripts/spectral_align.py --config configs/spectral/align.yaml
-```
 
-Stage A does only reprojection now — there is no co-registration check anymore.
-Registration rests on the upstream alignment plus a manual visual check: overlay
-one aligned date and `crown_mask.tif` in QGIS and confirm the crowns coincide.
-The **residual registration error is unquantified** — nothing in the pipeline
-measures it any more; the QGIS check is the only safeguard.
+### Stage B1 — Spectral overview
 
-### Stage B — Sample, train, predict
+Descriptive only: no model, no threshold, no detections. It answers whether the
+seasonal signal the project rests on is actually in the data, before anything is
+trained on it.
 
 ```
-uv run python scripts/spectral_deadwood.py train   --config configs/spectral/deadwood.yaml
-uv run python scripts/spectral_deadwood.py predict --config configs/spectral/deadwood.yaml
-uv run python scripts/spectral_deadwood.py all     --config configs/spectral/deadwood.yaml
+uv run python scripts/spectral_overview.py --config configs/spectral/overview.yaml
 ```
 
-Draws grouped, balanced samples from three pools (deadwood from the eroded
-`soff` polygons, living from the crown prediction, background from the rest),
-then computes, per sampled pixel, 31 date-invariant phenology statistics over
-the half-open window `(label_date - window_months, label_date]` set in
-`deadwood.yaml`'s `window` block — there is no fixed list of dates any more,
-only the window's width and its end. Pixels with fewer than `min_valid_dates`
-observations in the window get NaN features and are dropped from training /
-marked `unevaluated` at prediction time. The sample table is cached next to the
-model as `samples.parquet` and is redrawn automatically whenever the window or
-sampling parameters change.
+Three classes are compared over every aligned acquisition. `deadwood` is the
+`soff` field polygons — the only real ground truth. `living` is the *crown
+model's* prediction, not the `son` polygons, because that is the surface a
+classifier meets at inference time. `background` is bare ground, and it is not
+optional: a leafless dead crown collapses spectrally toward the ground, so
+without the ground curve the deadwood curve has nothing to be distinguished
+from.
 
-`train` fits one RandomForest, validated grouped by tree (`StratifiedGroupKFold`
-plus leave-one-tree-out over the `soff` trees), and writes the model plus
-`importances.png`, `precision_recall.png` and `phenology.png` (the raw,
-un-aggregated seasonal course for a subsample — the aggregated features have
-already thrown that shape away) under `out/spectral/`. `predict` applies the
-saved model across every crown and writes:
+The pixel set is drawn once and reused at every date. Redrawing per acquisition
+would make every step in a curve ambiguous between phenology and resampling.
+The `soff` pixels are taken whole; the two reference classes are cut to
+`sampling.max_pixels_per_class` by a seeded draw. Object-wise curves exist only
+for the `soff` trees — for `living` the per-object spread would be the spread of
+the crown segmenter, not of the phenology.
 
-- `out/spectral/p_deadwood.tif` — per-pixel deadwood probability, NaN outside
-  the valid footprint.
-- `out/spectral/crowns.gpkg` — one row per crown, with the aggregated dead
-  fraction and a `label` column with four values, decided in this order:
-  - `rejected` — the crown's `background_frac >= 0.5`, i.e. the spectral
-    classifier read most of the crown as background. This almost always means
-    the crown itself is a false positive from the upstream torch segmentation
-    model, not that the tree is alive or dead — which is why the label set
-    keeps three outcomes instead of a simple living/dead binary.
-  - `deadwood` — checked only once a crown is not `rejected`: its
-    `dead_frac >= dead_frac_threshold`.
-  - `living` — neither of the above.
-  - `unevaluated` — no pixel of the crown had enough valid dates to be
-    classified at all (see `min_valid_dates` above).
+Outputs in `out/spectral/overview/`:
 
-*"When did a tree die?"* is no longer answered by dedicated code. Since the
-features are date-invariant (bound only to a window's end, not to a fixed
-calendar list), point `window.label_date` at successive dates and run `predict`
-again for each — the same model, over several windows, traces when a crown's
-predicted state changed.
-
-### Caveats
-
-The field data holds 18 `soff` (deadwood) crown polygons, one per tree, but
-the one real training run so far reported 17 distinct deadwood tree groups —
-one tree silently dropped out somewhere between the polygon file and the
-sample table. Two mechanisms in this pipeline can do that: `erode_m` can erode
-a small crown down to an empty geometry, and pixels with fewer than
-`min_valid_dates` observations are dropped before labels are assigned. Which
-of the two (or something else) accounts for the missing tree has not been
-confirmed. Either way, every metric is validated grouped by tree
-(`StratifiedGroupKFold` plus leave-one-tree-out over the `soff` trees) because
-the deadwood group count is this small, so the per-tree spread matters more
-than the mean. The living labels come from the model's crown prediction, not
-from field polygons, and can contain undetected deadwood.
+- `overview_class.csv` — per class, date and measure: `median` with `q25`/`q75`
+  and `n_valid_px`. The count separates a kink in a curve from a data hole.
+- `overview_tree.csv` — the same per `soff` tree, so it is visible whether the
+  class median stands for all eighteen or one tree is dragging it.
+- `signature_class.csv` — mean reflectance per band, class and season. The
+  time-series tables answer *when* it swings; this one answers *what it looks
+  like*. April and October are transitional and are excluded here, though they
+  still appear in the curves.
+- `ts_<measure>.png` — class medians with their interquartile band, single
+  `soff` trees thin behind them.
+- `signature.png` — reflectance against band, one panel per season.

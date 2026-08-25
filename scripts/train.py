@@ -161,7 +161,7 @@ def main() -> None:
         )
         _reload_best(model, ft_result["ckpt_path"], device)
 
-    print(f"\nTraining complete.")
+    print("\nTraining complete.")
     print(f"Experiment : {experiment_id}")
     print(f"Output dir : {out_dir}")
 

@@ -1,20 +1,22 @@
-"""Diagnostische Plots. Dünne Wrapper — die Aussage steckt in den Daten."""
+"""Diagnostic plots. Thin wrappers — the statement is in the data.
+
+Both figures answer the project hypothesis directly: if deadwood really carries
+no seasonal swing, its curve lies flat while the living crowns oscillate, and
+its band signature stays put between the seasons while theirs moves.
+"""
 
 import logging
-from collections.abc import Sequence
 from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")  # kein Display auf dem HPC
+matplotlib.use("Agg")  # no display on the HPC
 import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-from sklearn.metrics import precision_recall_curve  # noqa: E402
-
-from deadwood_spectral.model import CODE_TO_NAME, DEADWOOD_CODE  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+CLASS_COLORS = {"deadwood": "#c0392b", "living": "#27ae60", "background": "#7f8c8d"}
 
 
 def _save(fig, path: str | Path) -> Path:
@@ -26,53 +28,80 @@ def _save(fig, path: str | Path) -> Path:
     return path
 
 
-def plot_phenology(
-    series: dict[str, np.ndarray],
-    class_codes: np.ndarray,
-    dates: Sequence[str],
-    path: str | Path,
-    measure: str = "ndvi",
+def plot_timeseries(
+    class_df: pd.DataFrame, tree_df: pd.DataFrame, measure: str, path: str | Path
 ) -> Path:
-    """Median-Verlauf je Klasse — die Abbildung, die die Projekthypothese zeigt.
+    """Class medians with their interquartile band, single soff trees behind.
 
-    Trägt Totholz tatsächlich keinen saisonalen Schwung, liegt seine Kurve flach,
-    während die lebenden Kronen ausschlagen.
+    The trees are drawn thin and unlabelled on purpose: the question they answer
+    is not "which tree is which" but "does the class median stand for all
+    eighteen, or is one tree dragging it".
     """
-    values = np.asarray(series[measure], dtype=np.float64)
-    x = np.arange(len(dates))
-    fig, ax = plt.subplots(figsize=(9, 4))
-    for code, name in sorted(CODE_TO_NAME.items()):
-        member = class_codes == code
-        if not member.any():
-            continue
-        median = np.nanmedian(values[member], axis=0)
-        ax.plot(x, median, marker="o", label=f"{name} (n={int(member.sum())})")
-    ax.set_xticks(x)
-    ax.set_xticklabels(dates, rotation=60, ha="right", fontsize=8)
+    selection = class_df[class_df["measure"] == measure]
+    if selection.empty:
+        raise ValueError(
+            f"no rows for measure {measure!r}; computed: {sorted(class_df['measure'].unique())}"
+        )
+
+    dates = sorted(selection["date"].unique())
+    positions = {date: i for i, date in enumerate(dates)}
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+
+    trees = tree_df[tree_df["measure"] == measure] if len(tree_df) else tree_df
+    for _, group in trees.groupby("tree_id", observed=True) if len(trees) else []:
+        group = group.sort_values("date")
+        ax.plot(
+            [positions[d] for d in group["date"]],
+            group["median"],
+            color=CLASS_COLORS["deadwood"],
+            alpha=0.25,
+            linewidth=0.8,
+            zorder=1,
+        )
+
+    for name, group in selection.groupby("class", observed=True):
+        group = group.sort_values("date")
+        x = [positions[d] for d in group["date"]]
+        color = CLASS_COLORS.get(str(name), None)
+        ax.fill_between(x, group["q25"], group["q75"], color=color, alpha=0.15, linewidth=0)
+        ax.plot(
+            x, group["median"], color=color, marker="o", markersize=3, label=str(name), zorder=3
+        )
+
+    ax.set_xticks(range(len(dates)))
+    ax.set_xticklabels(dates, rotation=60, ha="right", fontsize=7)
     ax.set_ylabel(f"median {measure}")
+    ax.set_title(f"{measure} over the aligned time series")
     ax.legend()
     ax.grid(alpha=0.3)
     return _save(fig, path)
 
 
-def plot_importances(importances: pd.DataFrame, path: str | Path, top_n: int = 20) -> Path:
-    top = importances.head(top_n).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(7, 0.32 * len(top) + 1))
-    ax.barh(top["feature"], top["importance_mean"], xerr=top["importance_std"])
-    ax.set_xlabel("permutation importance")
-    ax.grid(axis="x", alpha=0.3)
-    return _save(fig, path)
-
-
-def plot_precision_recall(y: np.ndarray, oof_proba: np.ndarray, path: str | Path) -> Path:
-    """PR-Kurve für die Totholz-Klasse aus den Out-of-fold-Wahrscheinlichkeiten."""
-    precision, recall, _ = precision_recall_curve(
-        (y == DEADWOOD_CODE).astype(int), oof_proba[:, DEADWOOD_CODE]
+def plot_signature(signature_df: pd.DataFrame, path: str | Path) -> Path:
+    """Mean reflectance against band, one panel per season."""
+    seasons = sorted(signature_df["season"].unique())
+    bands = list(dict.fromkeys(signature_df["band"]))
+    fig, axes = plt.subplots(
+        1, len(seasons), figsize=(5 * len(seasons), 4), sharey=True, squeeze=False
     )
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.plot(recall, precision)
-    ax.set_xlabel("recall")
-    ax.set_ylabel("precision")
-    ax.set_title("deadwood, grouped out-of-fold")
-    ax.grid(alpha=0.3)
+
+    for ax, season in zip(axes[0], seasons):
+        panel = signature_df[signature_df["season"] == season]
+        for name, group in panel.groupby("class", observed=True):
+            group = group.set_index("band").reindex(bands).reset_index()
+            ax.errorbar(
+                range(len(bands)),
+                group["mean"],
+                yerr=group["std"],
+                marker="o",
+                capsize=3,
+                color=CLASS_COLORS.get(str(name), None),
+                label=str(name),
+            )
+        ax.set_xticks(range(len(bands)))
+        ax.set_xticklabels(bands, rotation=45, ha="right")
+        ax.set_title(season)
+        ax.grid(alpha=0.3)
+    axes[0][0].set_ylabel("mean reflectance")
+    axes[0][-1].legend()
     return _save(fig, path)
