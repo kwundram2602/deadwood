@@ -17,8 +17,13 @@ TRANSFORM = from_origin(500000, 5400000, 0.05, 0.05)
 
 def _write(path, data):
     profile = dict(
-        driver="GTiff", dtype="float32", width=data.shape[2],
-        height=data.shape[1], count=data.shape[0], crs=CRS, transform=TRANSFORM,
+        driver="GTiff",
+        dtype="float32",
+        width=data.shape[2],
+        height=data.shape[1],
+        count=data.shape[0],
+        crs=CRS,
+        transform=TRANSFORM,
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(data.astype(np.float32))

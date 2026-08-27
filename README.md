@@ -66,15 +66,15 @@ uv run python scripts/spectral_align.py --config configs/spectral/align.yaml
 
 ### Stage B1 — Spectral overview
 
-Descriptive only: no model, no threshold, no detections. It answers whether the
-seasonal signal the project rests on is actually in the data, before anything is
-trained on it.
+Descriptive only: 
 
 ```
 uv run python scripts/spectral_overview.py --config configs/spectral/overview.yaml
 ```
+Setting `window.label_date` restricts the run to the half-open window
+`(label_date - window_months, label_date]`.
 
-Three classes are compared over every aligned acquisition. `deadwood` is the
+Three classes are compared over the selected acquisitions. `deadwood` is the
 `soff` field polygons — the only real ground truth. `living` is the *crown
 model's* prediction, not the `son` polygons, because that is the surface a
 classifier meets at inference time. `background` is bare ground, and it is not
@@ -89,8 +89,31 @@ The `soff` pixels are taken whole; the two reference classes are cut to
 for the `soff` trees — for `living` the per-object spread would be the spread of
 the crown segmenter, not of the phenology.
 
+Measures, per pixel and per date. `Green`/`Red`/`RedEdge`/`NIR` are the
+multispectral bands, `R`/`G`/`B` the RGB composite — two sensors, never mixed
+inside one measure:
+
+- `ndvi` = (NIR − Red) / (NIR + Red)
+- `ndre` = (NIR − RedEdge) / (NIR + RedEdge) — same, on the red edge, which
+  saturates later than red.
+- `gndvi` = (NIR − Green) / (NIR + Green) — same, on green; tracks chlorophyll
+  rather than leaf area.
+- `nir_red_ratio` = NIR / Red — unnormalised, spreads the high end `ndvi`
+  compresses. NaN where Red is 0.
+- `NIR` — raw near-infrared. A collapsed NIR is the most direct deadwood
+  signature there is, and every normalised difference hides it.
+- `brightness` = (R + G + B) / 3 — visible reflectance; bare wood and ground are
+  bright where leaves are dark.
+- `green_red` = (G − R) / (G + R) — greenness from RGB alone, independent of the
+  multispectral sensor.
+
 Outputs in `out/spectral/overview/`:
 
+- `sample_pixels.gpkg` — the drawn pixels as points at their centres, with
+  `class` and `tree_id`. Not a polygonised mask: the mask says where a class
+  *could* have been drawn, this says where it *was*, which for a seeded draw is
+  the question worth asking. Load it over the orthomosaic in QGIS and filter by
+  `class`.
 - `overview_class.csv` — per class, date and measure: `median` with `q25`/`q75`
   and `n_valid_px`. The count separates a kink in a curve from a data hole.
 - `overview_tree.csv` — the same per `soff` tree, so it is visible whether the
@@ -99,6 +122,7 @@ Outputs in `out/spectral/overview/`:
   time-series tables answer *when* it swings; this one answers *what it looks
   like*. April and October are transitional and are excluded here, though they
   still appear in the curves.
-- `ts_<measure>.png` — class medians with their interquartile band, single
-  `soff` trees thin behind them.
+- `ts_<measure>.png` — class medians with their interquartile band. Per-tree
+  curves are deliberately not drawn over them; that check lives in
+  `overview_tree.csv`.
 - `signature.png` — reflectance against band, one panel per season.

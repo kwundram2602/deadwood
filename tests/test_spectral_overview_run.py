@@ -170,3 +170,43 @@ def test_run_is_reproducible_for_a_seed(project, tmp_path):
     first = pd.read_csv(run_overview(**project)["class_csv"])
     second = pd.read_csv(run_overview(**{**project, "out_dir": tmp_path / "out2"})["class_csv"])
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_without_an_anchor_the_run_covers_the_whole_time_series(project):
+    outputs = run_overview(**project)
+    table = pd.read_csv(outputs["class_csv"], dtype={"date": str})
+    assert set(table["date"]) == set(DATES)
+
+
+def test_an_anchor_and_window_restrict_the_run(project):
+    outputs = run_overview(**project, label_date="20241203", window_months=6)
+    table = pd.read_csv(outputs["class_csv"], dtype={"date": str})
+    assert set(table["date"]) == {"20240613", "20241203"}
+
+
+def test_the_signature_follows_the_window_too(project):
+    """A window with no dry-season acquisition must not report a dry signature."""
+    outputs = run_overview(**project, label_date="20241203", window_months=3)
+    table = pd.read_csv(outputs["signature_csv"])
+    assert set(table["season"]) == {"wet"}
+
+
+def test_an_anchor_without_an_acquisition_is_rejected(project):
+    with pytest.raises(FileNotFoundError, match="20241204"):
+        run_overview(**project, label_date="20241204", window_months=6)
+
+
+def test_the_run_writes_the_sample_geometry(project):
+    outputs = run_overview(**project)
+    gdf = gpd.read_file(outputs["sample_gpkg"])
+    assert set(gdf["class"]) == {"deadwood", "living", "background"}
+    assert gdf.crs.to_epsg() == 32736
+
+
+def test_the_sample_geometry_has_one_point_per_sampled_pixel(project):
+    outputs = run_overview(**project)
+    gdf = gpd.read_file(outputs["sample_gpkg"])
+    # 50 living + 50 background by the cap, plus every deadwood pixel.
+    assert (gdf["class"] == "living").sum() == 50
+    assert (gdf["class"] == "background").sum() == 50
+    assert (gdf.geometry.geom_type == "Point").all()

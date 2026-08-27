@@ -38,6 +38,8 @@ def main() -> None:
         max_pixels_per_class=cfg.sampling.max_pixels_per_class,
         seed=cfg.sampling.seed,
         chunk_rows=cfg.read.chunk_rows,
+        label_date=cfg.window.label_date,
+        window_months=cfg.window.window_months,
         dry_months=list(cfg.season.dry_months),
         wet_months=list(cfg.season.wet_months),
     )

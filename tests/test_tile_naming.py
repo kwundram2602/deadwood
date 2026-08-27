@@ -19,9 +19,14 @@ TRANSFORM = from_origin(500000, 5400000, 0.05, 0.05)
 
 def _write(path, data, nodata=None):
     profile = dict(
-        driver="GTiff", dtype="float32", width=data.shape[2],
-        height=data.shape[1], count=data.shape[0], crs=CRS,
-        transform=TRANSFORM, nodata=nodata,
+        driver="GTiff",
+        dtype="float32",
+        width=data.shape[2],
+        height=data.shape[1],
+        count=data.shape[0],
+        crs=CRS,
+        transform=TRANSFORM,
+        nodata=nodata,
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(data.astype(np.float32))
@@ -42,15 +47,17 @@ def _make_inputs(root, n_bands=5, size=8):
 def test_tile_naming_and_manifest_copy(tmp_path):
     _make_inputs(tmp_path)
     out = tmp_path / "patches"
-    cfg = OmegaConf.create({
-        "image": str(tmp_path / "scene_stack.tif"),
-        "mask": str(tmp_path / "mask.tif"),
-        "dsm": str(tmp_path / "dsm.tif"),
-        "out": str(out),
-        "size": 4,
-        "nodata_thresh": 0.9,
-        "img_nodata_thresh": 0.9,
-    })
+    cfg = OmegaConf.create(
+        {
+            "image": str(tmp_path / "scene_stack.tif"),
+            "mask": str(tmp_path / "mask.tif"),
+            "dsm": str(tmp_path / "dsm.tif"),
+            "out": str(out),
+            "size": 4,
+            "nodata_thresh": 0.9,
+            "img_nodata_thresh": 0.9,
+        }
+    )
     tile_main(cfg)
 
     tifs = sorted(p.name for p in out.glob("*.tif"))
@@ -67,15 +74,17 @@ def test_tile_naming_and_manifest_copy(tmp_path):
 def test_split_copies_manifest(tmp_path):
     _make_inputs(tmp_path)
     out = tmp_path / "patches"
-    cfg = OmegaConf.create({
-        "image": str(tmp_path / "scene_stack.tif"),
-        "mask": str(tmp_path / "mask.tif"),
-        "dsm": str(tmp_path / "dsm.tif"),
-        "out": str(out),
-        "size": 4,
-        "nodata_thresh": 0.9,
-        "img_nodata_thresh": 0.9,
-    })
+    cfg = OmegaConf.create(
+        {
+            "image": str(tmp_path / "scene_stack.tif"),
+            "mask": str(tmp_path / "mask.tif"),
+            "dsm": str(tmp_path / "dsm.tif"),
+            "out": str(out),
+            "size": 4,
+            "nodata_thresh": 0.9,
+            "img_nodata_thresh": 0.9,
+        }
+    )
     tile_main(cfg)
     split_root = tmp_path / "split"
     split_patches(out, split_root, train_ratio=0.5, val_ratio=0.25, seed=1, mode="copy")

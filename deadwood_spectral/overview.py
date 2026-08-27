@@ -10,16 +10,19 @@ summarised as a class curve with an interquartile band — their per-object
 spread would be the spread of the crown segmenter, not of the phenology.
 """
 
+import calendar
 import datetime as dt
 import logging
 from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.windows import Window
+from shapely.geometry import Point
 
 from deadwood_spectral.align import parse_date
 from deadwood_spectral.grid import ReferenceGrid, assert_matches_grid
@@ -40,6 +43,37 @@ def stack_dates(stack_dir: str | Path) -> list[str]:
     if not dates:
         raise FileNotFoundError(f"no aligned stack in {stack_dir}")
     logger.info("%d acquisition(s), %s..%s", len(dates), dates[0], dates[-1])
+    return dates
+
+
+def _shift_months(date: dt.date, months: int) -> dt.date:
+    """`date` moved back by `months`, without inventing a 31st of February."""
+    index = date.year * 12 + (date.month - 1) - months
+    year, month0 = divmod(index, 12)
+    day = min(date.day, calendar.monthrange(year, month0 + 1)[1])
+    return dt.date(year, month0 + 1, day)
+
+
+def window_dates(stack_dir: str | Path, label_date: str, window_months: int) -> list[str]:
+    """Acquisitions in the half-open window (label_date - window_months, label_date].
+
+    Half-open because the anchor is where the labels come from: the acquisition
+    on the anchor date belongs in, the one exactly a window back belongs to the
+    previous cycle. The anchor itself must have a scene — a label_date without
+    an acquisition is a typo far more often than it is an intention, and a
+    silent shift to the nearest neighbour would hide it.
+    """
+    anchor = dt.datetime.strptime(label_date, "%Y%m%d").date()
+    start = _shift_months(anchor, int(window_months))
+    available = stack_dates(stack_dir)
+    if label_date not in available:
+        raise FileNotFoundError(f"no aligned stack for the anchor date {label_date}")
+    dates = [d for d in available if start < dt.datetime.strptime(d, "%Y%m%d").date() <= anchor]
+    if not dates:
+        raise FileNotFoundError(
+            f"no aligned stack in ({start:%Y%m%d}, {label_date}] under {stack_dir}"
+        )
+    logger.info("window (%s, %s]: %d acquisition(s)", f"{start:%Y%m%d}", label_date, len(dates))
     return dates
 
 
@@ -91,6 +125,23 @@ def select_pixels(
     pixels = pd.concat(frames, ignore_index=True)
     logger.info("pixel sample: %s", dict(pixels["class"].value_counts()))
     return pixels
+
+
+def sample_points(pixels: pd.DataFrame, grid: ReferenceGrid) -> gpd.GeoDataFrame:
+    """The drawn pixels as points on the reference grid, for inspection in QGIS.
+
+    One point per sampled pixel at its centre, not a polygonised mask: the mask
+    says where a class *could* have been drawn, this says where it *was*. For a
+    seeded draw that difference is the whole question — a mask covering the
+    whole survey tells you nothing about whether the 50 000 pixels landed evenly
+    or piled into one corner.
+    """
+    xs, ys = grid.transform * (pixels["col"].to_numpy() + 0.5, pixels["row"].to_numpy() + 0.5)
+    return gpd.GeoDataFrame(
+        pixels.copy(),
+        geometry=[Point(x, y) for x, y in zip(xs, ys)],
+        crs=grid.crs,
+    )
 
 
 def read_values(
@@ -278,6 +329,8 @@ def run_overview(
     max_pixels_per_class: int = 50_000,
     seed: int = 0,
     chunk_rows: int = 512,
+    label_date: str | None = None,
+    window_months: int = 12,
     dry_months: Sequence[int] = (5, 6, 7, 8, 9),
     wet_months: Sequence[int] = (11, 12, 1, 2, 3),
 ) -> dict[str, Path]:
@@ -309,7 +362,15 @@ def run_overview(
     )
 
     pixels = select_pixels(masks, max_pixels_per_class=max_pixels_per_class, seed=seed)
-    dates = stack_dates(stack_dir)
+    # No anchor means the whole time series. An anchor restricts the run to the
+    # half-open window ending on it, which is how a stage that trains on labels
+    # from one date has to see the data; a descriptive first look usually does
+    # not want that restriction, so it is off by default.
+    dates = (
+        stack_dates(stack_dir)
+        if label_date is None
+        else window_dates(stack_dir, label_date, window_months)
+    )
     paths = stack_paths(stack_dir, dates)
     # Bands and indices in one pass: the signature needs the raw reflectances,
     # the curves need the indices, and reading the scenes twice for that would
@@ -325,18 +386,25 @@ def run_overview(
     trees = tree_table(values, pixels, dates)
     signature = signature_table(values, pixels, dates, dry_months, wet_months)
 
+    sample_gpkg = out_dir / "sample_pixels.gpkg"
+    sample_points(pixels, grid).to_file(sample_gpkg, driver="GPKG", layer="sample_pixels")
+    logger.info("wrote %s (%d point(s))", sample_gpkg, len(pixels))
+
     outputs = {
+        "sample_gpkg": sample_gpkg,
         "class_csv": out_dir / "overview_class.csv",
         "tree_csv": out_dir / "overview_tree.csv",
         "signature_csv": out_dir / "signature_class.csv",
     }
-    for table, path in zip((classes, trees, signature), outputs.values()):
+    csv_keys = ("class_csv", "tree_csv", "signature_csv")
+    for table, key in zip((classes, trees, signature), csv_keys):
+        path = outputs[key]
         table.to_csv(path, index=False)
         logger.info("wrote %s (%d rows)", path, len(table))
 
     for measure in MEASURES:
         outputs[f"plot_ts_{measure}"] = plot_timeseries(
-            classes, trees, measure, out_dir / f"ts_{measure}.png"
+            classes, measure, out_dir / f"ts_{measure}.png"
         )
     outputs["plot_signature"] = plot_signature(signature, out_dir / "signature.png")
     return outputs

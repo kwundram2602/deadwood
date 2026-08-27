@@ -16,6 +16,7 @@ STACK_MS = ["green_ms", "red_ms", "rededge", "nir"]
 
 # ---------------------------------------------------------------- manifest
 
+
 def test_load_manifest_roundtrip(tmp_path):
     p = tmp_path / "channels.json"
     p.write_text(json.dumps({"names": STACK_MS}))
@@ -30,6 +31,7 @@ def test_load_manifest_rejects_duplicates(tmp_path):
 
 
 # ---------------------------------------------------------------- selection
+
 
 def test_basic_selection_and_indexes():
     spec = ChannelSpec(STACK7, ["red", "green", "blue", "rededge", "nir", NDSM])
@@ -78,6 +80,7 @@ def test_duplicate_stack_names_rejected():
 
 # ---------------------------------------------------------------- pretrained
 
+
 def test_exact_names_win_slots():
     spec = ChannelSpec(STACK7, ["red", "green", "blue", "green_ms", "red_ms", "rededge", "nir"])
     # position→slot: red@0→R(0), green@1→G(1), blue@2→B(2); *_ms unassigned
@@ -125,6 +128,7 @@ def test_map_rejects_bad_slot_and_bad_name():
 
 # ---------------------------------------------------------------- assemble
 
+
 def test_assemble_inserts_ndsm_at_position():
     spec = ChannelSpec(STACK_MS, ["green_ms", NDSM, "nir"])
     stack = np.stack([np.full((2, 2), 0.1), np.full((2, 2), 0.3)])  # green_ms, nir
@@ -149,6 +153,7 @@ def test_assemble_requires_ndsm_when_selected():
 
 
 # ---------------------------------------------------------------- stats
+
 
 def test_norm_stats_subset_by_name_in_input_order():
     spec = ChannelSpec(STACK_MS, ["nir", "green_ms", NDSM])
@@ -177,6 +182,7 @@ def test_norm_stats_missing_channel_raises():
 
 # ---------------------------------------------------------------- freezing
 
+
 def test_frozen_indices_resolved():
     spec = ChannelSpec(STACK_MS, ["green_ms", "red_ms", "rededge", "nir", NDSM])
     assert spec.frozen_indices(["red_ms", "green_ms"]) == [1, 0]
@@ -201,6 +207,7 @@ def test_frozen_empty_list_ok():
 
 
 # ------------------------------------------------------------------ display
+
 
 def test_ndsm_position_none_when_unused():
     assert ChannelSpec(STACK7, ["red", "green", "blue"]).ndsm_position is None

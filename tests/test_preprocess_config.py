@@ -107,15 +107,23 @@ def test_run_propagates_dsm_paths_to_tiling(tmp_path, monkeypatch):
         args.out = "masks/crown_mask_final_lm_w150-350-700_ht2.0.tif"
         args.out_dsm = "ndsm/dsm_ndsm_w150-350-700.tif"
 
-    with patch("scripts.preprocess.rasterize_main"), \
-         patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main), \
-         patch("scripts.preprocess.tile_main") as mock_tile, \
-         patch("scripts.preprocess.split_patches"), \
-         patch("scripts.preprocess.load_manifest", return_value=["red", "green"]), \
-         patch("scripts.preprocess.compute_channel_stats",
-               return_value={"names": ["red", "green", "ndsm"],
-                             "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0]}):
+    with (
+        patch("scripts.preprocess.rasterize_main"),
+        patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main),
+        patch("scripts.preprocess.tile_main") as mock_tile,
+        patch("scripts.preprocess.split_patches"),
+        patch("scripts.preprocess.load_manifest", return_value=["red", "green"]),
+        patch(
+            "scripts.preprocess.compute_channel_stats",
+            return_value={
+                "names": ["red", "green", "ndsm"],
+                "mean": [0.0, 0.0, 0.0],
+                "std": [1.0, 1.0, 1.0],
+            },
+        ),
+    ):
         from scripts.preprocess import run
+
         run(str(config_file))
         tiling_args = mock_tile.call_args[0][0]
         assert tiling_args.mask == "masks/crown_mask_final_lm_w150-350-700_ht2.0.tif"
@@ -171,15 +179,23 @@ def test_run_does_not_propagate_null_out_dsm(tmp_path, monkeypatch):
         args.out = "masks/crown_mask_final_gr_s3.0.tif"
         # out_dsm stays None — gradient method does not produce nDSM
 
-    with patch("scripts.preprocess.rasterize_main"), \
-         patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main), \
-         patch("scripts.preprocess.tile_main") as mock_tile, \
-         patch("scripts.preprocess.split_patches"), \
-         patch("scripts.preprocess.load_manifest", return_value=["red", "green"]), \
-         patch("scripts.preprocess.compute_channel_stats",
-               return_value={"names": ["red", "green", "ndsm"],
-                             "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0]}):
+    with (
+        patch("scripts.preprocess.rasterize_main"),
+        patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main),
+        patch("scripts.preprocess.tile_main") as mock_tile,
+        patch("scripts.preprocess.split_patches"),
+        patch("scripts.preprocess.load_manifest", return_value=["red", "green"]),
+        patch(
+            "scripts.preprocess.compute_channel_stats",
+            return_value={
+                "names": ["red", "green", "ndsm"],
+                "mean": [0.0, 0.0, 0.0],
+                "std": [1.0, 1.0, 1.0],
+            },
+        ),
+    ):
         from scripts.preprocess import run
+
         run(str(config_file))
         tiling_args = mock_tile.call_args[0][0]
         assert tiling_args.mask == "masks/crown_mask_final_gr_s3.0.tif"

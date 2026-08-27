@@ -14,6 +14,19 @@ overview:
   crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_pred_t0.9.tif
   out_dir: out/spectral/overview
 
+window:
+  # Optional. Left empty, the overview covers every aligned acquisition — which
+  # is what a first look usually wants, since it is the full record that shows
+  # WHEN a tree stopped swinging.
+  #
+  # Set to restrict the run to the half-open window (label_date - window_months,
+  # label_date], the same convention the model stage uses. The anchor date must
+  # itself have an acquisition; a label_date without one is rejected rather than
+  # snapped to a neighbour.
+  # eg (20250313, 20260313]
+  label_date: "20260313"
+  window_months: 10
+
 sampling:
   crown_threshold: 0.5
   erode_m: 0.10

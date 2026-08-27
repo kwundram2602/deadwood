@@ -3,6 +3,7 @@
 mirroring apply_dsm_mask.py's `method: dtm`, and fall back to the multi-scale
 minimum filter otherwise.
 """
+
 import sys
 from pathlib import Path
 
@@ -25,8 +26,15 @@ def _write(path, arr, *, descriptions=None, gsd=GSD):
     arr = np.atleast_3d(arr.T).T if arr.ndim == 2 else arr
     count, h, w = arr.shape
     with rasterio.open(
-        path, "w", driver="GTiff", height=h, width=w, count=count,
-        dtype="float32", crs=CRS, transform=from_origin(0, 0, gsd, gsd),
+        path,
+        "w",
+        driver="GTiff",
+        height=h,
+        width=w,
+        count=count,
+        dtype="float32",
+        crs=CRS,
+        transform=from_origin(0, 0, gsd, gsd),
     ) as dst:
         dst.write(arr.astype(np.float32))
         if descriptions:
@@ -38,8 +46,11 @@ def _write(path, arr, *, descriptions=None, gsd=GSD):
 @pytest.fixture
 def scene(tmp_path):
     """RGB source, a DSM with a 10 m block on sloped ground, and the true DTM."""
-    rgb = _write(tmp_path / "rgb.tif", np.full((3, H, W), 0.5, np.float32),
-                 descriptions=["red", "green", "blue"])
+    rgb = _write(
+        tmp_path / "rgb.tif",
+        np.full((3, H, W), 0.5, np.float32),
+        descriptions=["red", "green", "blue"],
+    )
 
     ground = np.tile(np.linspace(100.0, 140.0, W, dtype=np.float32), (H, 1))
     dsm_arr = ground.copy()

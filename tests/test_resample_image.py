@@ -21,8 +21,13 @@ CRS = "EPSG:32636"
 
 def _write_raster(path, n_bands, h=8, w=8, fill=1000.0):
     profile = dict(
-        driver="GTiff", dtype="float32", width=w, height=h, count=n_bands,
-        crs=CRS, transform=TRANSFORM,
+        driver="GTiff",
+        dtype="float32",
+        width=w,
+        height=h,
+        count=n_bands,
+        crs=CRS,
+        transform=TRANSFORM,
     )
     data = np.stack([np.full((h, w), fill * (i + 1), np.float32) for i in range(n_bands)])
     with rasterio.open(path, "w", **profile) as dst:
@@ -66,6 +71,7 @@ def test_stack_sources_order_descriptions_manifestable(tmp_path):
 
 def _src_entry(path, bands, names):
     from omegaconf import OmegaConf
+
     return OmegaConf.create({"path": str(path), "bands": bands, "names": names})
 
 

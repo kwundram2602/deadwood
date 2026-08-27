@@ -12,8 +12,13 @@ from explore_and_process.rasterize_crowns import assert_same_bounds  # noqa: E40
 
 def _write(path, left, top, res=1.0, size=4):
     profile = dict(
-        driver="GTiff", dtype="uint16", width=size, height=size, count=1,
-        crs="EPSG:32736", transform=from_origin(left, top, res, res),
+        driver="GTiff",
+        dtype="uint16",
+        width=size,
+        height=size,
+        count=1,
+        crs="EPSG:32736",
+        transform=from_origin(left, top, res, res),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(np.ones((1, size, size), dtype="uint16"))

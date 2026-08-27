@@ -27,9 +27,9 @@ def test_pretrained_slots_land_at_assigned_positions():
     _adapt_first_conv(enc, to_ch=5, assignment={1: 0, 0: 1})
     _, conv = _find_first_conv(enc)
     assert conv.in_channels == 5
-    assert torch.all(conv.weight[:, 1] == 1.0)   # slot R copied to pos 1
-    assert torch.all(conv.weight[:, 0] == 2.0)   # slot G copied to pos 0
-    for pos in (2, 3, 4):                        # unassigned: kaiming, not constant
+    assert torch.all(conv.weight[:, 1] == 1.0)  # slot R copied to pos 1
+    assert torch.all(conv.weight[:, 0] == 2.0)  # slot G copied to pos 0
+    for pos in (2, 3, 4):  # unassigned: kaiming, not constant
         col = conv.weight[:, pos]
         assert col.std() > 0
 

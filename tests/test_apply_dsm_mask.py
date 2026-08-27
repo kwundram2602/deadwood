@@ -68,12 +68,12 @@ def test_existing_zero_crown_pixel_stays_zero():
 
 def test_mixed_array():
     mask = _arr(0.8, 255.0, 255.0, 0.0)
-    conf = _arr(0.5, 0.9,   0.4,   0.8)
+    conf = _arr(0.5, 0.9, 0.4, 0.8)
     result = apply_soft_blend(mask, conf, nodata_resolve_threshold=0.7)
-    assert result[0] == pytest.approx(0.8 * 0.5, abs=1e-6)   # crown dampened
-    assert result[1] == pytest.approx(1.0 - 0.9, abs=1e-6)   # noData resolved
-    assert result[2] == pytest.approx(255.0, abs=1e-6)        # noData stays
-    assert result[3] == pytest.approx(0.0, abs=1e-6)          # zero stays zero
+    assert result[0] == pytest.approx(0.8 * 0.5, abs=1e-6)  # crown dampened
+    assert result[1] == pytest.approx(1.0 - 0.9, abs=1e-6)  # noData resolved
+    assert result[2] == pytest.approx(255.0, abs=1e-6)  # noData stays
+    assert result[3] == pytest.approx(0.0, abs=1e-6)  # zero stays zero
 
 
 def test_smoothstep_below_threshold_is_one():
@@ -121,11 +121,7 @@ def _synthetic_scene(offset=0.0, tilt_y=0.0, tilt_x=0.0, size=256, seed=0):
     # canopy: three 40x40 blocks of 10 m vegetation (~18% of the scene)
     for r, c in ((10, 10), (100, 150), (200, 60)):
         dsm[r : r + 40, c : c + 40] += 10.0
-    surface = (
-        offset
-        + tilt_y * (yy / (size - 1))
-        + tilt_x * (xx / (size - 1))
-    ).astype(np.float32)
+    surface = (offset + tilt_y * (yy / (size - 1)) + tilt_x * (xx / (size - 1))).astype(np.float32)
     dtm = (ground - surface).astype(np.float32)
     return dsm, dtm
 
@@ -269,9 +265,7 @@ def test_local_refinement_correction_is_bounded():
 
     dsm, dtm = _warped_scene(amplitude=0.4)
     plane_only, _ = align_dtm_to_dsm(dsm, dtm, local_refine=False)
-    refined, _ = align_dtm_to_dsm(
-        dsm, dtm, local_refine=True, local_max_correction=1.0
-    )
+    refined, _ = align_dtm_to_dsm(dsm, dtm, local_refine=True, local_max_correction=1.0)
 
     assert np.nanmax(np.abs(refined - plane_only)) <= 1.0 + 1e-5
 

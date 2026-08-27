@@ -117,10 +117,7 @@ PREDICT_CONFIGS = sorted((ROOT / "configs/predict").glob("*.yaml"))
 
 
 def _triples(sources):
-    return [
-        (str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
-        for s in sources
-    ]
+    return [(str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names]) for s in sources]
 
 
 def test_predict_configs_exist():
@@ -132,9 +129,7 @@ def test_predict_config_has_required_keys(cfg_path):
     from omegaconf import OmegaConf
 
     pcfg = OmegaConf.load(cfg_path)
-    for key in (
-        "weights", "channels", "dsm", "dtm", "stats", "threshold", "tile_size", "overlap"
-    ):
+    for key in ("weights", "channels", "dsm", "dtm", "stats", "threshold", "tile_size", "overlap"):
         assert key in pcfg, f"{cfg_path.name} missing key: {key}"
     p = pcfg.preprocess
     assert p.enabled is True
@@ -177,14 +172,21 @@ def test_quicklook_band_indexes_fallback_first_three():
 
 
 # -------------------------------------------------------------- grid validation
-def _open_raster(tmp_path, name, h=8, w=8, origin=(357000.0, 7238000.0), res=0.05, crs="EPSG:32736"):
+def _open_raster(
+    tmp_path, name, h=8, w=8, origin=(357000.0, 7238000.0), res=0.05, crs="EPSG:32736"
+):
     import rasterio
     from rasterio.transform import from_origin
 
     path = tmp_path / name
     profile = dict(
-        driver="GTiff", dtype="float32", width=w, height=h, count=1,
-        crs=crs, transform=from_origin(*origin, res, res),
+        driver="GTiff",
+        dtype="float32",
+        width=w,
+        height=h,
+        count=1,
+        crs=crs,
+        transform=from_origin(*origin, res, res),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(np.zeros((1, h, w), dtype=np.float32))
@@ -201,8 +203,10 @@ def test_validate_grid_accepts_matching(tmp_path):
 def test_validate_grid_rejects_shifted_transform(tmp_path):
     from scripts.predict import validate_grid
 
-    with _open_raster(tmp_path, "a.tif") as a, \
-         _open_raster(tmp_path, "b.tif", origin=(357005.0, 7238000.0)) as b:
+    with (
+        _open_raster(tmp_path, "a.tif") as a,
+        _open_raster(tmp_path, "b.tif", origin=(357005.0, 7238000.0)) as b,
+    ):
         with pytest.raises(ValueError, match="Geotransform mismatch"):
             validate_grid(a, b)
 
@@ -236,8 +240,13 @@ def _write_stack(path: Path, names: list[str], h: int = 8, w: int = 8) -> None:
     from rasterio.transform import from_origin
 
     profile = dict(
-        driver="GTiff", dtype="float32", width=w, height=h, count=len(names),
-        crs="EPSG:32736", transform=from_origin(357000.0, 7238000.0, 0.05, 0.05),
+        driver="GTiff",
+        dtype="float32",
+        width=w,
+        height=h,
+        count=len(names),
+        crs="EPSG:32736",
+        transform=from_origin(357000.0, 7238000.0, 0.05, 0.05),
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(np.zeros((len(names), h, w), dtype=np.float32))
@@ -258,10 +267,7 @@ def test_main_rejects_stack_without_band_descriptions(tmp_path):
     (tmp_path / "exp" / "channels.json").write_text(json.dumps({"names": ["red"]}))
     _open_raster(tmp_path, "scene.tif").close()  # 1 band, no descriptions
 
-    cfg = (
-        "weights: exp/best.pt\nchannels: null\nimage: scene.tif\n"
-        "preprocess:\n  enabled: false\n"
-    )
+    cfg = "weights: exp/best.pt\nchannels: null\nimage: scene.tif\npreprocess:\n  enabled: false\n"
     with pytest.raises(ValueError, match="no band descriptions"):
         _run_main(cfg, tmp_path)
 
@@ -274,9 +280,7 @@ def test_main_rejects_checkpoint_channel_width_mismatch(tmp_path):
 
     exp = tmp_path / "exp"
     exp.mkdir()
-    model = smp.Unet(
-        encoder_name="resnet34", encoder_weights=None, in_channels=3, classes=1
-    )
+    model = smp.Unet(encoder_name="resnet34", encoder_weights=None, in_channels=3, classes=1)
     torch.save(model.state_dict(), exp / "best.pt")
     # manifest lists 4 channels but the checkpoint's first conv takes 3
     names = ["red", "green", "blue", "nir"]

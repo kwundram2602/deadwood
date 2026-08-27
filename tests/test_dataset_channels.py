@@ -19,9 +19,14 @@ STACK = ["red", "green", "blue", "rededge", "nir"]
 
 def _write(path, data, nodata=None):
     profile = dict(
-        driver="GTiff", dtype="float32", width=data.shape[2],
-        height=data.shape[1], count=data.shape[0], crs=CRS,
-        transform=TRANSFORM, nodata=nodata,
+        driver="GTiff",
+        dtype="float32",
+        width=data.shape[2],
+        height=data.shape[1],
+        count=data.shape[0],
+        crs=CRS,
+        transform=TRANSFORM,
+        nodata=nodata,
     )
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(data.astype(np.float32))
@@ -43,15 +48,15 @@ def test_selected_channels_in_order_with_ndsm(tmp_path):
     ds = CrownDataset(tmp_path, spec)
     img, mask = ds[0]
     assert img.shape == (3, 4, 4)
-    assert torch.allclose(img[0], torch.full((4, 4), 0.5))   # nir = band 5
-    assert torch.allclose(img[1], torch.full((4, 4), 0.1))   # red = band 1
-    assert torch.allclose(img[2], torch.full((4, 4), 0.9))   # ndsm
+    assert torch.allclose(img[0], torch.full((4, 4), 0.5))  # nir = band 5
+    assert torch.allclose(img[1], torch.full((4, 4), 0.1))  # red = band 1
+    assert torch.allclose(img[2], torch.full((4, 4), 0.9))  # ndsm
     assert mask.shape == (1, 4, 4)
 
 
 def test_without_ndsm_dsm_file_not_needed(tmp_path):
     _make_split(tmp_path)
-    (tmp_path / "dsm" / "0_0_dsm.tif").unlink()   # prove it isn't read
+    (tmp_path / "dsm" / "0_0_dsm.tif").unlink()  # prove it isn't read
     spec = ChannelSpec(STACK, ["green", "blue"])
     img, _ = CrownDataset(tmp_path, spec)[0]
     assert img.shape == (2, 4, 4)

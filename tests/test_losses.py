@@ -67,9 +67,7 @@ def test_masked_mae_nodata_returns_zero():
 
 
 def test_combined_loss_single_dice_matches_dice_alone():
-    cfg = OmegaConf.create(
-        {"bce": 0.0, "dice": 1.0, "dice_squared": False, "iou": 0.0, "mae": 0.0}
-    )
+    cfg = OmegaConf.create({"bce": 0.0, "dice": 1.0, "dice_squared": False, "iou": 0.0, "mae": 0.0})
     logits = torch.randn(2, 1, 4, 4)
     target = torch.rand(2, 1, 4, 4)
     combined = CombinedLoss(cfg)(logits, target).item()
@@ -78,22 +76,17 @@ def test_combined_loss_single_dice_matches_dice_alone():
 
 
 def test_combined_loss_all_zero_weights_raises():
-    cfg = OmegaConf.create(
-        {"bce": 0.0, "dice": 0.0, "dice_squared": False, "iou": 0.0, "mae": 0.0}
-    )
+    cfg = OmegaConf.create({"bce": 0.0, "dice": 0.0, "dice_squared": False, "iou": 0.0, "mae": 0.0})
     with pytest.raises(ValueError, match="all loss weights are 0"):
         CombinedLoss(cfg)
 
 
 def test_combined_loss_weighted_sum():
-    cfg = OmegaConf.create(
-        {"bce": 0.0, "dice": 0.5, "dice_squared": False, "iou": 0.5, "mae": 0.0}
-    )
+    cfg = OmegaConf.create({"bce": 0.0, "dice": 0.5, "dice_squared": False, "iou": 0.5, "mae": 0.0})
     logits = torch.randn(2, 1, 4, 4)
     target = torch.rand(2, 1, 4, 4)
     combined = CombinedLoss(cfg)(logits, target).item()
     expected = (
-        0.5 * SoftDiceLoss()(logits, target).item()
-        + 0.5 * SoftIoULoss()(logits, target).item()
+        0.5 * SoftDiceLoss()(logits, target).item() + 0.5 * SoftIoULoss()(logits, target).item()
     )
     assert combined == pytest.approx(expected, abs=1e-5)

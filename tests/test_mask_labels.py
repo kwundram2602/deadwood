@@ -42,9 +42,7 @@ def test_smoothstep_custom_ramp_narrows_transition():
 def test_nodata_with_low_ground_conf_resolves_to_crown():
     mask = np.full((2, 2), NODATA, dtype=np.float32)
     conf = np.array([[0.0, 0.1], [0.2, 0.3]], dtype=np.float32)
-    out = apply_soft_blend(
-        mask, conf, nodata_resolve_threshold=0.4, crown_resolve_threshold=0.2
-    )
+    out = apply_soft_blend(mask, conf, nodata_resolve_threshold=0.4, crown_resolve_threshold=0.2)
     assert out[0, 0] == 1.0
     assert np.isclose(out[0, 1], 0.9)
     assert np.isclose(out[1, 0], 0.8)
@@ -92,9 +90,7 @@ def test_crown_resolution_disabled_by_default():
 def test_nodata_with_high_ground_conf_still_resolves_to_ground():
     mask = np.full((1, 2), NODATA, dtype=np.float32)
     conf = np.array([[0.9, 0.5]], dtype=np.float32)
-    out = apply_soft_blend(
-        mask, conf, nodata_resolve_threshold=0.4, crown_resolve_threshold=0.2
-    )
+    out = apply_soft_blend(mask, conf, nodata_resolve_threshold=0.4, crown_resolve_threshold=0.2)
     assert np.isclose(out[0, 0], 0.1)
     assert np.isclose(out[0, 1], 0.5)
 
@@ -102,8 +98,6 @@ def test_nodata_with_high_ground_conf_still_resolves_to_ground():
 def test_crown_pixels_are_dampened_by_ground_conf():
     mask = np.array([[1.0, 0.6]], dtype=np.float32)
     conf = np.array([[0.5, 0.0]], dtype=np.float32)
-    out = apply_soft_blend(
-        mask, conf, nodata_resolve_threshold=0.4, crown_resolve_threshold=0.2
-    )
+    out = apply_soft_blend(mask, conf, nodata_resolve_threshold=0.4, crown_resolve_threshold=0.2)
     assert np.isclose(out[0, 0], 0.5)
     assert np.isclose(out[0, 1], 0.6)

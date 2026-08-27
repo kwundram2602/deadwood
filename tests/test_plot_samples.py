@@ -1,5 +1,6 @@
 # tests/test_plot_samples.py
 """plot_samples must adapt to any input_channels selection, not a fixed 5-band layout."""
+
 import sys
 from pathlib import Path
 
@@ -64,7 +65,11 @@ def test_plot_samples_column_titles_follow_ndsm(tmp_path, monkeypatch):
 
     spec = ChannelSpec(STACK, ["red", "green", "blue", NDSM])
     plot_samples(
-        _OneChannelOut(4), _loader(4), torch.device("cpu"), spec, n=1,
+        _OneChannelOut(4),
+        _loader(4),
+        torch.device("cpu"),
+        spec,
+        n=1,
         save_path=tmp_path / "a.png",
     )
     assert "nDSM" in seen
@@ -72,7 +77,11 @@ def test_plot_samples_column_titles_follow_ndsm(tmp_path, monkeypatch):
     seen.clear()
     spec = ChannelSpec(STACK, ["red", "green", "blue"])
     plot_samples(
-        _OneChannelOut(3), _loader(3), torch.device("cpu"), spec, n=1,
+        _OneChannelOut(3),
+        _loader(3),
+        torch.device("cpu"),
+        spec,
+        n=1,
         save_path=tmp_path / "b.png",
     )
     assert "nDSM" not in seen

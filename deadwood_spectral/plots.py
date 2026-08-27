@@ -28,14 +28,14 @@ def _save(fig, path: str | Path) -> Path:
     return path
 
 
-def plot_timeseries(
-    class_df: pd.DataFrame, tree_df: pd.DataFrame, measure: str, path: str | Path
-) -> Path:
-    """Class medians with their interquartile band, single soff trees behind.
+def timeseries_figure(class_df: pd.DataFrame, measure: str):
+    """The class curves for one measure: median line plus interquartile band.
 
-    The trees are drawn thin and unlabelled on purpose: the question they answer
-    is not "which tree is which" but "does the class median stand for all
-    eighteen, or is one tree dragging it".
+    Nothing else goes on this axis. The per-tree curves that used to sit behind
+    the medians made eighteen overlapping lines out of one statement, and the
+    statement is the only reason for the figure. The per-tree numbers stay
+    available in `overview_tree.csv` for anyone who wants to check whether a
+    single tree drags a median.
     """
     selection = class_df[class_df["measure"] == measure]
     if selection.empty:
@@ -46,18 +46,6 @@ def plot_timeseries(
     dates = sorted(selection["date"].unique())
     positions = {date: i for i, date in enumerate(dates)}
     fig, ax = plt.subplots(figsize=(11, 4.5))
-
-    trees = tree_df[tree_df["measure"] == measure] if len(tree_df) else tree_df
-    for _, group in trees.groupby("tree_id", observed=True) if len(trees) else []:
-        group = group.sort_values("date")
-        ax.plot(
-            [positions[d] for d in group["date"]],
-            group["median"],
-            color=CLASS_COLORS["deadwood"],
-            alpha=0.25,
-            linewidth=0.8,
-            zorder=1,
-        )
 
     for name, group in selection.groupby("class", observed=True):
         group = group.sort_values("date")
@@ -74,7 +62,12 @@ def plot_timeseries(
     ax.set_title(f"{measure} over the aligned time series")
     ax.legend()
     ax.grid(alpha=0.3)
-    return _save(fig, path)
+    return fig
+
+
+def plot_timeseries(class_df: pd.DataFrame, measure: str, path: str | Path) -> Path:
+    """Build the figure for one measure and write it."""
+    return _save(timeseries_figure(class_df, measure), path)
 
 
 def plot_signature(signature_df: pd.DataFrame, path: str | Path) -> Path:

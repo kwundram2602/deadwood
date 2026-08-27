@@ -15,12 +15,14 @@ from deadwood_spectral.overview import (  # noqa: E402
     MEASURES,
     class_table,
     read_values,
+    sample_points,
     season_of,
     select_pixels,
     signature_table,
     stack_dates,
     stack_paths,
     tree_table,
+    window_dates,
 )
 
 GRID = ReferenceGrid(
@@ -310,3 +312,64 @@ def test_signature_table_covers_every_band_and_class():
     values = {b: np.full((len(pixels), 2), 0.3, dtype=np.float32) for b in BAND_NAMES}
     table = signature_table(values, pixels, dates, [5, 6, 7, 8, 9], [11, 12, 1, 2, 3])
     assert len(table) == 3 * 2 * len(BAND_NAMES)
+
+
+# ── optional label-date window ─────────────────────────────────────────────
+
+
+def test_window_dates_keeps_only_the_window(tmp_path):
+    directory = _stack_dir(tmp_path, ["20230824", "20240116", "20240613", "20241203"])
+    assert window_dates(directory, "20241203", 12) == ["20240116", "20240613", "20241203"]
+
+
+def test_window_dates_includes_the_anchor_and_excludes_the_window_start(tmp_path):
+    """Half-open (anchor - months, anchor]: the labels come from the anchor, so
+    an older cycle must not be averaged in."""
+    directory = _stack_dir(tmp_path, ["20231203", "20240103", "20241203"])
+    assert window_dates(directory, "20241203", 12) == ["20240103", "20241203"]
+
+
+def test_window_dates_handles_a_month_end_anchor(tmp_path):
+    directory = _stack_dir(tmp_path, ["20240129", "20240331"])
+    assert window_dates(directory, "20240331", 1) == ["20240331"]
+
+
+def test_window_dates_raises_when_the_window_is_empty(tmp_path):
+    directory = _stack_dir(tmp_path, ["20230824"])
+    with pytest.raises(FileNotFoundError, match="no aligned stack"):
+        window_dates(directory, "20260313", 12)
+
+
+def test_window_dates_raises_when_the_anchor_has_no_scene(tmp_path):
+    directory = _stack_dir(tmp_path, ["20240116"])
+    with pytest.raises(FileNotFoundError, match="20240117"):
+        window_dates(directory, "20240117", 12)
+
+
+# ── sample geometry ────────────────────────────────────────────────────────
+
+
+def test_sample_points_sit_at_the_pixel_centre():
+    pixels = pd.DataFrame(
+        {"row": [0], "col": [0], "class": ["deadwood"], "tree_id": pd.Series(["a"], dtype="string")}
+    )
+    gdf = sample_points(pixels, GRID)
+    # GRID origin (1000, 2000), 1 m pixels, north-up: centre of (0, 0).
+    assert (gdf.geometry.iloc[0].x, gdf.geometry.iloc[0].y) == (1000.5, 1999.5)
+
+
+def test_sample_points_carry_the_reference_crs():
+    pixels = select_pixels(_masks(), max_pixels_per_class=5)
+    assert sample_points(pixels, GRID).crs == GRID.crs
+
+
+def test_sample_points_has_one_feature_per_sampled_pixel():
+    pixels = select_pixels(_masks(), max_pixels_per_class=5)
+    assert len(sample_points(pixels, GRID)) == len(pixels)
+
+
+def test_sample_points_keep_the_class_and_tree_attribution():
+    pixels = select_pixels(_masks(deadwood_rows=(0, 1)), max_pixels_per_class=5)
+    gdf = sample_points(pixels, GRID)
+    assert set(gdf["class"]) == {"deadwood", "living", "background"}
+    assert set(gdf["tree_id"].dropna()) == {"tree1", "tree2"}
