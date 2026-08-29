@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from deadwood_spectral.grid import ReferenceGrid, load_reference_grid
+from dsm_overview.window import Aoi, crop
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from explore_and_process.apply_dsm_mask import (  # noqa: E402
@@ -45,6 +46,23 @@ class Surfaces:
             raise KeyError(f"unknown stage {stage!r}; have {list(self.dtm)}")
         out = (self.dsm - self.dtm[stage]).astype(np.float32)
         out[np.isnan(self.dsm) | np.isnan(self.dtm[stage])] = np.nan
+        return out
+
+    def ndsm_window(self, stage: str, aoi: Aoi) -> np.ndarray:
+        """`ndsm(stage)` cropped to one AOI, without ever building the full array.
+
+        `ndsm(stage)` allocates a full-scene 45-million-pixel array; every
+        caller only wants an AOI-sized cut-out of it. Cropping the DSM and the
+        DTM stage first, then subtracting, gets the same numbers at AOI size
+        instead of scene size — at 18 crowns the difference is 90 full-scene
+        allocations versus 90 AOI-sized ones.
+        """
+        if stage not in self.dtm:
+            raise KeyError(f"unknown stage {stage!r}; have {list(self.dtm)}")
+        dsm = crop(self.dsm, aoi)
+        dtm = crop(self.dtm[stage], aoi)
+        out = (dsm - dtm).astype(np.float32)
+        out[np.isnan(dsm) | np.isnan(dtm)] = np.nan
         return out
 
 

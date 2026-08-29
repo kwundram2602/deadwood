@@ -51,7 +51,7 @@ CROWN = box(1020.0, 1976.0, 1024.0, 1980.0)
 
 def test_the_masks_are_disjoint_and_leave_the_gap_empty(grid):
     aoi = aoi_from_bounds(CROWN.bounds, grid, buffer_m=8.0, tree_id="4157")
-    crown, ring = crown_ring_masks(CROWN, aoi, grid, ring_gap_m=2.0)
+    crown, ring = crown_ring_masks(CROWN, aoi, grid, ring_gap_m=2.0, ring_width_m=5.0)
 
     assert crown.shape == ring.shape
     assert not (crown & ring).any()
@@ -87,6 +87,39 @@ def test_a_crown_the_dsm_never_resolved_reads_flat_in_both(grid):
 
     assert stats["crown_ndsm_m"] == pytest.approx(0.0, abs=0.05)
     assert stats["crown_above_ring_m"] == pytest.approx(0.0, abs=0.05)
+
+
+def _sloped_surfaces(grid, crown_height=3.0, slope=0.08, res=0.25):
+    """Crown on an ~8% slope, matching the real survey's 6-9% terrain.
+
+    A flat-ground fixture cannot catch a bias that only shows up as relief
+    across the AOI, which is exactly what happened here: every fixture in
+    this file used to be flat, so `crown_above_ring_m`'s bias against sloping
+    terrain shipped unnoticed.
+    """
+    rows, cols = np.mgrid[0:SIZE, 0:SIZE].astype(np.float32)
+    ground = 100.0 + slope * rows * res
+    dsm = ground.copy()
+    dsm[80:96, 80:96] += crown_height
+    return Surfaces(
+        grid=grid,
+        dsm=dsm.astype(np.float32),
+        dtm={
+            "raw": ground.astype(np.float32),
+            "plane": ground.astype(np.float32),
+            "aligned": ground.astype(np.float32),
+        },
+        info={"raw": {}, "plane": {}, "aligned": {}},
+    )
+
+
+def test_a_standing_crown_on_sloping_ground_is_still_reported_at_its_height(grid):
+    # buffer_m=15.0 matches the production config default — the AOI size the
+    # bias was actually measured at.
+    aoi = aoi_from_bounds(CROWN.bounds, grid, buffer_m=15.0, tree_id="4157")
+    stats = aoi_stats(_sloped_surfaces(grid, crown_height=3.0), aoi, CROWN)
+
+    assert stats["crown_above_ring_m"] == pytest.approx(3.0, abs=0.1)
 
 
 def test_the_pixel_counts_are_reported(grid):

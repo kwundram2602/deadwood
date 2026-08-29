@@ -17,6 +17,7 @@ from rasterio.transform import from_origin
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deadwood_spectral.grid import ReferenceGrid  # noqa: E402
 from dsm_overview.surfaces import STAGES, build_surfaces, load_surfaces  # noqa: E402
+from dsm_overview.window import aoi_from_bounds, crop  # noqa: E402
 
 CRS = "EPSG:32736"
 TRANSFORM = from_origin(1000.0, 2000.0, 0.5, 0.5)
@@ -97,6 +98,28 @@ def test_an_unknown_stage_is_rejected(grid):
     dsm, dtm = _scene()
     with pytest.raises(KeyError, match="nonsense"):
         build_surfaces(dsm, dtm, grid).ndsm("nonsense")
+
+
+def test_ndsm_window_matches_cropping_the_full_scene_ndsm(grid):
+    """The windowed path (crop first, subtract second) must agree with the
+    full-scene path (subtract first, crop second) — it exists to avoid the
+    full-scene allocation, not to change the numbers."""
+    dsm, dtm = _scene(offset=6.5)
+    surfaces = build_surfaces(dsm, dtm, grid)
+    aoi = aoi_from_bounds((1000.0, 1900.0, 1020.0, 1920.0), grid, buffer_m=0.0, tree_id="4157")
+
+    windowed = surfaces.ndsm_window("aligned", aoi)
+    full = crop(surfaces.ndsm("aligned"), aoi)
+
+    np.testing.assert_allclose(windowed, full, equal_nan=True)
+
+
+def test_ndsm_window_rejects_an_unknown_stage(grid):
+    dsm, dtm = _scene()
+    surfaces = build_surfaces(dsm, dtm, grid)
+    aoi = aoi_from_bounds((1000.0, 1900.0, 1020.0, 1920.0), grid, buffer_m=0.0, tree_id="4157")
+    with pytest.raises(KeyError, match="nonsense"):
+        surfaces.ndsm_window("nonsense", aoi)
 
 
 def test_loading_resamples_both_rasters_onto_the_reference_grid(tmp_path, grid):

@@ -42,7 +42,7 @@ def dem_figure(surfaces: Surfaces, aoi: Aoi, height_threshold: float = 0.5, max_
     dsm, step = decimate(crop(surfaces.dsm, aoi), max_side)
     x, y = patch_coordinates(aoi, surfaces.grid, step)
     stages = {stage: decimate(crop(surfaces.dtm[stage], aoi), max_side)[0] for stage in STAGES}
-    ndsm = decimate(crop(surfaces.ndsm("aligned"), aoi), max_side)[0]
+    ndsm = decimate(surfaces.ndsm_window("aligned", aoi), max_side)[0]
 
     stack = np.concatenate([dsm.ravel(), *[s.ravel() for s in stages.values()]])
     finite = stack[np.isfinite(stack)]
@@ -79,7 +79,7 @@ def dem_figure(surfaces: Surfaces, aoi: Aoi, height_threshold: float = 0.5, max_
     ax.tick_params(labelsize=6)
     ax.legend(fontsize=7, loc="upper left")
 
-    fig.suptitle(f"tree {aoi.tree_id} — every {step}. pixel", fontsize=11)
+    fig.suptitle(f"tree {aoi.tree_id} — every {step}th pixel", fontsize=11)
     fig.tight_layout()
     return fig
 

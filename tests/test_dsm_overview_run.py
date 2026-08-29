@@ -123,3 +123,10 @@ def test_a_tree_id_selection_restricts_the_run(project):
 def test_an_unknown_tree_id_is_rejected(project):
     with pytest.raises(ValueError, match="9999"):
         run_dsm_overview(**project, tree_ids=["9999"])
+
+
+def test_an_int_tree_id_from_unquoted_yaml_still_matches(project):
+    """`tree_ids: [4170]` in YAML parses as int, but the crown table's
+    tree_id column is str — the config must not have to be hand-quoted."""
+    outputs = run_dsm_overview(**project, tree_ids=[4170])
+    assert set(k for k in outputs if k.startswith("plot_")) == {"plot_4170"}

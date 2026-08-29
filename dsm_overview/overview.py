@@ -30,6 +30,7 @@ def run_dsm_overview(
     categories: Sequence[str] = ("soff",),
     buffer_m: float = 15.0,
     ring_gap_m: float = 2.0,
+    ring_width_m: float = 8.0,
     height_threshold: float = 0.5,
     max_side: int = 200,
 ) -> dict[str, Path]:
@@ -39,6 +40,11 @@ def run_dsm_overview(
     gdf = load_crowns(crowns, load_reference_grid(reference))
     gdf = gdf[gdf["crown_category"].isin(list(categories))]
     if tree_ids is not None:
+        # Coerced to str: gdf["tree_id"] is a pandas string column, but an
+        # unquoted YAML list like `tree_ids: [4144]` parses as int. Comparing
+        # int against str always misses, so every configured id would read as
+        # missing even for a crown that plainly exists.
+        tree_ids = [str(t) for t in tree_ids]
         missing = sorted(set(tree_ids) - set(gdf["tree_id"]))
         if missing:
             raise ValueError(f"no crown polygon for tree_id(s): {', '.join(missing)}")
@@ -55,7 +61,7 @@ def run_dsm_overview(
     rows = []
     for tree_id, geometry in zip(gdf["tree_id"], gdf.geometry):
         aoi = aoi_from_bounds(geometry.bounds, surfaces.grid, buffer_m, str(tree_id))
-        rows.append(aoi_stats(surfaces, aoi, geometry, ring_gap_m))
+        rows.append(aoi_stats(surfaces, aoi, geometry, ring_gap_m, ring_width_m))
         outputs[f"plot_{tree_id}"] = plot_dem_overview(
             surfaces, aoi, out_dir / f"dem_{tree_id}.png", height_threshold, max_side
         )

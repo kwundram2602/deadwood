@@ -13,18 +13,28 @@ overview:
     - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
   categories: [soff]
   # null = every crown in the categories above. A list restricts the run, which
-  # is what you want while iterating on the view angle.
+  # is what you want while iterating on the view angle. Written as a plain
+  # list here, so a bare number like `4144` parses as YAML int; run_dsm_overview
+  # coerces it to str before comparing against the tree_id column.
   tree_ids: null
   out_dir: out/dsm_overview
 
 aoi:
-  # Metres around the crown bounds. Large enough that the ring holds real
-  # ground: the soff polygons run from 0.02 to 13.9 m2, so a small buffer would
-  # leave the crown measured against its own edge.
+  # Metres around the crown bounds, for the PLOT only — how much surrounding
+  # ground the 3D panels show. Does not affect any number in the CSV: those
+  # come from `ring_gap_m`/`ring_width_m` below, which are independent of the
+  # AOI/plot extent by construction. Large enough that the plot reads: the
+  # soff polygons run from 0.02 to 13.9 m2, so a small buffer would frame the
+  # crown against only its own edge.
   buffer_m: 15.0
   # Gap between crown and ring, keeping half-canopy edge pixels out of the
   # ground level.
   ring_gap_m: 2.0
+  # Width of the ground annulus the statistics are measured against, starting
+  # `ring_gap_m` out from the crown. Kept narrow and fixed so the ring stays a
+  # true local reference even on sloping terrain, instead of scaling with
+  # `buffer_m` the way "everything outside the crown in the AOI" used to.
+  ring_width_m: 8.0
   # The threshold apply_dsm_mask calls ground (dsm_mask.height_threshold).
   # Drawn into the nDSM panel as a plane.
   height_threshold: 0.5

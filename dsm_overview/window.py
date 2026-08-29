@@ -54,6 +54,11 @@ def aoi_from_bounds(
         "width": col_end - col_off,
         "height": row_end - row_off,
     }
+    # Built as a dict and splatted rather than passed as explicit keywords:
+    # ty cannot model rasterio's attrs-generated Window, and explicit keywords
+    # produce four unknown-argument errors where positional args produce one
+    # too-many-positional-arguments error. This is the smaller workaround, not
+    # an oversight — do not "clean it up" to explicit keywords.
     return Aoi(tree_id, Window(**window_args))
 
 
