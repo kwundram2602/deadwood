@@ -1,0 +1,35 @@
+# Diagnostic: is the flat nDSM over the soff crowns a co-registration artefact?
+# Nothing here feeds training. The surfaces are the ones apply_dsm_mask uses,
+# read onto the same crown-mask grid, so the numbers are comparable with
+# out/spectral/overview/topography_tree.csv.
+overview:
+  # Grid only. The same reference the spectral stage and apply_dsm_mask use.
+  reference: datafiles/process_out/masks/crown_mask.tif
+  dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
+  # 0.5 m, flown 2025-07-27 — a different survey eight months before the DSM.
+  # That gap is exactly what align_dtm_to_dsm has to absorb.
+  dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
+  crowns:
+    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
+  categories: [soff]
+  # null = every crown in the categories above. A list restricts the run, which
+  # is what you want while iterating on the view angle.
+  tree_ids: null
+  out_dir: out/dsm_overview
+
+aoi:
+  # Metres around the crown bounds. Large enough that the ring holds real
+  # ground: the soff polygons run from 0.02 to 13.9 m2, so a small buffer would
+  # leave the crown measured against its own edge.
+  buffer_m: 15.0
+  # Gap between crown and ring, keeping half-canopy edge pixels out of the
+  # ground level.
+  ring_gap_m: 2.0
+  # The threshold apply_dsm_mask calls ground (dsm_mask.height_threshold).
+  # Drawn into the nDSM panel as a plane.
+  height_threshold: 0.5
+
+plot:
+  # Longest side of the plotted patch after striding. 200 is ~40 000 faces per
+  # panel, which still renders in seconds.
+  max_side: 200
