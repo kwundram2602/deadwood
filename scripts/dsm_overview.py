@@ -32,6 +32,7 @@ def main() -> None:
         categories=list(cfg.overview.categories),
         buffer_m=cfg.aoi.buffer_m,
         ring_gap_m=cfg.aoi.ring_gap_m,
+        ring_width_m=cfg.aoi.ring_width_m,
         height_threshold=cfg.aoi.height_threshold,
         max_side=cfg.plot.max_side,
     )
