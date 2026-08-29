@@ -48,7 +48,13 @@ def aoi_from_bounds(
     if col_end <= col_off or row_end <= row_off:
         raise ValueError(f"AOI {tree_id or bounds} lies outside the reference grid")
 
-    return Aoi(tree_id, Window(col_off, row_off, col_end - col_off, row_end - row_off))
+    window_args = {
+        "col_off": col_off,
+        "row_off": row_off,
+        "width": col_end - col_off,
+        "height": row_end - row_off,
+    }
+    return Aoi(tree_id, Window(**window_args))
 
 
 def crop(array: np.ndarray, aoi: Aoi) -> np.ndarray:
