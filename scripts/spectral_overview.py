@@ -29,6 +29,7 @@ def main() -> None:
         stack_dir=cfg.overview.stack_dir,
         crowns=list(cfg.overview.crowns),
         crown_prediction=cfg.overview.crown_prediction,
+        ndsm=cfg.overview.get("ndsm"),
         out_dir=cfg.overview.out_dir,
         crown_threshold=cfg.sampling.crown_threshold,
         erode_m=cfg.sampling.erode_m,

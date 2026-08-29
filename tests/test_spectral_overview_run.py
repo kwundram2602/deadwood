@@ -210,3 +210,51 @@ def test_the_sample_geometry_has_one_point_per_sampled_pixel(project):
     assert (gdf["class"] == "living").sum() == 50
     assert (gdf["class"] == "background").sum() == 50
     assert (gdf.geometry.geom_type == "Point").all()
+
+
+def _ndsm(path, holes=()):
+    """A height surface over the crown region, with optional photogrammetry holes."""
+    data = np.zeros(SHAPE, dtype=np.float32)
+    data[:25] = 8.0
+    for row, col in holes:
+        data[row, col] = np.nan
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=SHAPE[0],
+        width=SHAPE[1],
+        count=1,
+        dtype="float32",
+        crs=CRS,
+        transform=TRANSFORM,
+        nodata=np.nan,
+    ) as dst:
+        dst.write(data, 1)
+    return path
+
+
+def test_without_an_ndsm_the_run_skips_the_topography_table(project):
+    outputs = run_overview(**project)
+    assert "topography_csv" not in outputs
+    assert "plot_topography" not in outputs
+
+
+def test_the_ndsm_yields_one_row_per_soff_tree_plus_the_pooled_row(project, tmp_path):
+    outputs = run_overview(**project, ndsm=_ndsm(tmp_path / "ndsm.tif"))
+    table = pd.read_csv(outputs["topography_csv"], dtype={"tree_id": str})
+    assert list(table["tree_id"]) == ["4157", "4170", "all_soff"]
+    assert (table["median_m"] == 8.0).all()
+    assert (table["valid_frac"] == 1.0).all()
+    assert outputs["plot_topography"].exists()
+
+
+def test_a_tree_the_photogrammetry_missed_is_reported_not_dropped(project, tmp_path):
+    """4157 sits on rows 5..10, cols 5..13; blanking the whole band empties it."""
+    holes = [(row, col) for row in range(5, 11) for col in range(5, 14)]
+    outputs = run_overview(**project, ndsm=_ndsm(tmp_path / "holes.tif", holes=holes))
+    table = pd.read_csv(outputs["topography_csv"], dtype={"tree_id": str}).set_index("tree_id")
+    assert table.loc["4157", "n_valid_px"] == 0
+    assert table.loc["4157", "valid_frac"] == 0.0
+    assert np.isnan(table.loc["4157", "median_m"])
+    assert table.loc["4170", "valid_frac"] == 1.0

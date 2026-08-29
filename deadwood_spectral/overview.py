@@ -321,6 +321,7 @@ def run_overview(
     crowns: Sequence[str | Path],
     crown_prediction: str | Path,
     out_dir: str | Path,
+    ndsm: str | Path | None = None,
     crown_threshold: float = 0.5,
     erode_m: float = 0.10,
     erode_min_area_m2: float = 1.0,
@@ -343,7 +344,8 @@ def run_overview(
     # without a matplotlib install getting in the way of the numbers.
     from deadwood_spectral.grid import load_reference_grid
     from deadwood_spectral.masks import binarize_crown_mask, build_masks, load_crowns
-    from deadwood_spectral.plots import plot_signature, plot_timeseries
+    from deadwood_spectral.plots import plot_signature, plot_timeseries, plot_topography
+    from deadwood_spectral.topography import read_single_band, topography_table
 
     grid = load_reference_grid(reference)
     logger.info("reference grid %s from %s", grid.shape, reference)
@@ -401,6 +403,19 @@ def run_overview(
         path = outputs[key]
         table.to_csv(path, index=False)
         logger.info("wrote %s (%d rows)", path, len(table))
+
+    # Optional: the nDSM is a single static product, not part of the time
+    # series, and a run on a node without it should still produce the spectral
+    # tables rather than fail on a missing path.
+    if ndsm is not None:
+        heights = read_single_band(
+            ndsm, grid, pixels["row"].to_numpy(), pixels["col"].to_numpy(), chunk_rows
+        )
+        topography = topography_table(heights, pixels)
+        outputs["topography_csv"] = out_dir / "topography_tree.csv"
+        topography.to_csv(outputs["topography_csv"], index=False)
+        logger.info("wrote %s (%d rows)", outputs["topography_csv"], len(topography))
+        outputs["plot_topography"] = plot_topography(topography, out_dir / "topography_tree.png")
 
     for measure in MEASURES:
         outputs[f"plot_ts_{measure}"] = plot_timeseries(

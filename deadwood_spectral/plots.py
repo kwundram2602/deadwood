@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # no display on the HPC
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -98,3 +99,59 @@ def plot_signature(signature_df: pd.DataFrame, path: str | Path) -> Path:
     axes[0][0].set_ylabel("mean reflectance")
     axes[0][-1].legend()
     return _save(fig, path)
+
+
+def topography_figure(topo_df: pd.DataFrame):
+    """Per-tree nDSM height with its IQR, over the share of reconstructed pixels.
+
+    Two panels because they answer in sequence: the lower one says whether the
+    photogrammetry saw the tree, the upper one says how tall what it saw was.
+    Reading a height for a tree whose bar is near zero is reading noise, and
+    stacking them on one x makes that impossible to miss.
+    """
+    from deadwood_spectral.topography import ALL_TREES
+
+    trees = topo_df[topo_df["tree_id"] != ALL_TREES].copy()
+    if trees.empty:
+        raise ValueError("no per-tree rows to plot")
+    # NaN medians last: a tree with no reconstructed pixel has no height to
+    # sort by, and it belongs at the end of the row rather than at the start.
+    trees = trees.sort_values("median_m", na_position="last").reset_index(drop=True)
+    x = range(len(trees))
+
+    fig, axes = plt.subplots(
+        2, 1, figsize=(max(6, 0.5 * len(trees)), 6), sharex=True, height_ratios=[2, 1]
+    )
+    lower = (trees["median_m"] - trees["q25_m"]).to_numpy()
+    upper = (trees["q75_m"] - trees["median_m"]).to_numpy()
+    axes[0].errorbar(
+        x,
+        trees["median_m"],
+        yerr=np.vstack([lower, upper]),
+        fmt="o",
+        markersize=4,
+        capsize=3,
+        color=CLASS_COLORS["deadwood"],
+    )
+    pooled = topo_df.loc[topo_df["tree_id"] == ALL_TREES, "median_m"]
+    if len(pooled) and pd.notna(pooled.iloc[0]):
+        axes[0].axhline(
+            float(pooled.iloc[0]), color="#7f8c8d", linestyle="--", linewidth=1, label="all soff"
+        )
+        axes[0].legend()
+    axes[0].set_ylabel("nDSM height [m]")
+    axes[0].set_title("soff crowns: nDSM height (median, IQR) and photogrammetric coverage")
+    axes[0].grid(alpha=0.3)
+
+    axes[1].bar(x, trees["valid_frac"], color="#2c3e50", width=0.6)
+    axes[1].set_ylim(0, 1)
+    axes[1].set_ylabel("valid nDSM px")
+    axes[1].set_xticks(list(x))
+    axes[1].set_xticklabels(trees["tree_id"].astype(str), rotation=60, ha="right", fontsize=7)
+    axes[1].grid(alpha=0.3, axis="y")
+    return fig
+
+
+def plot_topography(topo_df: pd.DataFrame, path: str | Path) -> Path:
+    """Build the per-tree topography figure and write it."""
+    return _save(topography_figure(topo_df), path)

@@ -32,6 +32,7 @@ dependencies = [
     "ultraplot>=2.5.0",
     "rioxarray>=0.23.0",
     "dask>=2026.7.1",
+    "cmcrameri>=1.10",
 ]
 
 [dependency-groups]

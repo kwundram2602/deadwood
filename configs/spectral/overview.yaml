@@ -12,6 +12,11 @@ overview:
   # probability raster carries nodata = -1.0, and binarize_crown_mask only knows
   # 255, so a -1 pixel would read as "valid, but below the threshold".
   crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_pred_t0.9.tif
+  # Optional. The raw nDSM in metres, NaN wherever the DSM has a hole — which
+  # is what makes it a photogrammetry check and not just a height table: a
+  # leafless soff crown is exactly where SfM finds no correspondences. Leave it
+  # out and the run skips the topography table.
+  ndsm: datafiles/process_out/ndsm_in_m/20260801_174831/dsm_ndsm_dtm_raw_m.tif
   out_dir: out/spectral/overview
 
 window:
