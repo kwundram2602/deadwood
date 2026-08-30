@@ -42,11 +42,23 @@ dsm_mask:
   # Set explicitly here only to override the default locations.
   dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
   #dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # Optionaler Pfad zu einem externen DTM-Raster; wenn gesetzt, wird method: dtm oder both genutzt
-  # true (Standard) → nach der globalen Ebenen-Kalibrierung wird der verbliebene
-  # lokale Verzug zwischen DSM und DTM blockweise geschätzt und entfernt (auf ±1 m
-  # begrenzt, Blöcke ohne sichtbaren Boden werden interpoliert). Ohne das liegen
-  # Bodenpixel je nach Ort um bis zu ±0.3 m neben 0. Nur bei method: dtm/both wirksam.
-  dtm_local_refine: true
+  # --- DSM/DTM-Koregistrierung (nur bei method: dtm/both wirksam) ------------
+  # Welche Stufe der Koregistrierung in nDSM und Maske eingeht. Beide werden
+  # immer nach process_out/dtm_coreg/<run_id>/ geschrieben, damit man sie
+  # vergleichen kann.
+  #   plane   — nur die globale Ebene (konstanter Datums-Offset + Verkippung)
+  #   aligned — Ebene + blockweise Korrektur des lokalen Restverzugs (±1 m)
+  dtm_stage: aligned
+  # Blöcke je Achse für die Restverzugskorrektur. Weniger Blöcke = größere
+  # Blöcke = mehr offener Boden pro Block, also ein sauberer Bodenanker in halb
+  # bewaldetem Gelände. 12 ≈ 29 m auf dem 5-cm-Grid. Mit 24 (≈14 m) hob die
+  # Verfeinerung den DTM systematisch zu weit an: die Ring-Offsets in
+  # out/dsm_overview/dem_offsets.csv gingen von +0.17 m (plane) auf -0.12 m.
+  dtm_local_blocks: 12
+  # Guard: der koregistrierte DTM darf nirgends über dem DSM liegen (nDSM >= 0).
+  # Die Zahl der betroffenen Pixel wird vor dem Clamp geloggt — sie ist das Maß
+  # dafür, wie weit die Blockschätzung noch danebenliegt.
+  dtm_clamp_to_dsm: true
   method: dtm          # Erkennungsmethode: local_min (Höhe), dtm (externes DTM), gradient (Hangneigung), both (Kombination)
   combine: and          # Wie beide Methoden kombiniert werden: or = Boden wenn eine zustimmt, and = nur wenn beide zustimmen
   windows: [500]    # Fenstergrößen (px) für den Minimum-Filter zur DTM-Approximation; größer = gröbere Geländeform

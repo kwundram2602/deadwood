@@ -35,6 +35,8 @@ def main() -> None:
         ring_width_m=cfg.aoi.ring_width_m,
         height_threshold=cfg.aoi.height_threshold,
         max_side=cfg.plot.max_side,
+        local_blocks=cfg.overview.get("local_blocks", 12),
+        clamp_to_dsm=cfg.overview.get("clamp_to_dsm", False),
     )
     logger.info("wrote %d artefact(s) to %s", len(outputs), cfg.overview.out_dir)
 

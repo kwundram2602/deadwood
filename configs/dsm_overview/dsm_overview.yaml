@@ -18,6 +18,14 @@ overview:
   # coerces it to str before comparing against the tree_id column.
   tree_ids: null
   out_dir: out/dsm_overview
+  # Blöcke je Achse für die lokale Restverzugskorrektur — dasselbe wie
+  # dsm_mask.dtm_local_blocks. Hier steht der Produktionswert, damit die
+  # Diagnostik misst, was das Preprocessing tatsächlich tut.
+  local_blocks: 12
+  # Bewusst false, anders als in der Produktion: der Guard würde genau den
+  # Überschuss wegschneiden, den diese Auswertung sichtbar machen soll. Die
+  # Spalte frac_dtm_above_dsm in dem_offsets.csv ist dann aussagekräftig.
+  clamp_to_dsm: false
 
 aoi:
   # Metres around the crown bounds, for the PLOT only — how much surrounding

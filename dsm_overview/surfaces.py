@@ -20,7 +20,7 @@ from dsm_overview.window import Aoi, crop
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from explore_and_process.apply_dsm_mask import (  # noqa: E402
-    align_dtm_to_dsm,
+    align_dtm_stages,
     resample_raster,
 )
 
@@ -66,34 +66,54 @@ class Surfaces:
         return out
 
 
-def build_surfaces(dsm: np.ndarray, dtm: np.ndarray, grid: ReferenceGrid) -> Surfaces:
-    """Run the co-registration twice: once plane-only, once with the refinement.
+def build_surfaces(
+    dsm: np.ndarray,
+    dtm: np.ndarray,
+    grid: ReferenceGrid,
+    local_blocks: int = 12,
+    clamp_to_dsm: bool = False,
+) -> Surfaces:
+    """Run the co-registration once and keep both stages it produces.
 
-    Twice rather than once because the two stages are what is being compared.
-    The plane-only pass is the same call with local_refine off, so the two
-    surfaces differ by exactly the local correction and nothing else.
+    `align_dtm_stages` fits the plane once and returns plane and aligned from
+    it, so the two surfaces differ by exactly the local correction and nothing
+    else — which is the whole point of comparing them here.
+
+    `clamp_to_dsm` defaults to False, the opposite of production: the
+    diagnostic has to be able to see how far the refinement over-lifts the DTM,
+    and a clamp would hide exactly that.
     """
     dsm = dsm.astype(np.float32)
     dtm = dtm.astype(np.float32)
 
-    plane, plane_info = align_dtm_to_dsm(dsm, dtm, local_refine=False)
-    aligned, aligned_info = align_dtm_to_dsm(dsm, dtm, local_refine=True)
+    stages, infos = align_dtm_stages(
+        dsm, dtm, local_blocks=local_blocks, clamp_to_dsm=clamp_to_dsm
+    )
     logger.info(
-        "plane: shift %+.2f m, tilt %.2f m | local: RMS %.2f m over %d block(s)",
-        plane_info["mean_shift"],
-        plane_info["tilt"],
-        aligned_info["local_rms"],
-        aligned_info["local_blocks"],
+        "plane: shift %+.2f m, tilt %.2f m | local: RMS %.2f m over %d block(s) "
+        "| DTM above DSM: %d px (plane) / %d px (aligned)",
+        infos["plane"]["mean_shift"],
+        infos["plane"]["tilt"],
+        infos["aligned"]["local_rms"],
+        infos["aligned"]["local_blocks"],
+        infos["plane"]["n_above_dsm"],
+        infos["aligned"]["n_above_dsm"],
     )
     return Surfaces(
         grid=grid,
         dsm=dsm,
-        dtm={"raw": dtm, "plane": plane, "aligned": aligned},
-        info={"raw": {}, "plane": plane_info, "aligned": aligned_info},
+        dtm={"raw": dtm, **stages},
+        info={"raw": {}, **infos},
     )
 
 
-def load_surfaces(reference: str | Path, dsm_path: str | Path, dtm_path: str | Path) -> Surfaces:
+def load_surfaces(
+    reference: str | Path,
+    dsm_path: str | Path,
+    dtm_path: str | Path,
+    local_blocks: int = 12,
+    clamp_to_dsm: bool = False,
+) -> Surfaces:
     """Read both rasters onto the reference grid and build every stage.
 
     Bilinear onto the crown-mask grid, exactly as apply_dsm_mask does it — the
@@ -104,4 +124,4 @@ def load_surfaces(reference: str | Path, dsm_path: str | Path, dtm_path: str | P
     logger.info("reference grid %s from %s", grid.shape, reference)
     dsm = resample_raster(str(dsm_path), grid.height, grid.width, grid.transform, grid.crs)
     dtm = resample_raster(str(dtm_path), grid.height, grid.width, grid.transform, grid.crs)
-    return build_surfaces(dsm, dtm, grid)
+    return build_surfaces(dsm, dtm, grid, local_blocks, clamp_to_dsm)

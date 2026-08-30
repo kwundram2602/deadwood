@@ -50,6 +50,10 @@ preprocess:
       names: [green_ms, red_ms, rededge, nir]   # native M3M order
   windows: [500]     # dsm_mask.windows — minimum-filter sizes for nDSM (ignored when dtm: is set)
   max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
+  # Muss mit dem Trainingslauf übereinstimmen, sonst weicht der nDSM ab:
+  dtm_stage: aligned        # dsm_mask.dtm_stage — plane | aligned
+  dtm_local_blocks: 12      # dsm_mask.dtm_local_blocks
+  dtm_clamp_to_dsm: true    # dsm_mask.dtm_clamp_to_dsm — DTM nie über dem DSM
   dir: null               # prep cache; null → datafiles/process_out/predict_prep
 
 # Binarization threshold for the crown probability [0,1] → {0,1}

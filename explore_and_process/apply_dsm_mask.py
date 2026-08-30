@@ -9,7 +9,10 @@ Ground detection supports three methods:
                  nDSM_approx = DSM - minimum_filter(DSM, window)
                  pixels where nDSM_approx < height_threshold  =>  ground = 0.0
 
-  dtm        — External DTM raster (resampled to DSM grid):
+  dtm        — External DTM raster (resampled to DSM grid, then vertically
+               co-registered onto the DSM in two stages — see
+               align_dtm_stages; `dtm_stage` picks the one used, both are
+               written to process_out/dtm_coreg/<run_id>/):
                  nDSM = DSM - DTM
                  pixels where nDSM < height_threshold  =>  ground = 0.0
 
@@ -48,6 +51,12 @@ from rasterio.warp import reproject
 from scipy.ndimage import gaussian_filter, minimum_filter, sobel, uniform_filter1d
 
 logger = logging.getLogger(__name__)
+
+# The two stages of the DSM/DTM co-registration, in the order they are built:
+# "plane" removes the global offset and tilt, "aligned" adds the blockwise
+# residual warp on top. Both are written to disk; `dtm_stage` picks the one the
+# nDSM and the mask are built on.
+DTM_STAGES: tuple[str, ...] = ("plane", "aligned")
 
 
 def resample_raster(path, h, w, transform, crs):
@@ -262,7 +271,29 @@ def _local_ground_residual(
     return correction, n_blocks
 
 
-def align_dtm_to_dsm(
+def _clamp_to_dsm(
+    stage: np.ndarray, dsm: np.ndarray, clamp: bool
+) -> tuple[np.ndarray, int, float]:
+    """Keep a co-registered DTM from sitting above the DSM.
+
+    A DTM above the DSM means negative nDSM over bare ground, which is
+    physically impossible: nothing is below the surface. It happens when the
+    local refinement over-lifts, so the count is worth reporting even when the
+    clamp is off — it is the number that says how biased the block estimate
+    still is.
+
+    Deliberately not ``np.minimum``: that propagates a NaN from the DSM into a
+    perfectly valid DTM pixel, turning a DSM gap into a DTM gap.
+    """
+    above = np.isfinite(dsm) & np.isfinite(stage) & (stage > dsm)
+    n_above = int(above.sum())
+    max_above = float((stage - dsm)[above].max()) if n_above else 0.0
+    if clamp and n_above:
+        stage = np.where(above, dsm, stage)
+    return stage, n_above, max_above
+
+
+def align_dtm_stages(
     dsm: np.ndarray,
     dtm: np.ndarray,
     max_shift: float = 20.0,
@@ -270,15 +301,15 @@ def align_dtm_to_dsm(
     ground_quantile: float = 2.0,
     min_candidates: int = 50,
     min_extent: float = 0.25,
-    local_refine: bool = True,
-    local_blocks: int = 24,
+    clamp_to_dsm: bool = True,
+    local_blocks: int = 12,
     local_quantile: float = 5.0,
     local_min_valid_frac: float = 0.2,
     local_max_correction: float = 1.0,
     local_smooth_sigma: float = 1.0,
     local_ground_band: float = 0.5,
-) -> tuple[np.ndarray, dict]:
-    """Vertically co-register an external DTM to the DSM.
+) -> tuple[dict[str, np.ndarray], dict[str, dict]]:
+    """Vertically co-register an external DTM to the DSM, both stages at once.
 
     A DTM flown on a different date, or referenced to a different vertical
     datum, sits at a constant offset (and often a slight tilt) from the DSM.
@@ -291,13 +322,27 @@ def align_dtm_to_dsm(
 
     A plane alone still leaves bare ground a few decimetres off zero, varying
     across the scene, because the two surveys are warped against each other.
-    With local_refine that residual warp is estimated on a coarse block grid
-    and removed on top of the plane (see _local_ground_residual).
+    That residual warp is estimated on a coarse block grid and removed on top
+    of the plane (see _local_ground_residual).
+
+    The plane is fitted once and both stages are returned from it, so `plane`
+    and `aligned` differ by exactly the local correction and nothing else.
+
+    `local_blocks` defaults to 12 rather than a finer grid on purpose: on the
+    5 cm reference grid that is a ~29 m block, and in half-vegetated terrain a
+    block needs that much area before its low quantile lands on real bare
+    ground instead of on low vegetation. Finer blocks measurably over-lift the
+    DTM (the ring offsets in out/dsm_overview/dem_offsets.csv went from +0.17 m
+    after the plane to -0.12 m after a 24-block refinement).
 
     Returns:
-        aligned:  DTM + correction surface, same shape/dtype as the input
-        info:     {"mode", "mean_shift", "tilt", "n_candidates",
-                  "local_rms", "local_blocks"} for logging
+        stages: {"plane": DTM + plane, "aligned": DTM + plane + local warp},
+                each the same shape/dtype as the input DTM
+        infos:  the same keys, each {"mode", "mean_shift", "tilt",
+                "n_candidates", "local_rms", "local_blocks", "n_above_dsm",
+                "max_above_dsm"} for logging. The two `*_above_dsm` entries are
+                measured *before* the clamp — clamping first would hide exactly
+                the bias they exist to expose.
     """
     diff = (dsm - dtm).astype(np.float32)
     diff[np.isnan(dsm) | np.isnan(dtm)] = np.nan
@@ -361,30 +406,54 @@ def align_dtm_to_dsm(
             "vertical datums or the DTM does not belong to this scene"
         )
 
-    local_rms = 0.0
-    n_local_blocks = 0
-    if local_refine:
-        local, n_local_blocks = _local_ground_residual(
-            diff - surface,
-            blocks=local_blocks,
-            quantile=local_quantile,
-            min_valid_frac=local_min_valid_frac,
-            max_correction=local_max_correction,
-            smooth_sigma=local_smooth_sigma,
-            ground_band=local_ground_band,
-        )
-        surface = surface + local
-        local_rms = float(np.sqrt(np.mean(local**2)))
+    local, n_local_blocks = _local_ground_residual(
+        diff - surface,
+        blocks=local_blocks,
+        quantile=local_quantile,
+        min_valid_frac=local_min_valid_frac,
+        max_correction=local_max_correction,
+        smooth_sigma=local_smooth_sigma,
+        ground_band=local_ground_band,
+    )
 
-    info = {
-        "mode": mode,
-        "mean_shift": float(np.nanmean(np.where(np.isfinite(diff), surface, np.nan))),
-        "tilt": float(tilt),
-        "n_candidates": n_used,
-        "local_rms": local_rms,
-        "local_blocks": n_local_blocks,
-    }
-    return (dtm + surface).astype(dtm.dtype), info
+    stages: dict[str, np.ndarray] = {}
+    infos: dict[str, dict] = {}
+    for name, correction, local_rms, n_blocks in (
+        ("plane", surface, 0.0, 0),
+        ("aligned", surface + local, float(np.sqrt(np.mean(local**2))), n_local_blocks),
+    ):
+        stage = (dtm + correction).astype(dtm.dtype)
+        stage, n_above, max_above = _clamp_to_dsm(stage, dsm, clamp_to_dsm)
+        stages[name] = stage.astype(dtm.dtype)
+        infos[name] = {
+            "mode": mode,
+            "mean_shift": float(
+                np.nanmean(np.where(np.isfinite(diff), correction, np.nan))
+            ),
+            "tilt": float(tilt),
+            "n_candidates": n_used,
+            "local_rms": local_rms,
+            "local_blocks": n_blocks,
+            "n_above_dsm": n_above,
+            "max_above_dsm": max_above,
+        }
+    return stages, infos
+
+
+def align_dtm_to_dsm(
+    dsm: np.ndarray,
+    dtm: np.ndarray,
+    local_refine: bool = True,
+    **kwargs,
+) -> tuple[np.ndarray, dict]:
+    """One stage of `align_dtm_stages`: the plane, or the plane plus the warp.
+
+    Kept as the single-stage entry point for callers that only want the surface
+    they are going to subtract. `local_refine=False` selects "plane".
+    """
+    stages, infos = align_dtm_stages(dsm, dtm, **kwargs)
+    stage = "aligned" if local_refine else "plane"
+    return stages[stage], infos[stage]
 
 
 def detect_ground_dtm(
@@ -393,33 +462,56 @@ def detect_ground_dtm(
     height_threshold: float,
     height_ramp: float | None = None,
     max_shift: float = 20.0,
-    local_refine: bool = True,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    stage: str = "aligned",
+    clamp_to_dsm: bool = True,
+    local_blocks: int = 12,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """Ground detection using an external DTM: nDSM = DSM - DTM.
 
     The DTM is vertically co-registered to the DSM first (see
-    align_dtm_to_dsm) — without it any datum offset between the two surveys
-    propagates straight into the nDSM.
+    align_dtm_stages) — without it any datum offset between the two surveys
+    propagates straight into the nDSM. `stage` picks which co-registration
+    stage the nDSM is built on; both are returned either way so the caller can
+    write them out and compare.
+
+    Prediction time must pass the same `stage`, `clamp_to_dsm` and
+    `local_blocks` as training did, or the two nDSMs disagree.
 
     Returns:
         binary:     bool array, True where pixel is ground
         confidence: float32 [0,1], higher = more likely ground
         ndsm:       raw nDSM (m) for diagnostics and nDSM output
+        stages:     {"plane": ..., "aligned": ...}, the co-registered DTMs
     """
-    dtm, align_info = align_dtm_to_dsm(
-        dsm, dtm, max_shift=max_shift, local_refine=local_refine
+    if stage not in DTM_STAGES:
+        raise ValueError(f"unknown dtm stage {stage!r}; expected one of {DTM_STAGES}")
+    stages, infos = align_dtm_stages(
+        dsm,
+        dtm,
+        max_shift=max_shift,
+        clamp_to_dsm=clamp_to_dsm,
+        local_blocks=local_blocks,
     )
+    info = infos[stage]
     print(
-        f"  DTM alignment ({align_info['mode']}): mean shift "
-        f"{align_info['mean_shift']:+.2f} m, tilt {align_info['tilt']:.2f} m "
-        f"across scene, {align_info['n_candidates']:,} ground candidates"
+        f"  DTM alignment ({info['mode']}, stage={stage}): mean shift "
+        f"{info['mean_shift']:+.2f} m, tilt {info['tilt']:.2f} m "
+        f"across scene, {info['n_candidates']:,} ground candidates"
     )
-    if local_refine:
+    if stage == "aligned":
         print(
-            f"  Local refinement: RMS {align_info['local_rms']:.2f} m over "
-            f"{align_info['local_blocks']:,} blocks with visible ground"
+            f"  Local refinement: RMS {info['local_rms']:.2f} m over "
+            f"{info['local_blocks']:,} blocks with visible ground "
+            f"({local_blocks} blocks per axis)"
+        )
+    for name in DTM_STAGES:
+        print(
+            f"  DTM above DSM ({name}): {infos[name]['n_above_dsm']:,} px, "
+            f"worst {infos[name]['max_above_dsm']:.2f} m"
+            f"{' — clamped' if clamp_to_dsm else ' — not clamped'}"
         )
 
+    dtm = stages[stage]
     ndsm = (dsm - dtm).astype(np.float32)
     # NaN where either input is NaN
     ndsm[np.isnan(dsm) | np.isnan(dtm)] = np.nan
@@ -428,7 +520,7 @@ def detect_ground_dtm(
     confidence[np.isnan(ndsm)] = 0.0
 
     binary = (ndsm < height_threshold) & ~np.isnan(ndsm)
-    return binary, confidence, ndsm
+    return binary, confidence, ndsm, stages
 
 
 def detect_ground_gradient(
@@ -560,14 +652,21 @@ def _save_diagnostic(
     print(f"  Diagnostic plot: {diag_path}")
 
 
+def _save_float_tif(
+    arr: np.ndarray, path: str, profile: dict, label: str, nodata=None
+) -> None:
+    """Write a single-band float32 raster on the mask grid to disk."""
+    out_profile = profile.copy()
+    out_profile.update(dtype="float32", count=1, nodata=nodata)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with rasterio.open(path, "w", **out_profile) as dst:
+        dst.write(arr[np.newaxis].astype(np.float32))
+    print(f"  Saved {label}: {path}")
+
+
 def _save_conf_tif(arr: np.ndarray, path: str, profile: dict) -> None:
     """Write a float32 confidence raster [0,1] to disk."""
-    conf_profile = profile.copy()
-    conf_profile.update(dtype="float32", count=1, nodata=None)
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with rasterio.open(path, "w", **conf_profile) as dst:
-        dst.write(arr[np.newaxis])
-    print(f"  Saved confidence: {path}")
+    _save_float_tif(arr, path, profile, label="confidence")
 
 
 def main(args):
@@ -607,8 +706,22 @@ def main(args):
         mask_suffix = f"{ht_tag}{gr_tag}_{args.combine}"
 
     height_ramp = args.get("height_ramp", None)
-    dtm_local_refine = bool(args.get("dtm_local_refine", True))
+    if args.get("dtm_local_refine", None) is not None:
+        raise ValueError(
+            "dsm_mask.dtm_local_refine was replaced by dtm_stage: use "
+            "'dtm_stage: aligned' for the old true, 'dtm_stage: plane' for false"
+        )
+    dtm_stage = str(args.get("dtm_stage", "aligned"))
+    if dtm_stage not in DTM_STAGES:
+        raise ValueError(
+            f"dsm_mask.dtm_stage is {dtm_stage!r}; expected one of {DTM_STAGES}"
+        )
+    dtm_local_blocks = int(args.get("dtm_local_blocks", 12))
+    dtm_clamp_to_dsm = bool(args.get("dtm_clamp_to_dsm", True))
     crown_resolve_threshold = args.get("crown_resolve_threshold", None)
+    if use_external_dtm and args.method in ("dtm", "both"):
+        # Two runs that differ only in the stage must not overwrite each other
+        mask_suffix += f"_{dtm_stage}_b{dtm_local_blocks}"
     if height_ramp is not None:
         mask_suffix += f"_hr{height_ramp}"
     if crown_resolve_threshold is not None:
@@ -649,24 +762,25 @@ def main(args):
     # --- Run detection method(s) ---------------------------------------------
     lm_bin = lm_conf = ndsm = None
     gr_bin = gr_conf = grad_smooth = None
+    dtm_stages: dict[str, np.ndarray] = {}
 
     mask_stem = os.path.splitext(os.path.basename(args.out))[0]
 
-    if args.method == "dtm":
+    if args.method in ("dtm", "both") and use_external_dtm and dtm is not None:
         print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        lm_bin, lm_conf, ndsm = detect_ground_dtm(
-            dsm, dtm, args.height_threshold, height_ramp, local_refine=dtm_local_refine
+        lm_bin, lm_conf, ndsm, dtm_stages = detect_ground_dtm(
+            dsm,
+            dtm,
+            args.height_threshold,
+            height_ramp,
+            stage=dtm_stage,
+            clamp_to_dsm=dtm_clamp_to_dsm,
+            local_blocks=dtm_local_blocks,
         )
 
     if args.method in ("local_min", "both") and not use_external_dtm:
         print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m  ramp={height_ramp}")
         lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold, height_ramp)
-
-    if args.method == "both" and use_external_dtm:
-        print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        lm_bin, lm_conf, ndsm = detect_ground_dtm(
-            dsm, dtm, args.height_threshold, height_ramp, local_refine=dtm_local_refine
-        )
 
     if args.method in ("local_min", "dtm", "both") and ndsm is not None:
         valid_ndsm = ndsm[~np.isnan(ndsm)]
@@ -704,6 +818,21 @@ def main(args):
             xlabel="gradient magnitude",
             title="gradient — slope distribution",
         )
+
+    # --- Save both co-registered DTM stages ----------------------------------
+    # Both are written whatever `dtm_stage` selects: comparing them is how the
+    # co-registration is judged (see dsm_overview), and the one not used here
+    # is exactly the comparison partner.
+    if dtm_stages:
+        coreg_dir = os.path.join(process_out_dir, "dtm_coreg", run_id)
+        for name, stage_dtm in dtm_stages.items():
+            _save_float_tif(
+                stage_dtm,
+                os.path.join(coreg_dir, f"{mask_stem}_dtm_{name}.tif"),
+                profile,
+                label=f"co-registered DTM ({name}{', used' if name == dtm_stage else ''})",
+                nodata=float("nan"),
+            )
 
     # --- Save individual confidences -----------------------------------------
     if lm_conf is not None:

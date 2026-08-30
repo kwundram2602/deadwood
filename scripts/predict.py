@@ -177,8 +177,18 @@ def prepare_inputs(
     windows = [int(x) for x in prep_cfg.windows]
     max_h = float(prep_cfg.max_ndsm_height)
     w_tag = "-".join(str(x) for x in windows)
+    # These three shape the co-registered DTM and therefore the nDSM, so they
+    # must match what apply_dsm_mask used at training time — and they go into
+    # the cache tag, or a stage change silently reuses the previous nDSM.
+    dtm_stage = str(prep_cfg.get("dtm_stage", "aligned"))
+    dtm_local_blocks = int(prep_cfg.get("dtm_local_blocks", 12))
+    dtm_clamp_to_dsm = bool(prep_cfg.get("dtm_clamp_to_dsm", True))
     # Tag mirrors apply_dsm_mask.py so a DTM run never reuses a local_min cache
-    method_tag = "dtm" if raw_dtm is not None else f"w{w_tag}"
+    method_tag = (
+        f"dtm_{dtm_stage}_b{dtm_local_blocks}{'' if dtm_clamp_to_dsm else '_noclamp'}"
+        if raw_dtm is not None
+        else f"w{w_tag}"
+    )
     dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_{method_tag}_max{max_h:g}.tif"
     if dsm_out.exists():
         print(f"Prep cache hit: {dsm_out.name}")
@@ -189,7 +199,14 @@ def prepare_inputs(
         if raw_dtm is not None:
             print(f"Computing nDSM (external DTM {raw_dtm.name})...")
             dtm = resample_raster(str(raw_dtm), h, w, transform, crs)
-            _, _, ndsm = detect_ground_dtm(dsm, dtm, height_threshold=1.0)
+            _, _, ndsm, _ = detect_ground_dtm(
+                dsm,
+                dtm,
+                height_threshold=1.0,
+                stage=dtm_stage,
+                clamp_to_dsm=dtm_clamp_to_dsm,
+                local_blocks=dtm_local_blocks,
+            )
         else:
             print(f"Computing nDSM (minimum filter windows {windows} px)...")
             _, _, ndsm = detect_ground_local_min(dsm, windows, height_threshold=1.0)

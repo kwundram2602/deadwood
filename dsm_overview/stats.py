@@ -31,6 +31,13 @@ COLUMNS = [
     "crown_above_ring_m",
     "ring_method",
     *[f"offset_{stage}_m" for stage in STAGES],
+    # How much of the move from offset_plane_m to offset_aligned_m the local
+    # refinement is responsible for, and how much of it overshot. Without these
+    # two a negative offset_aligned_m cannot be told apart from the fact that
+    # `offset_*_m` is a low quantile of a half-vegetated ring, which sits below
+    # the ground level by construction.
+    "local_corr_m",
+    "frac_dtm_above_dsm",
 ]
 
 # Below this many ground candidates in the ring a plane's tilt is unconstrained
@@ -184,6 +191,15 @@ def aoi_stats(
         # Ground beside the crown after this stage. Zero means the DTM sits on
         # the DSM's ground here; anything else lands in the nDSM unchanged.
         row[f"offset_{stage}_m"] = _level(surfaces.ndsm_window(stage, aoi)[ring], GROUND_QUANTILE)
+
+    # What the local refinement added on top of the plane, right here.
+    local = crop(surfaces.dtm["aligned"], aoi)[ring] - crop(surfaces.dtm["plane"], aoi)[ring]
+    row["local_corr_m"] = float(np.nanmedian(local)) if local.size else np.nan
+    # Ring pixels the aligned DTM ends up above — physically impossible, so a
+    # non-zero fraction is a real bias and not a quantile artefact.
+    aligned_ndsm = surfaces.ndsm_window("aligned", aoi)[ring]
+    finite = aligned_ndsm[np.isfinite(aligned_ndsm)]
+    row["frac_dtm_above_dsm"] = float((finite < 0).mean()) if finite.size else np.nan
     return row
 
 

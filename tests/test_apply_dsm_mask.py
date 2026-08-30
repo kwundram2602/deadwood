@@ -237,8 +237,13 @@ def test_local_refinement_flattens_a_warp_a_plane_cannot_absorb():
 
     dsm, dtm = _warped_scene(amplitude=0.4)
 
+    # 24 blocks, not the production default of 12: _warped_scene's warp is a
+    # full sine period across the scene, far higher-frequency than the residual
+    # warp between two real surveys. This test is about the mechanism, so it
+    # uses a block grid that resolves its own test signal; the trade-off the
+    # default makes is covered by test_coarser_blocks_track_a_warp_less_closely.
     plane_only, _ = align_dtm_to_dsm(dsm, dtm, local_refine=False)
-    refined, info = align_dtm_to_dsm(dsm, dtm, local_refine=True)
+    refined, info = align_dtm_to_dsm(dsm, dtm, local_refine=True, local_blocks=24)
 
     spread_plane = np.abs(_ground_levels(dsm - plane_only)).max()
     spread_refined = np.abs(_ground_levels(dsm - refined)).max()
@@ -247,6 +252,24 @@ def test_local_refinement_flattens_a_warp_a_plane_cannot_absorb():
     assert spread_refined < 0.10  # and is removed by the local refinement
     assert info["local_rms"] > 0.0
     assert info["local_blocks"] > 0
+
+
+def test_coarser_blocks_track_a_warp_less_closely():
+    """The price of the coarser default: less warp-tracking, in exchange for a
+    block big enough to find bare ground in half-vegetated terrain."""
+    from explore_and_process.apply_dsm_mask import align_dtm_to_dsm
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+
+    fine, _ = align_dtm_to_dsm(dsm, dtm, local_blocks=24)
+    coarse, _ = align_dtm_to_dsm(dsm, dtm, local_blocks=12)
+
+    spread_fine = np.abs(_ground_levels(dsm - fine)).max()
+    spread_coarse = np.abs(_ground_levels(dsm - coarse)).max()
+
+    assert spread_fine < spread_coarse
+    # still a clear improvement over the plane alone (> 0.25 m above)
+    assert spread_coarse < 0.20
 
 
 def test_local_refinement_preserves_canopy_height():
@@ -285,7 +308,103 @@ def test_detect_ground_dtm_aligns_before_differencing():
     from explore_and_process.apply_dsm_mask import detect_ground_dtm
 
     dsm, dtm = _synthetic_scene(offset=6.5)
-    _, _, ndsm = detect_ground_dtm(dsm, dtm, height_threshold=1.0)
+    _, _, ndsm, _ = detect_ground_dtm(dsm, dtm, height_threshold=1.0)
 
     assert np.abs(np.median(ndsm[120:160, 0:40])) < 0.1
     assert np.median(ndsm[10:50, 10:50]) == pytest.approx(10.0, abs=0.15)
+
+
+# --- both stages from one fit, and the DTM-above-DSM guard ------------------
+
+
+def test_both_stages_come_back_from_one_call():
+    from explore_and_process.apply_dsm_mask import align_dtm_stages, align_dtm_to_dsm
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+    stages, infos = align_dtm_stages(dsm, dtm, clamp_to_dsm=False)
+
+    assert set(stages) == {"plane", "aligned"}
+    # each stage matches the single-stage entry point it corresponds to
+    plane_only, _ = align_dtm_to_dsm(dsm, dtm, local_refine=False, clamp_to_dsm=False)
+    refined, _ = align_dtm_to_dsm(dsm, dtm, local_refine=True, clamp_to_dsm=False)
+    assert np.allclose(stages["plane"], plane_only, equal_nan=True)
+    assert np.allclose(stages["aligned"], refined, equal_nan=True)
+    # the plane stage carries no local correction, by construction
+    assert infos["plane"]["local_rms"] == 0.0
+    assert infos["aligned"]["local_rms"] > 0.0
+
+
+def _over_lifting_scene(size=512, seed=3):
+    """A scene the refinement over-corrects on: mostly low vegetation, so the
+    per-block ground anchor lands above the real ground."""
+    rng = np.random.default_rng(seed)
+    dsm = rng.normal(0.0, 0.02, (size, size)).astype(np.float32)
+    # 70% of the scene covered by 0.6 m scrub — high enough to drag the anchor
+    # up, low enough to stay inside local_max_correction
+    scrub = rng.random((size, size)) < 0.7
+    dsm[scrub] += 0.6
+    dtm = np.full((size, size), -6.0, dtype=np.float32)
+    return dsm, dtm
+
+
+def test_the_clamp_keeps_the_dtm_at_or_below_the_dsm():
+    from explore_and_process.apply_dsm_mask import align_dtm_stages
+
+    dsm, dtm = _over_lifting_scene()
+
+    loose, loose_info = align_dtm_stages(dsm, dtm, clamp_to_dsm=False)
+    clamped, clamped_info = align_dtm_stages(dsm, dtm, clamp_to_dsm=True)
+
+    # without the guard the refinement lifts the DTM above the DSM ...
+    assert loose_info["aligned"]["n_above_dsm"] > 0
+    assert (loose["aligned"] > dsm).any()
+    # ... with it, nowhere, and the count is still reported (measured before
+    # the clamp), so the bias stays visible instead of being papered over
+    assert not (clamped["aligned"] > dsm).any()
+    assert clamped_info["aligned"]["n_above_dsm"] == loose_info["aligned"]["n_above_dsm"]
+    assert clamped_info["aligned"]["max_above_dsm"] > 0.0
+
+
+def test_the_clamp_leaves_dsm_gaps_alone():
+    from explore_and_process.apply_dsm_mask import align_dtm_stages
+
+    dsm, dtm = _over_lifting_scene()
+    dsm[100:140, 100:140] = np.nan
+
+    stages, _ = align_dtm_stages(dsm, dtm, clamp_to_dsm=True)
+
+    # a hole in the DSM must not punch a hole in the DTM
+    assert np.isfinite(stages["aligned"][100:140, 100:140]).all()
+
+
+def test_the_clamp_does_not_flatten_canopy():
+    from explore_and_process.apply_dsm_mask import align_dtm_stages
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+    stages, _ = align_dtm_stages(dsm, dtm, clamp_to_dsm=True)
+
+    ndsm = dsm - stages["aligned"]
+    assert np.median(ndsm[200:280, 300:380]) == pytest.approx(10.0, abs=0.25)
+
+
+def test_the_stage_decides_which_ndsm_detect_ground_dtm_builds():
+    from explore_and_process.apply_dsm_mask import detect_ground_dtm
+
+    dsm, dtm = _warped_scene(amplitude=0.4)
+    _, _, ndsm_plane, stages = detect_ground_dtm(
+        dsm, dtm, height_threshold=1.0, stage="plane", clamp_to_dsm=False
+    )
+    _, _, ndsm_aligned, _ = detect_ground_dtm(
+        dsm, dtm, height_threshold=1.0, stage="aligned", clamp_to_dsm=False
+    )
+
+    assert np.allclose(ndsm_plane, dsm - stages["plane"], equal_nan=True)
+    assert not np.allclose(ndsm_plane, ndsm_aligned, equal_nan=True)
+
+
+def test_an_unknown_stage_is_rejected():
+    from explore_and_process.apply_dsm_mask import detect_ground_dtm
+
+    dsm, dtm = _synthetic_scene(offset=6.5)
+    with pytest.raises(ValueError, match="unknown dtm stage"):
+        detect_ground_dtm(dsm, dtm, height_threshold=1.0, stage="raw")

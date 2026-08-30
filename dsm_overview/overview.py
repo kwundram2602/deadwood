@@ -33,6 +33,8 @@ def run_dsm_overview(
     ring_width_m: float = 8.0,
     height_threshold: float = 0.5,
     max_side: int = 200,
+    local_blocks: int = 12,
+    clamp_to_dsm: bool = False,
 ) -> dict[str, Path]:
     """Every artefact the check writes, keyed by name."""
     # The grid is read here for the crown reprojection and again inside
@@ -53,7 +55,7 @@ def run_dsm_overview(
         raise ValueError("no crown selected — check categories/tree_ids")
     gdf = gdf.sort_values("tree_id")
 
-    surfaces = load_surfaces(reference, dsm, dtm)
+    surfaces = load_surfaces(reference, dsm, dtm, local_blocks, clamp_to_dsm)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
