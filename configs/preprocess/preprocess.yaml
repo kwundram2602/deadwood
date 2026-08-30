@@ -32,9 +32,12 @@ rasterize:
   # to every *_OM_*.tif in the dir (the source's path is ignored)
   raster_dir: null
   target_gsd: 0.05
-  sigma: 8.0
+  # Gaussian smoothing (px) applied to the reference raster before rasterizing the crowns. Higher = more smoothing, less detail in the mask.
+  sigma: 4.0
   nodata_threshold: 0.05
 
+# DSM/DTM-based mask generation (nDSM = DSM - DTM)
+# also corregistration of DSm, DTM
 dsm_mask:
   mask: datafiles/process_out/masks/crown_mask.tif
   dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
@@ -54,7 +57,7 @@ dsm_mask:
   # bewaldetem Gelände. 12 ≈ 29 m auf dem 5-cm-Grid. Mit 24 (≈14 m) hob die
   # Verfeinerung den DTM systematisch zu weit an: die Ring-Offsets in
   # out/dsm_overview/dem_offsets.csv gingen von +0.17 m (plane) auf -0.12 m.
-  dtm_local_blocks: 12
+  dtm_local_blocks: 6
   # Guard: der koregistrierte DTM darf nirgends über dem DSM liegen (nDSM >= 0).
   # Die Zahl der betroffenen Pixel wird vor dem Clamp geloggt — sie ist das Maß
   # dafür, wie weit die Blockschätzung noch danebenliegt.
@@ -65,13 +68,16 @@ dsm_mask:
   height_threshold: 0.5 # Pixel mit nDSM < diesem Wert (m) gelten als Boden
   # Breite der smoothstep-Rampe (m) oberhalb von height_threshold: ground_conf fällt von 1 (bei ht) auf 0 (bei ht + height_ramp).
   # Schmalere Rampe = bimodalere Labels (weniger diffuse Zwischenwerte). null → Rampe = height_threshold (altes Verhalten, 0 bei 2*ht)
-  height_ramp: 1.5
+  height_ramp: 2.0
   gradient_sigma: 2.0   # Gaussian-Glättung (px) vor der Gradientenschwelle; höher = weniger Rauschen, aber unschärfere Kanten. wird bei method: gradient oder both genutzt
   gradient_threshold: null   # Sobel-Gradientsschwelle: null → automatisch per Otsu, sonst manueller Wert.Wird bei method: gradient oder both genutzt
   # nDSM-Obergrenze für die Normalisierung des DSM-Werts in der DSM-Maske; Pixel mit nDSM > dieser Höhe werden auf 1 gesetzt, Bodenpixel auf 0, und dazwischenliegende Werte entsprechend skaliert. Wird bei method: local_min oder both genutzt.
   max_ndsm_height: 16.0      # nDSM-Obergrenze (m) für die [0,1]-Normierung des 5. Eingangskanals
   # resolve 255 values ? :
-  nodata_resolve_threshold: 0.6  # noData-Pixel (255) werden auf Bodenwert gesetzt, wenn ground_conf >= dieser Schwelle
+  # noData pixels (255, i.e. no crown polygon) with ground_conf >= this threshold are relabelled .
+  # the label becomes the continuous value 1 - ground_conf
+  # (e.g. conf 0.9 -> label 0.1, conf 1.0 -> label 0.0), so it is a soft "almost surely not crown" target, not a hard 0.
+  nodata_resolve_threshold: 0.4
 
   # Symmetrische Auflösung Richtung Krone: noData-Pixel mit ground_conf <= dieser Schwelle (sicher NICHT Boden, d.h. hohe
   # Vegetation ohne Polygon) werden als Krone (1 - ground_conf) gelabelt statt vom Loss ausgeschlossen. 255 bleibt nur für
@@ -95,7 +101,7 @@ tiling:
 
 split:
   input: out/crown_ms_patches   # output of tiling stage
-  output: out/crown_rgb_ms_hr1.5_ht_0.5          # train/val/test split destination; train_stats.json written here
+  output: out/crown_rgb_ms_hr2.0_ht_0.5          # train/val/test split destination; train_stats.json written here
   train_ratio: 0.7
   val_ratio: 0.2
   seed: 42

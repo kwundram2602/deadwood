@@ -8,7 +8,11 @@ Usage (local):
 Usage (HPC via sbatch):
     see deadwood/hpc/train_torch.sh
 """
+import os
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# isort: split  — must be set before torch loads libc10_cuda
 import argparse
 import json
 import sys
@@ -114,6 +118,8 @@ def main() -> None:
     target_thresholds = list(metrics_cfg.get("target_thresholds", [metrics_cfg.get("target_threshold", 0.5)]))
     threshold = float(thresholds[0])
     target_threshold = float(target_thresholds[0])
+    # bf16 mixed precision (config: train.amp, default on) — halves activation memory
+    amp = bool(OmegaConf.select(cfg, "train.amp", default=True))
 
     if cfg.logging.use_wandb:
         init_wandb(cfg, model)
@@ -136,6 +142,7 @@ def main() -> None:
         criterion=criterion,
         threshold=threshold,
         target_threshold=target_threshold,
+        amp=amp,
     )
     _reload_best(model, tl_result["ckpt_path"], device)
 
@@ -158,6 +165,7 @@ def main() -> None:
             criterion=criterion,
             threshold=threshold,
             target_threshold=target_threshold,
+            amp=amp,
         )
         _reload_best(model, ft_result["ckpt_path"], device)
 

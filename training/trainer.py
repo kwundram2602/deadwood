@@ -23,6 +23,7 @@ def train(
     criterion: torch.nn.Module | None = None,
     threshold: float = 0.5,
     target_threshold: float = 0.5,
+    amp: bool = True,
 ) -> dict:
     """Run one training phase (transfer learning or fine-tuning).
 
@@ -81,6 +82,7 @@ def train(
             train=True,
             threshold=threshold,
             target_threshold=target_threshold,
+            amp=amp,
         )
         sched.step()
         v_m = _run_epoch(
@@ -92,6 +94,7 @@ def train(
             train=False,
             threshold=threshold,
             target_threshold=target_threshold,
+            amp=amp,
         )
 
         for key in ("loss", "auc_pr", "f1", "iou", "soft_iou", "prec", "rec"):
@@ -143,10 +146,14 @@ def _run_epoch(
     train: bool,
     threshold: float = 0.5,
     target_threshold: float = 0.5,
+    amp: bool = True,
 ) -> dict[str, float]:
     model.train(train)
     accumulator = MetricAccumulator()
 
+    # bf16 autocast on CUDA roughly halves activation memory; bf16 has the same
+    # exponent range as fp32, so no GradScaler is needed.
+    use_amp = amp and device.type == "cuda"
     ctx = torch.enable_grad if train else torch.no_grad
     with ctx():
         desc = "train" if train else "val"
@@ -155,22 +162,25 @@ def _run_epoch(
             masks = masks.to(device, non_blocking=True)
 
             if train:
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
-            logits = model(images)
-            if isinstance(criterion, CombinedLoss):
-                loss, parts = criterion.forward_with_parts(logits, masks)
-                parts_float: dict[str, float] | None = {k: v.item() for k, v in parts.items()}
-            else:
-                loss = criterion(logits, masks)
-                parts_float = None
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+                logits = model(images)
+                if isinstance(criterion, CombinedLoss):
+                    loss, parts = criterion.forward_with_parts(logits, masks)
+                    parts_float: dict[str, float] | None = {
+                        k: v.item() for k, v in parts.items()
+                    }
+                else:
+                    loss = criterion(logits, masks)
+                    parts_float = None
 
             if train:
                 loss.backward()
                 optimizer.step()
 
             n_valid = int((masks != NODATA).sum().item())
-            accumulator.update(logits.detach(), masks, loss.item(), n_valid, parts_float)
+            accumulator.update(logits.detach().float(), masks, loss.item(), n_valid, parts_float)
 
     return accumulator.compute(threshold=threshold, target_threshold=target_threshold)
 
