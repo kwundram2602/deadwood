@@ -1,7 +1,6 @@
 # Diagnostic: is the flat nDSM over the soff crowns a co-registration artefact?
-# Nothing here feeds training. The surfaces are the ones apply_dsm_mask uses,
-# read onto the same crown-mask grid, so the numbers are comparable with
 # out/spectral/overview/topography_tree.csv.
+# uv run python scripts/dsm_overview.py --config configs/dsm_overview/dsm_overview.yaml --working_dir .
 overview:
   # Grid only. The same reference the spectral stage and apply_dsm_mask use.
   reference: datafiles/process_out/masks/crown_mask.tif
@@ -18,10 +17,7 @@ overview:
   # coerces it to str before comparing against the tree_id column.
   tree_ids: null
   out_dir: out/dsm_overview
-  # Blöcke je Achse für die lokale Restverzugskorrektur — dasselbe wie
-  # dsm_mask.dtm_local_blocks. Hier steht der Produktionswert, damit die
-  # Diagnostik misst, was das Preprocessing tatsächlich tut.
-  local_blocks: 12
+  local_blocks: 6
   # Bewusst false, anders als in der Produktion: der Guard würde genau den
   # Überschuss wegschneiden, den diese Auswertung sichtbar machen soll. Die
   # Spalte frac_dtm_above_dsm in dem_offsets.csv ist dann aussagekräftig.
@@ -30,11 +26,8 @@ overview:
 aoi:
   # Metres around the crown bounds, for the PLOT only — how much surrounding
   # ground the 3D panels show. Does not affect any number in the CSV: those
-  # come from `ring_gap_m`/`ring_width_m` below, which are independent of the
-  # AOI/plot extent by construction. Large enough that the plot reads: the
-  # soff polygons run from 0.02 to 13.9 m2, so a small buffer would frame the
-  # crown against only its own edge.
-  buffer_m: 15.0
+  # come from `ring_gap_m`/`ring_width_m` below.
+  buffer_m: 10.0
   # Gap between crown and ring, keeping half-canopy edge pixels out of the
   # ground level.
   ring_gap_m: 2.0
@@ -42,12 +35,17 @@ aoi:
   # `ring_gap_m` out from the crown. Kept narrow and fixed so the ring stays a
   # true local reference even on sloping terrain, instead of scaling with
   # `buffer_m` the way "everything outside the crown in the AOI" used to.
-  ring_width_m: 8.0
+  ring_width_m: 4.0
   # The threshold apply_dsm_mask calls ground (dsm_mask.height_threshold).
   # Drawn into the nDSM panel as a plane.
   height_threshold: 0.5
 
 plot:
-  # Longest side of the plotted patch after striding. 200 is ~40 000 faces per
-  # panel, which still renders in seconds.
+  # Longest side of the plotted patch after striding.
   max_side: 200
+  # Blickwinkel der 3D-Panels. elev ist der Winkel ueber der Horizontalen:
+  # hoeher heisst steiler von oben, was den markierten Kronenumriss als Flaeche
+  # lesbar macht; unter ~25 verschwindet er in der Silhouette. azim dreht die
+  # Szene um die z-Achse.
+  elev: 45.0
+  azim: -60.0

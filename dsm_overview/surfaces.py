@@ -86,9 +86,7 @@ def build_surfaces(
     dsm = dsm.astype(np.float32)
     dtm = dtm.astype(np.float32)
 
-    stages, infos = align_dtm_stages(
-        dsm, dtm, local_blocks=local_blocks, clamp_to_dsm=clamp_to_dsm
-    )
+    stages, infos = align_dtm_stages(dsm, dtm, local_blocks=local_blocks, clamp_to_dsm=clamp_to_dsm)
     logger.info(
         "plane: shift %+.2f m, tilt %.2f m | local: RMS %.2f m over %d block(s) "
         "| DTM above DSM: %d px (plane) / %d px (aligned)",

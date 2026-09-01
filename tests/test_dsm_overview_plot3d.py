@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_origin
+from shapely.geometry import box
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -53,9 +54,9 @@ def aoi(grid):
     return aoi_from_bounds((1020.0, 1976.0, 1024.0, 1980.0), grid, buffer_m=8.0, tree_id="4157")
 
 
-def test_the_figure_has_the_four_documented_panels(surfaces, aoi):
+def test_the_figure_has_the_five_documented_panels(surfaces, aoi):
     fig = dem_figure(surfaces, aoi)
-    assert len(fig.axes) == 4
+    assert len(fig.axes) == 5
     assert "4157" in fig.get_suptitle()
     plt.close(fig)
 
@@ -73,3 +74,41 @@ def test_the_plot_is_written_to_disk(surfaces, aoi, tmp_path):
     path = plot_dem_overview(surfaces, aoi, tmp_path / "4157.png")
     assert path.exists()
     assert path.stat().st_size > 0
+
+
+@pytest.fixture
+def geometry():
+    """A crown polygon on the raised block of the synthetic DSM."""
+    return box(1020.0, 1976.0, 1024.0, 1980.0)
+
+
+def test_the_crown_outline_is_drawn_on_dsm_and_ndsm(surfaces, aoi, geometry):
+    """Without the polygon a mound in the patch cannot be attributed to a tree."""
+    plain = dem_figure(surfaces, aoi)
+    marked = dem_figure(surfaces, aoi, geometry=geometry)
+    for index in range(5):
+        assert len(marked.axes[index].lines) == len(plain.axes[index].lines) + 1
+    assert "crown polygon" in [t.get_text() for t in marked.axes[0].get_legend().get_texts()]
+    plt.close(plain)
+    plt.close(marked)
+
+
+def test_the_view_angle_is_configurable(surfaces, aoi):
+    fig = dem_figure(surfaces, aoi, elev=62.0, azim=-35.0)
+    assert all(ax.elev == 62.0 and ax.azim == -35.0 for ax in fig.axes)
+    plt.close(fig)
+
+
+def test_depth_sorting_is_off_so_the_crown_tint_survives(surfaces, aoi, geometry):
+    """mplot3d's own sort paints the DTM plane over the crown; see `_new_axes`."""
+    fig = dem_figure(surfaces, aoi, geometry=geometry)
+    assert all(ax.computed_zorder is False for ax in fig.axes)
+    plt.close(fig)
+
+
+def test_the_control_panel_is_scaled_to_the_overshoot_not_the_crown(surfaces, aoi):
+    """A 3 m crown must not flatten the half-metre of DTM-above-DSM into a line."""
+    fig = dem_figure(surfaces, aoi)
+    low, high = fig.axes[4].get_zlim()
+    assert high <= 1.0 and low >= -1.0
+    plt.close(fig)

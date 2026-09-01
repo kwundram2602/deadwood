@@ -37,6 +37,8 @@ def main() -> None:
         max_side=cfg.plot.max_side,
         local_blocks=cfg.overview.get("local_blocks", 12),
         clamp_to_dsm=cfg.overview.get("clamp_to_dsm", False),
+        elev=cfg.plot.get("elev", 45.0),
+        azim=cfg.plot.get("azim", -60.0),
     )
     logger.info("wrote %d artefact(s) to %s", len(outputs), cfg.overview.out_dir)
 

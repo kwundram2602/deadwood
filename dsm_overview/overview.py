@@ -12,7 +12,7 @@ from pathlib import Path
 
 from deadwood_spectral.grid import load_reference_grid
 from deadwood_spectral.masks import load_crowns
-from dsm_overview.plot3d import plot_dem_overview
+from dsm_overview.plot3d import DEFAULT_AZIM, DEFAULT_ELEV, plot_dem_overview
 from dsm_overview.stats import aoi_stats, stats_table
 from dsm_overview.surfaces import load_surfaces
 from dsm_overview.window import aoi_from_bounds
@@ -35,6 +35,8 @@ def run_dsm_overview(
     max_side: int = 200,
     local_blocks: int = 12,
     clamp_to_dsm: bool = False,
+    elev: float = DEFAULT_ELEV,
+    azim: float = DEFAULT_AZIM,
 ) -> dict[str, Path]:
     """Every artefact the check writes, keyed by name."""
     # The grid is read here for the crown reprojection and again inside
@@ -65,7 +67,14 @@ def run_dsm_overview(
         aoi = aoi_from_bounds(geometry.bounds, surfaces.grid, buffer_m, str(tree_id))
         rows.append(aoi_stats(surfaces, aoi, geometry, ring_gap_m, ring_width_m))
         outputs[f"plot_{tree_id}"] = plot_dem_overview(
-            surfaces, aoi, out_dir / f"dem_{tree_id}.png", height_threshold, max_side
+            surfaces,
+            aoi,
+            out_dir / f"dem_{tree_id}.png",
+            height_threshold,
+            max_side,
+            geometry=geometry,
+            elev=elev,
+            azim=azim,
         )
 
     table = stats_table(rows)

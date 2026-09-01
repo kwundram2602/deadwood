@@ -9,7 +9,9 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
+from rasterio.features import rasterize as rio_rasterize
 from rasterio.windows import Window
+from rasterio.windows import transform as window_transform
 
 from deadwood_spectral.grid import ReferenceGrid
 
@@ -60,6 +62,39 @@ def aoi_from_bounds(
     # too-many-positional-arguments error. This is the smaller workaround, not
     # an oversight — do not "clean it up" to explicit keywords.
     return Aoi(tree_id, Window(**window_args))
+
+
+def aoi_transform(aoi: Aoi, grid: ReferenceGrid):
+    """The affine of the AOI cut-out, i.e. the grid's transform shifted to it."""
+    return window_transform(aoi.window, grid.transform)
+
+
+def rasterize_geometry(geometry, aoi: Aoi, grid: ReferenceGrid) -> np.ndarray:
+    """Boolean AOI-sized mask of one geometry, on the AOI's own pixel grid."""
+    shape = (aoi.window.height, aoi.window.width)
+    burnt = rio_rasterize(
+        [(geometry, 1)], out_shape=shape, transform=aoi_transform(aoi, grid), dtype="int32"
+    )
+    return burnt > 0
+
+
+def geometry_pixels(geometry, aoi: Aoi, grid: ReferenceGrid) -> list[tuple[np.ndarray, np.ndarray]]:
+    """The geometry's outlines as fractional (col, row) rings on the AOI grid.
+
+    One entry per ring, so a MultiPolygon draws as several closed curves rather
+    than one line jumping between parts.
+    """
+    inverse = ~aoi_transform(aoi, grid)
+    parts = getattr(geometry, "geoms", [geometry])
+    rings = []
+    for part in parts:
+        exterior = getattr(part, "exterior", None)
+        if exterior is None:
+            continue
+        xs, ys = np.asarray(exterior.coords).T
+        cols, rows = inverse * (xs, ys)
+        rings.append((np.asarray(cols, dtype=float), np.asarray(rows, dtype=float)))
+    return rings
 
 
 def crop(array: np.ndarray, aoi: Aoi) -> np.ndarray:

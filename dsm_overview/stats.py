@@ -10,12 +10,11 @@ import logging
 
 import numpy as np
 import pandas as pd
-from rasterio.features import rasterize as rio_rasterize
 from rasterio.windows import transform as window_transform
 
 from deadwood_spectral.grid import ReferenceGrid
 from dsm_overview.surfaces import STAGES, Surfaces
-from dsm_overview.window import Aoi, crop
+from dsm_overview.window import Aoi, crop, rasterize_geometry
 
 logger = logging.getLogger(__name__)
 
@@ -62,27 +61,9 @@ def crown_ring_masks(
     edge of the ring is clipped by the AOI boundary; the ring is then narrower
     than requested but still centred on the crown, which is acceptable.
     """
-    shape = (aoi.window.height, aoi.window.width)
-    affine = window_transform(aoi.window, grid.transform)
-    crown = rio_rasterize([(geometry, 1)], out_shape=shape, transform=affine, dtype="int32") > 0
-    inner = (
-        rio_rasterize(
-            [(geometry.buffer(ring_gap_m), 1)],
-            out_shape=shape,
-            transform=affine,
-            dtype="int32",
-        )
-        > 0
-    )
-    outer = (
-        rio_rasterize(
-            [(geometry.buffer(ring_gap_m + ring_width_m), 1)],
-            out_shape=shape,
-            transform=affine,
-            dtype="int32",
-        )
-        > 0
-    )
+    crown = rasterize_geometry(geometry, aoi, grid)
+    inner = rasterize_geometry(geometry.buffer(ring_gap_m), aoi, grid)
+    outer = rasterize_geometry(geometry.buffer(ring_gap_m + ring_width_m), aoi, grid)
     return crown, outer & ~inner
 
 
