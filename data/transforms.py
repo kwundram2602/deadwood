@@ -1,6 +1,8 @@
 try:
     import albumentations as A
 
+    from utils.nodata import MASK_OUTSIDE
+
     def get_train_transform() -> A.Compose:
         """Augmentation pipeline for 5-band MS + nDSM patches (H × W × 5).
 
@@ -20,7 +22,15 @@ try:
             A.Transpose(p=0.5),
             # Mild grid warp simulates orthorectification residuals and lens
             # radial distortion; both image and mask are warped jointly.
-            A.GridDistortion(num_steps=5, distort_limit=0.1, p=0.2),
+            # fill_mask defaults to 0.0, which would label the strip warped in
+            # from beyond the patch edge as confident background; MASK_OUTSIDE
+            # marks it as "no data here" so the loss skips it instead.
+            A.GridDistortion(
+                num_steps=5,
+                distort_limit=0.1,
+                fill_mask=MASK_OUTSIDE,
+                p=0.2,
+            ),
 
             # ── Radiometric ──────────────────────────────────────────────────
             # Additive brightness / contrast shift (mild to preserve ratios).

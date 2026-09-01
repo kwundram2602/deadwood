@@ -1,0 +1,261 @@
+[tgt>=0.6  pred>=0.6]
+  train:
+    loss: 0.0805
+    acc: 0.9771
+    prec: 0.9570
+    rec: 0.9737
+    f1: 0.9653
+    iou: 0.9329
+    soft_iou: 0.8813
+    auc_pr: 0.9889
+  val:
+    loss: 0.0945
+    acc: 0.9885
+    prec: 0.9538
+    rec: 0.9879
+    f1: 0.9705
+    iou: 0.9428
+    soft_iou: 0.8499
+    auc_pr: 0.9864
+  test:
+    loss: 0.0822
+    acc: 0.9830
+    prec: 0.9503
+    rec: 0.9873
+    f1: 0.9684
+    iou: 0.9388
+    soft_iou: 0.8635
+    auc_pr: 0.9842
+
+[tgt>=0.6  pred>=0.8]
+  train:
+    loss: 0.0805
+    acc: 0.9787
+    prec: 0.9691
+    rec: 0.9655
+    f1: 0.9673
+    iou: 0.9367
+    soft_iou: 0.8813
+    auc_pr: 0.9889
+  val:
+    loss: 0.0945
+    acc: 0.9903
+    prec: 0.9695
+    rec: 0.9802
+    f1: 0.9748
+    iou: 0.9508
+    soft_iou: 0.8499
+    auc_pr: 0.9864
+  test:
+    loss: 0.0822
+    acc: 0.9854
+    prec: 0.9663
+    rec: 0.9789
+    f1: 0.9726
+    iou: 0.9466
+    soft_iou: 0.8635
+    auc_pr: 0.9842
+
+[tgt>=0.6  pred>=0.9]
+  train:
+    loss: 0.0805
+    acc: 0.9774
+    prec: 0.9766
+    rec: 0.9537
+    f1: 0.9650
+    iou: 0.9324
+    soft_iou: 0.8813
+    auc_pr: 0.9889
+  val:
+    loss: 0.0945
+    acc: 0.9897
+    prec: 0.9780
+    rec: 0.9680
+    f1: 0.9730
+    iou: 0.9473
+    soft_iou: 0.8499
+    auc_pr: 0.9864
+  test:
+    loss: 0.0822
+    acc: 0.9848
+    prec: 0.9759
+    rec: 0.9662
+    f1: 0.9710
+    iou: 0.9437
+    soft_iou: 0.8635
+    auc_pr: 0.9842
+
+[tgt>=0.8  pred>=0.6]
+  train:
+    loss: 0.0805
+    acc: 0.9765
+    prec: 0.9547
+    rec: 0.9741
+    f1: 0.9643
+    iou: 0.9310
+    soft_iou: 0.8813
+    auc_pr: 0.9873
+  val:
+    loss: 0.0945
+    acc: 0.9879
+    prec: 0.9507
+    rec: 0.9881
+    f1: 0.9690
+    iou: 0.9399
+    soft_iou: 0.8499
+    auc_pr: 0.9836
+  test:
+    loss: 0.0822
+    acc: 0.9823
+    prec: 0.9474
+    rec: 0.9875
+    f1: 0.9670
+    iou: 0.9361
+    soft_iou: 0.8635
+    auc_pr: 0.9808
+
+[tgt>=0.8  pred>=0.8]
+  train:
+    loss: 0.0805
+    acc: 0.9782
+    prec: 0.9668
+    rec: 0.9660
+    f1: 0.9664
+    iou: 0.9350
+    soft_iou: 0.8813
+    auc_pr: 0.9873
+  val:
+    loss: 0.0945
+    acc: 0.9898
+    prec: 0.9664
+    rec: 0.9804
+    f1: 0.9734
+    iou: 0.9481
+    soft_iou: 0.8499
+    auc_pr: 0.9836
+  test:
+    loss: 0.0822
+    acc: 0.9848
+    prec: 0.9634
+    rec: 0.9792
+    f1: 0.9712
+    iou: 0.9441
+    soft_iou: 0.8635
+    auc_pr: 0.9808
+
+[tgt>=0.8  pred>=0.9]
+  train:
+    loss: 0.0805
+    acc: 0.9769
+    prec: 0.9744
+    rec: 0.9543
+    f1: 0.9642
+    iou: 0.9309
+    soft_iou: 0.8813
+    auc_pr: 0.9873
+  val:
+    loss: 0.0945
+    acc: 0.9892
+    prec: 0.9749
+    rec: 0.9683
+    f1: 0.9716
+    iou: 0.9448
+    soft_iou: 0.8499
+    auc_pr: 0.9836
+  test:
+    loss: 0.0822
+    acc: 0.9842
+    prec: 0.9732
+    rec: 0.9667
+    f1: 0.9699
+    iou: 0.9416
+    soft_iou: 0.8635
+    auc_pr: 0.9808
+
+[tgt>=0.9  pred>=0.6]
+  train:
+    loss: 0.0805
+    acc: 0.9760
+    prec: 0.9530
+    rec: 0.9742
+    f1: 0.9635
+    iou: 0.9296
+    soft_iou: 0.8813
+    auc_pr: 0.9860
+  val:
+    loss: 0.0945
+    acc: 0.9875
+    prec: 0.9486
+    rec: 0.9882
+    f1: 0.9680
+    iou: 0.9379
+    soft_iou: 0.8499
+    auc_pr: 0.9816
+  test:
+    loss: 0.0822
+    acc: 0.9818
+    prec: 0.9456
+    rec: 0.9876
+    f1: 0.9661
+    iou: 0.9345
+    soft_iou: 0.8635
+    auc_pr: 0.9784
+
+[tgt>=0.9  pred>=0.8]
+  train:
+    loss: 0.0805
+    acc: 0.9777
+    prec: 0.9652
+    rec: 0.9663
+    f1: 0.9658
+    iou: 0.9338
+    soft_iou: 0.8813
+    auc_pr: 0.9860
+  val:
+    loss: 0.0945
+    acc: 0.9894
+    prec: 0.9643
+    rec: 0.9806
+    f1: 0.9724
+    iou: 0.9462
+    soft_iou: 0.8499
+    auc_pr: 0.9816
+  test:
+    loss: 0.0822
+    acc: 0.9843
+    prec: 0.9617
+    rec: 0.9793
+    f1: 0.9704
+    iou: 0.9425
+    soft_iou: 0.8635
+    auc_pr: 0.9784
+
+[tgt>=0.9  pred>=0.9]
+  train:
+    loss: 0.0805
+    acc: 0.9766
+    prec: 0.9728
+    rec: 0.9545
+    f1: 0.9636
+    iou: 0.9297
+    soft_iou: 0.8813
+    auc_pr: 0.9860
+  val:
+    loss: 0.0945
+    acc: 0.9888
+    prec: 0.9728
+    rec: 0.9685
+    f1: 0.9706
+    iou: 0.9430
+    soft_iou: 0.8499
+    auc_pr: 0.9816
+  test:
+    loss: 0.0822
+    acc: 0.9838
+    prec: 0.9714
+    rec: 0.9668
+    f1: 0.9691
+    iou: 0.9401
+    soft_iou: 0.8635
+    auc_pr: 0.9784
+

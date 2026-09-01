@@ -1,10 +1,10 @@
 model_name: crown_fullstack
-run_tag: 30_08       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
+run_tag: 30_08_2       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
 output_dir: experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
-  path: out/crown_fullstack     # path relative to --working_dir (deadwood/)
+  path: out/crown_fullstack_ms_hr2.0_ht_0.5    # path relative to --working_dir (deadwood/)
   # Model input channels by name, in order. Spectral names come from the
   # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
   # Examples:
@@ -30,7 +30,7 @@ model:
 
 # Transfer Learning phase — encoder frozen, decoder + head only
 transfer:
-  epochs: 50
+  epochs: 80
   lr: 0.001
   weight_decay: 0.0001
   optimizer: adamw        # adam | adamw | sgd
@@ -45,7 +45,7 @@ fine_tune:
   epochs: 30
   lr: 0.00005
   weight_decay: 0.001     # stronger regularisation for small dataset (was 0.0001)
-  unfreeze_keys: ["layer4.2"]   # encoder submodule paths, e.g. ["layer4.2"] for just the last bottleneck (~4.5M params); ["layer4"] = old unfreeze_blocks: 1
+  unfreeze_keys: ["layer1","layer4.2"]   # encoder submodule paths, e.g. ["layer4.2"] for just the last bottleneck (~4.5M params); ["layer4"] = old unfreeze_blocks: 1
   encoder_lr_scale: 0.1   # encoder LR = lr * encoder_lr_scale (differential learning rates)
   optimizer: adamw
   scheduler: step         # stable decay; cos restarts spike LR mid-finetuning

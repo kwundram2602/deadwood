@@ -1,18 +1,23 @@
 import torch
 import torch.nn as nn
 
-NODATA: int = 255
+from utils.nodata import MASK_UNLABELLED, valid_target
+
+# Kept as a module-level name for backwards compatibility; the mask now carries
+# a second sentinel (MASK_OUTSIDE) as well, so validity is decided by
+# valid_target() — a value in [0, 1] — rather than by comparing against 255.
+NODATA: int = int(MASK_UNLABELLED)
 
 
 class MaskedBCELoss(nn.Module):
-    """BCEWithLogitsLoss that ignores pixels where target == 255 (noData sentinel)."""
+    """BCEWithLogitsLoss that ignores every noData pixel (unlabelled and outside)."""
 
     def __init__(self):
         super().__init__()
         self._bce = nn.BCEWithLogitsLoss(reduction="none")
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        valid = target != NODATA
+        valid = valid_target(target)
         if not valid.any():
             return logits.sum() * 0.0
         return self._bce(logits, target.float())[valid].mean()
@@ -32,7 +37,7 @@ class SoftDiceLoss(nn.Module):
         self.eps = eps
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        valid = target != NODATA
+        valid = valid_target(target)
         if not valid.any():
             return logits.sum() * 0.0
         p = torch.sigmoid(logits)[valid]
@@ -53,7 +58,7 @@ class SoftIoULoss(nn.Module):
         self.eps = eps
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        valid = target != NODATA
+        valid = valid_target(target)
         if not valid.any():
             return logits.sum() * 0.0
         p = torch.sigmoid(logits)[valid]
@@ -70,7 +75,7 @@ class MaskedMAELoss(nn.Module):
         super().__init__()
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        valid = target != NODATA
+        valid = valid_target(target)
         if not valid.any():
             return logits.sum() * 0.0
         p = torch.sigmoid(logits)[valid]

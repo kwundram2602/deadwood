@@ -92,7 +92,7 @@ tiling:
   image: datafiles/process_out/images/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged_stack.tif
   # mask and dsm are set automatically by preprocess.py from dsm_mask outputs.
   # When running tile_patches.py standalone, pass --mask and --dsm explicitly.
-  out: out/crown_ms_patches
+  out: out/crown_fullstack_ms_patches
   size: 512
   # skip patches with > this fraction of noData pixels in the mask (== 255)
   nodata_thresh: 0.8
@@ -100,8 +100,8 @@ tiling:
   img_nodata_thresh: 0.8
 
 split:
-  input: out/crown_ms_patches   # output of tiling stage
-  output: out/crown_rgb_ms_hr2.0_ht_0.5          # train/val/test split destination; train_stats.json written here
+  input: out/crown_fullstack_ms_patches   # output of tiling stage
+  output: out/crown_fullstack_ms_hr2.0_ht_0.5          # train/val/test split destination; train_stats.json written here
   train_ratio: 0.7
   val_ratio: 0.2
   seed: 42

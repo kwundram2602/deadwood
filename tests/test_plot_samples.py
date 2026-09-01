@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+import numpy
 import pytest
 import torch
 
@@ -85,4 +86,38 @@ def test_plot_samples_column_titles_follow_ndsm(tmp_path, monkeypatch):
         save_path=tmp_path / "b.png",
     )
     assert "nDSM" not in seen
-    assert seen == ["Pseudo-RGB", "GT Mask", "Model sigma (masked)", "Model sigma (full)"]
+    assert seen == ["Pseudo-RGB", "GT Mask", "Model sigma"]
+
+
+def test_plot_samples_blanks_prediction_only_outside_footprint(tmp_path, monkeypatch):
+    """Out-of-footprint pixels are dropped from the sigma panel; unlabelled are not.
+
+    Predicting over unlabelled ground is the intended behaviour — the imagery is
+    real, only the label is missing — so that panel must keep its values.
+    """
+    from utils.nodata import MASK_OUTSIDE, MASK_UNLABELLED
+
+    spec = ChannelSpec(STACK, ["red", "green", "blue"])
+    images = torch.rand(1, 3, 4, 4)
+    mask = torch.zeros(1, 1, 4, 4)
+    mask[0, 0, 0] = MASK_OUTSIDE
+    mask[0, 0, 1] = MASK_UNLABELLED
+
+    drawn: list = []
+    orig = matplotlib.axes.Axes.imshow
+    monkeypatch.setattr(
+        matplotlib.axes.Axes,
+        "imshow",
+        lambda self, X, *a, **k: (drawn.append(X), orig(self, X, *a, **k))[1],
+    )
+
+    plot_samples(
+        _OneChannelOut(3), [(images, mask)], torch.device("cpu"), spec,
+        n=1, save_path=tmp_path / "s.png",
+    )
+
+    # panels in order: pseudo-RGB, GT, GT overlay, sigma
+    sigma = drawn[-1]
+    assert numpy.isnan(sigma[0]).all(), "out-of-footprint row still drawn"
+    assert not numpy.isnan(sigma[1]).any(), "unlabelled row was wrongly blanked"
+    assert not numpy.isnan(sigma[2:]).any()

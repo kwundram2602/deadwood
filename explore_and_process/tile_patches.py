@@ -8,8 +8,8 @@ All three inputs must share the same grid (transform + shape). Run
 rasterize_crowns.py and apply_dsm_mask.py first to ensure this.
 
 Output naming per patch (zero-padded row/col index):
-  <row>_<col>.tif       — multi-band image  (float32, [0,1])
-  <row>_<col>_mask.tif  — 1-band soft mask  (float32, 0/0-1/255)
+  <row>_<col>.tif       — multi-band image  (float32, [0,1], NaN outside footprint)
+  <row>_<col>_mask.tif  — 1-band soft mask  (float32, 0-1 / 255 unlabelled / -1 outside)
   <row>_<col>_dsm.tif   — 1-band nDSM       (float32, [0,1])
 
 Usage:
@@ -22,7 +22,6 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import os
 import shutil
@@ -33,17 +32,25 @@ import rasterio
 from omegaconf import OmegaConf
 from rasterio.transform import from_bounds
 
+from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED, footprint_from_stack
+
 logger = logging.getLogger(__name__)
 
 
-def tile_raster(src, row_off, col_off, size):
-    """Read a size×size window from an open raster; pad with 0 at edges."""
+def tile_raster(src, row_off, col_off, size, fill=0):
+    """Read a size×size window from an open raster; pad the edges with *fill*.
+
+    The padding at the scene's right/bottom edge is not real data, so callers
+    that care about the footprint pass fill=NaN (imagery) or fill=MASK_OUTSIDE
+    (mask) instead of the default 0, which is indistinguishable from a genuine
+    zero reflectance.
+    """
     h, w = src.height, src.width
     read_h = min(size, h - row_off)
     read_w = min(size, w - col_off)
     data = src.read(window=rasterio.windows.Window(col_off, row_off, read_w, read_h))
     if read_h < size or read_w < size:
-        pad = np.zeros((data.shape[0], size, size), dtype=data.dtype)
+        pad = np.full((data.shape[0], size, size), fill, dtype=data.dtype)
         pad[:, :read_h, :read_w] = data
         return pad
     return data
@@ -99,27 +106,33 @@ def main(args):
                 row_off = r * args.size
                 col_off = c * args.size
 
-                mask_data = tile_raster(mask_src, row_off, col_off, args.size)
-                nodata_frac = np.mean(mask_data[0] == 255.0)
+                mask_data = tile_raster(mask_src, row_off, col_off, args.size,
+                                        fill=MASK_OUTSIDE)
+                # Only the unlabelled fraction says "too little label to learn
+                # from"; out-of-footprint pixels are handled by the image check
+                # below, and counting them here would conflate the two again.
+                nodata_frac = np.mean(mask_data[0] == MASK_UNLABELLED)
                 if nodata_frac > args.nodata_thresh:
                     skipped_mask += 1
                     continue
 
-                img_data  = tile_raster(img_src,  row_off, col_off, args.size)
-                img_nodata_frac = np.mean(np.all(img_data == 0, axis=0))
+                img_data  = tile_raster(img_src,  row_off, col_off, args.size,
+                                        fill=np.nan)
+                img_nodata_frac = float(np.mean(~footprint_from_stack(img_data)))
                 if img_nodata_frac > args.img_nodata_thresh:
                     skipped_img += 1
                     continue
-                dsm_data  = tile_raster(dsm_src,  row_off, col_off, args.size)
+                dsm_data  = tile_raster(dsm_src,  row_off, col_off, args.size,
+                                        fill=np.nan)
                 pt = patch_transform(transform, row_off, col_off, args.size)
 
                 stem = f"{str(r).zfill(pad_rows)}_{str(c).zfill(pad_cols)}"
                 write_patch(os.path.join(args.out, f"{stem}.tif"),
-                            img_data, pt, crs, nodata=None)
+                            img_data, pt, crs, nodata=np.nan)
                 write_patch(os.path.join(args.out, f"{stem}_mask.tif"),
-                            mask_data, pt, crs, nodata=255.0)
+                            mask_data, pt, crs, nodata=MASK_RASTER_NODATA)
                 write_patch(os.path.join(args.out, f"{stem}_dsm.tif"),
-                            dsm_data, pt, crs, nodata=None)
+                            dsm_data, pt, crs, nodata=np.nan)
                 kept += 1
 
     src_manifest = Path(args.image).parent / "channels.json"
@@ -131,8 +144,8 @@ def main(args):
               "without a channel manifest")
 
     print(f"Done. Kept {kept} patches.")
-    print(f"  Skipped (mask noData >{args.nodata_thresh*100:.0f}%): {skipped_mask}")
-    print(f"  Skipped (image noData >{args.img_nodata_thresh*100:.0f}%): {skipped_img}")
+    print(f"  Skipped (unlabelled >{args.nodata_thresh*100:.0f}%): {skipped_mask}")
+    print(f"  Skipped (outside footprint >{args.img_nodata_thresh*100:.0f}%): {skipped_img}")
     print(f"Output: {args.out}")
 
 

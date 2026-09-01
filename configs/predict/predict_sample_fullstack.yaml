@@ -8,7 +8,7 @@
 #   --image --dsm --dtm --weights --threshold --out
 
 # Trained checkpoint (.pt). Architecture is inferred from the checkpoint.
-weights: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice0.6/ft_best.pt
+weights: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.2_dice0.8__30082/ft_best.pt
 
 # Model input channels manifest. null → <weights_dir>/channels.json
 # (written by scripts/train.py next to the checkpoint).

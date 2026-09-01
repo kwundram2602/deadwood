@@ -9,10 +9,12 @@ Steps:
   2. Reproject polygons to raster CRS
   3. Rasterize to binary mask at target GSD
   4. Gaussian blur for soft crown boundaries
-  5. Set noData=255 for pixels far from any crown
+  5. Set noData=255 for pixels inside the footprint but far from any crown,
+     and noData=-1 for pixels outside the recorded scene footprint
   6. Save mask
   7. (optional) Resample all OM tifs in --raster_dir to target GSD,
-     select 4 MS bands, normalise to [0,1], save as float32
+     select 4 MS bands, normalise to [0,1], save as float32 with the
+     out-of-footprint pixels left as NaN (nodata=nan)
 
 Usage (config-driven; sources replace the old numeric `bands:` list):
   python explore_and_process/rasterize_crowns.py --config configs/preprocess/preprocess.yaml
@@ -41,6 +43,8 @@ from rasterio.enums import Resampling
 from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_bounds
 from scipy.ndimage import gaussian_filter
+
+from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +101,17 @@ def write_tif(path, data, transform, crs, nodata=None, descriptions=None):
 # Core steps
 # ---------------------------------------------------------------------------
 
-def build_mask(crowns_paths, src, h, w, transform, sigma, nodata_threshold):
-    """Rasterize crowns → Gaussian blur → noData sentinel."""
+def build_mask(crowns_paths, src, h, w, transform, sigma, nodata_threshold,
+               footprint=None):
+    """Rasterize crowns → Gaussian blur → noData sentinels.
+
+    ``footprint`` is the boolean scene footprint from the image sources. Pixels
+    outside it get MASK_OUTSIDE (the drone never saw that ground); pixels
+    inside it that no crown polygon reaches get MASK_UNLABELLED. Keeping the
+    two apart is what lets predict suppress output beyond the flight extent —
+    with one sentinel, "outside the scene" and "unlabelled background" are
+    indistinguishable and the model is never told the difference.
+    """
     gdfs = [gpd.read_file(p) for p in crowns_paths]
     gdf = pd.concat(gdfs, ignore_index=True)
     gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=gdfs[0].crs)
@@ -111,13 +124,20 @@ def build_mask(crowns_paths, src, h, w, transform, sigma, nodata_threshold):
                            fill=0.0, dtype="float32")
 
     soft = gaussian_filter(binary, sigma=sigma)
-    # Pixels outside all crowns that received no Gaussian bleed-over become noData (255)
-    soft[(binary == 0) & (soft < nodata_threshold)] = 255.0
+    # Pixels outside all crowns that received no Gaussian bleed-over are
+    # unlabelled: valid imagery, no statement about crown membership
+    soft[(binary == 0) & (soft < nodata_threshold)] = MASK_UNLABELLED
+    # Outside the recorded footprint there is no imagery at all — a stronger
+    # statement than "unlabelled", and the one predict masks its output with
+    if footprint is not None:
+        soft[~footprint] = MASK_OUTSIDE
 
-    n_crown  = int(np.sum((soft > 0) & (soft < 255)))
+    n_crown  = int(np.sum((soft > 0) & (soft < MASK_UNLABELLED)))
     soft_zero = int(np.sum(soft == 0.0))
-    n_nodata = int(np.sum(soft == 255.0))
-    print(f"  Crown: {n_crown:,}  Soft == 0.0: {soft_zero:,}  noData: {n_nodata:,}")
+    n_unlabelled = int(np.sum(soft == MASK_UNLABELLED))
+    n_outside = int(np.sum(soft == MASK_OUTSIDE))
+    print(f"  Crown: {n_crown:,}  Soft == 0.0: {soft_zero:,}  "
+          f"unlabelled: {n_unlabelled:,}  outside footprint: {n_outside:,}")
     return soft
 
 
@@ -136,6 +156,36 @@ def read_scaled_bands(path, bands, h, w):
         print(f"  [WARN] clipped {n_clipped} out-of-range pixel value(s) to [0,1]")
     np.clip(data, 0.0, 1.0, out=data)
     return data
+
+
+def read_source_footprint(path, bands, h, w):
+    """Boolean (h, w) footprint of one source: True where every band has data.
+
+    Read with nearest-neighbour resampling on purpose — the bilinear read used
+    for the pixel values would smear the footprint edge into a soft fringe of
+    half-valid pixels, and a footprint has to be a crisp yes/no.
+    """
+    with rasterio.open(path) as src:
+        masks = src.read_masks(
+            indexes=bands,
+            out_shape=(len(bands), h, w),
+            resampling=Resampling.nearest,
+        )
+    return np.all(masks > 0, axis=0)
+
+
+def scene_footprint(specs, h, w):
+    """Intersection of every source's footprint on the target grid.
+
+    Intersection, not union: a pixel the model is asked to predict on must have
+    real data in *all* its input bands. With RGB and MS mosaics whose extents
+    differ slightly, a union would feed the model zero-filled bands at the
+    fringe and call the result valid.
+    """
+    footprint = np.ones((h, w), dtype=bool)
+    for path, bands, _ in specs:
+        footprint &= read_source_footprint(path, bands, h, w)
+    return footprint
 
 
 def validate_sources(sources, raster_dir=None):
@@ -158,16 +208,30 @@ def validate_sources(sources, raster_dir=None):
     return names
 
 
-def stack_sources(specs, h, w, transform, crs, out_path):
+def stack_sources(specs, h, w, transform, crs, out_path, footprint=None):
     """Resample each (path, bands, names) source to the target grid and stack
-    all bands into one float32 [0,1] GeoTIFF with named band descriptions."""
+    all bands into one float32 [0,1] GeoTIFF with named band descriptions.
+
+    Out-of-footprint pixels are written as NaN (nodata=nan) so that "the drone
+    never recorded here" survives into the stack instead of collapsing into an
+    ordinary 0.0. Everything downstream — tiling, normalisation stats,
+    prediction — then reads the footprint off the imagery rather than guessing
+    it back from an all-bands-zero heuristic.
+
+    ``footprint`` defaults to the intersection of the sources' own footprints.
+    """
     arrays, names = [], []
     for path, bands, band_names in specs:
         arrays.append(read_scaled_bands(path, bands, h, w))
         names.extend(band_names)
     data = np.concatenate(arrays, axis=0)
-    write_tif(out_path, data, transform, crs, nodata=None, descriptions=names)
-    print(f"  -> {os.path.basename(out_path)}  ({len(names)} ch: {', '.join(names)})")
+    if footprint is None:
+        footprint = scene_footprint(specs, h, w)
+    data[:, ~footprint] = np.nan
+    write_tif(out_path, data, transform, crs, nodata=np.nan, descriptions=names)
+    inside = int(footprint.sum())
+    print(f"  -> {os.path.basename(out_path)}  ({len(names)} ch: {', '.join(names)}) "
+          f"— {inside:,} / {footprint.size:,} px inside footprint")
     return names
 
 
@@ -179,23 +243,31 @@ def main(args):
     logger.info("Config:\n%s", OmegaConf.to_yaml(args))
     names = validate_sources(args.sources, args.raster_dir) if args.out_image_dir else None
 
+    specs = [
+        (str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
+        for s in args.sources
+    ]
+
     with rasterio.open(args.reference) as ref:
         crs = ref.crs
         h, w, transform = target_grid(ref, args.target_gsd)
         print(f"Target grid: {h} x {w} at {args.target_gsd * 100:.1f} cm GSD "
               f"(native {ref.res[0]*100:.2f} cm -> {args.target_gsd*100:.1f} cm)")
 
+        # The mask needs the footprint before it can tell "outside the scene"
+        # from "inside but unlabelled", so derive it from the sources first.
+        print("\nDeriving scene footprint from sources...")
+        footprint = scene_footprint(specs, h, w)
+        print(f"  {int(footprint.sum()):,} / {footprint.size:,} px inside the footprint")
+
         print("\nBuilding crown mask...")
         mask = build_mask(args.crowns, ref, h, w, transform,
-                          args.sigma, args.nodata_threshold)  # args.crowns is a list
-        write_tif(args.out_mask, mask, transform, crs, nodata=255.0)
+                          args.sigma, args.nodata_threshold,
+                          footprint=footprint)  # args.crowns is a list
+        write_tif(args.out_mask, mask, transform, crs, nodata=MASK_RASTER_NODATA)
         print(f"Mask saved: {args.out_mask}")
 
     if args.out_image_dir:
-        specs = [
-            (str(s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
-            for s in args.sources
-        ]
         if args.raster_dir:
             om_files = sorted(
                 os.path.join(args.raster_dir, f)
@@ -216,7 +288,11 @@ def main(args):
         for job_specs, stem_src in jobs:
             stem = os.path.splitext(os.path.basename(stem_src))[0]
             out_path = os.path.join(args.out_image_dir, f"{stem}_stack.tif")
-            stack_sources(job_specs, h, w, transform, crs, out_path)
+            # In raster_dir batch mode each OM file brings its own footprint;
+            # only the single-job case shares the one the mask was built with.
+            job_footprint = footprint if job_specs is specs else None
+            stack_sources(job_specs, h, w, transform, crs, out_path,
+                          footprint=job_footprint)
 
         os.makedirs(args.out_image_dir, exist_ok=True)
         manifest = os.path.join(args.out_image_dir, "channels.json")

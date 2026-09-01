@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
+from utils.nodata import footprint_from_stack
+
 _IMAGE_SUFFIX = ".tif"
 _MASK_ID = "_mask"
 _DSM_ID = "_dsm"
@@ -122,6 +124,13 @@ def compute_channel_stats(split_dir: Path, names: list[str]) -> dict:
 
     Uses the sum-of-squares identity (E[X²] − E[X]²) to avoid holding all
     data in memory. Returns {"names": names + ["ndsm"], "mean", "std"}.
+
+    Only pixels inside the scene footprint contribute. Out-of-footprint pixels
+    carry no measurement; averaging their filler values in drags every mean
+    toward that filler and inflates the variance, which then bakes a bias into
+    the normalisation the model is trained with. Patches written before the
+    footprint was tracked have no NaN and fall back to the all-bands-zero
+    heuristic, so their stats are unchanged.
     """
     image_dir = split_dir / "images"
     dsm_dir = split_dir / "dsm"
@@ -134,7 +143,7 @@ def compute_channel_stats(split_dir: Path, names: list[str]) -> dict:
     n_ch = len(all_names)
     ch_sum = np.zeros(n_ch, dtype=np.float64)
     ch_sum_sq = np.zeros(n_ch, dtype=np.float64)
-    n_pixels = 0
+    n_pixels = np.zeros(n_ch, dtype=np.int64)
 
     for stem in stems:
         with rasterio.open(image_dir / f"{stem}.tif") as src:
@@ -147,15 +156,26 @@ def compute_channel_stats(split_dir: Path, names: list[str]) -> dict:
         with rasterio.open(dsm_dir / f"{stem}_dsm.tif") as src:
             dsm = src.read().astype(np.float64)
 
+        # The footprint comes from the image bands; the nDSM is 0 outside the
+        # DSM anyway and shares the scene extent, so it uses the same mask.
+        inside = footprint_from_stack(img)
         combined = np.concatenate([img, dsm], axis=0)
         np.nan_to_num(combined, copy=False)
 
-        hw = combined.shape[1] * combined.shape[2]
+        n_inside = int(inside.sum())
+        if n_inside == 0:
+            continue
         for c in range(n_ch):
-            ch_sum[c] += combined[c].sum()
-            ch_sum_sq[c] += (combined[c] ** 2).sum()
-        n_pixels += hw
+            vals = combined[c][inside]
+            ch_sum[c] += vals.sum()
+            ch_sum_sq[c] += (vals**2).sum()
+        n_pixels += n_inside
 
+    if not n_pixels.all():
+        raise RuntimeError(
+            f"No in-footprint pixels found in {image_dir} — every patch is "
+            "entirely outside the scene footprint?"
+        )
     mean = ch_sum / n_pixels
     variance = ch_sum_sq / n_pixels - mean**2
     std = np.sqrt(np.maximum(variance, 1e-12))

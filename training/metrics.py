@@ -2,7 +2,11 @@ import numpy as np
 import torch
 from sklearn.metrics import average_precision_score
 
-NODATA: int = 255
+from utils.nodata import MASK_UNLABELLED, valid_target
+
+# See training/losses.py — retained for callers that import it; validity itself
+# is decided by valid_target(), which excludes both noData sentinels.
+NODATA: int = int(MASK_UNLABELLED)
 _EPS: float = 1e-6
 
 
@@ -15,7 +19,7 @@ class MetricAccumulator:
             logits = model(images)
             loss = criterion(logits, masks)
             loss.backward(); optimizer.step()
-            n_valid = (masks != 255).sum().item()
+            n_valid = valid_target(masks).sum().item()
             acc.update(logits.detach(), masks, loss.item(), n_valid)
         scores = acc.compute(threshold=0.5)
         acc.reset()
@@ -63,7 +67,7 @@ class MetricAccumulator:
 
         probs = np.concatenate(self._probs)
         tgts = np.concatenate(self._targets)
-        valid = tgts != NODATA
+        valid = valid_target(tgts)
 
         if not valid.any():
             return _zero

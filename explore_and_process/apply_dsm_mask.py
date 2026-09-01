@@ -50,6 +50,8 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 from scipy.ndimage import gaussian_filter, minimum_filter, sobel, uniform_filter1d
 
+from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
+
 logger = logging.getLogger(__name__)
 
 # The two stages of the DSM/DTM co-registration, in the order they are built:
@@ -579,8 +581,12 @@ def apply_soft_blend(
 ) -> np.ndarray:
     """Soft-blend ground confidence into the crown mask.
 
+    Out-of-footprint pixels (MASK_OUTSIDE = -1) are never touched: no amount of
+    DSM confidence can invent imagery the drone did not record. Both guards
+    below (`mask >= 0.0` and `mask == MASK_UNLABELLED`) exclude them already.
+
     Crown pixels (0–1): multiplied by (1 - ground_conf).
-    noData pixels (255): resolved to (1 - ground_conf) when
+    Unlabelled pixels (255): resolved to (1 - ground_conf) when
       ground_conf >= nodata_resolve_threshold (confident ground), or when
       ground_conf <= crown_resolve_threshold (confident crown, requires
       height_valid there — pixels without DSM or DTM data also carry conf 0.0
@@ -596,12 +602,12 @@ def apply_soft_blend(
     result = mask.copy()
 
     # Alle gültigen Kronenpixel (Konfidenz 0–1, kein noData-Sentinel)
-    crown = (mask >= 0.0) & (mask < 255.0)
+    crown = (mask >= 0.0) & (mask < MASK_UNLABELLED)
     # Krone × (1 – Bodenwahrscheinlichkeit): hohe Bodenkonf. → Kronenwert sinkt gegen 0
     result[crown] = mask[crown] * (1.0 - ground_conf[crown])
 
     # noData-Pixel (Sentinel 255): außerhalb des Bildbereichs oder nicht klassifiziert
-    nodata = mask == 255.0
+    nodata = mask == MASK_UNLABELLED
     # Wenn der DSM-Detektor trotzdem sicher Boden erkennt, Pixel auflösen statt 255 zu behalten
     resolve = nodata & (ground_conf >= nodata_resolve_threshold)
     # Aufgelöste noData-Pixel bekommen Bodenwahrscheinlichkeit als invertierte Kronenkonfidenz
@@ -851,8 +857,8 @@ def main(args):
         ground_bin, ground_conf = combine(lm_bin, lm_conf, gr_bin, gr_conf, mode=args.combine)
 
     # --- Apply soft ground blend to crown mask --------------------------------
-    n_crown_dampened = int(np.sum((mask >= 0.0) & (mask < 255.0) & (ground_conf > 0.0)))
-    nodata_before = mask == 255.0
+    n_crown_dampened = int(np.sum((mask >= 0.0) & (mask < MASK_UNLABELLED) & (ground_conf > 0.0)))
+    nodata_before = mask == MASK_UNLABELLED
     height_valid = height_data_valid(ndsm, dsm)
     n_no_height = int(np.sum(~height_valid & ~np.isnan(dsm)))
     if n_no_height:
@@ -868,18 +874,22 @@ def main(args):
     n_crown_resolved = 0
     if crown_resolve_threshold is not None:
         n_crown_resolved = int(np.sum(nodata_before & height_valid & (ground_conf <= crown_resolve_threshold)))
-    n_crown  = int(np.sum((mask > 0) & (mask < 255)))
+    n_crown  = int(np.sum((mask > 0) & (mask < MASK_UNLABELLED)))
     n_ground = int(np.sum(mask == 0.0))
-    n_nodata = int(np.sum(mask == 255.0))
+    n_nodata = int(np.sum(mask == MASK_UNLABELLED))
+    n_outside = int(np.sum(mask == MASK_OUTSIDE))
     print(f"\nCrown pixels dampened by DSM:     {n_crown_dampened:,}  (multiplicative blend)")
     print(f"noData pixels resolved to ground: {n_ground_resolved:,}  (ground_conf >= {args.nodata_resolve_threshold:.2f})")
     if crown_resolve_threshold is not None:
         print(f"noData pixels resolved to crown:  {n_crown_resolved:,}  (ground_conf <= {crown_resolve_threshold:.2f})")
-    print(f"Final  =>  Crown: {n_crown:,}  Ground: {n_ground:,}  noData: {n_nodata:,}")
+    print(f"Final  =>  Crown: {n_crown:,}  Ground: {n_ground:,}  "
+          f"unlabelled: {n_nodata:,}  outside footprint: {n_outside:,}")
 
     # --- Write binary mask ---------------------------------------------------
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    profile.update(dtype="float32", count=1, nodata=255.0)
+    # The out-of-footprint sentinel is what a GIS should render transparent;
+    # unlabelled pixels are inside the scene and stay visible as 255.
+    profile.update(dtype="float32", count=1, nodata=MASK_RASTER_NODATA)
     with rasterio.open(args.out, "w", **profile) as dst:
         dst.write(mask[np.newaxis])
     print(f"Saved mask: {args.out}")

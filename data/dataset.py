@@ -21,6 +21,12 @@ class CrownDataset(Dataset):
 
     norm_stats, when given, is the already-subset {"mean", "std"} dict from
     spec.norm_stats(train_stats) — one value per input channel, in order.
+
+    Image patches carry the scene footprint as NaN and mask patches carry two
+    noData sentinels (see utils.nodata): MASK_UNLABELLED inside the footprint,
+    MASK_OUTSIDE beyond it. The image NaNs are zeroed here because the network
+    cannot consume them; the mask sentinels are passed through untouched and
+    excluded from loss and metrics by utils.nodata.valid_target.
     """
 
     def __init__(
@@ -66,7 +72,7 @@ class CrownDataset(Dataset):
         image = self.spec.assemble(image, ndsm)  # (in_channels, H, W)
 
         with rasterio.open(self.mask_dir / f"{stem}_mask.tif") as src:
-            mask = src.read(1).astype(np.float32)  # (H, W), 255 = noData
+            mask = src.read(1).astype(np.float32)  # (H, W), 255 / -1 = noData
 
         if self.transform is not None:
             aug = self.transform(image=image.transpose(1, 2, 0), mask=mask)

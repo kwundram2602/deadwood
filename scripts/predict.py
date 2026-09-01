@@ -9,6 +9,13 @@ are read from the experiment's channels.json manifest and selected out of the
 stack by name. The probability map is binarized with the configured threshold
 into a 0/1 crown mask (255 = noData).
 
+Everything outside the recorded scene footprint is suppressed. The footprint is
+the intersection of the input sources' own noData masks, carried through the
+prepared stack as NaN; without it the model emits crown probabilities over
+ground the drone never flew, because the training mask used one sentinel for
+both "outside the scene" and "inside but unlabelled" and so never taught the
+model anything about that region.
+
 Outputs (written to out:, default <weights_dir>/predict/):
     <scene>_prob.tif        float32 [0,1] crown probability, noData = -1
     <scene>_pred_t<T>.tif   uint8 0/1 crown mask,             noData = 255
@@ -28,6 +35,8 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import numpy as np
 import rasterio
@@ -38,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.channels import NDSM, ChannelSpec, load_manifest
 from explore_and_process.tile_patches import tile_raster
+from utils.nodata import footprint_from_stack
 
 _NODATA_BIN = 255
 _NODATA_PROB = -1.0
@@ -152,7 +162,9 @@ def prepare_inputs(
     gsd = float(prep_cfg.target_gsd)
     gsd_tag = f"{gsd * 100:g}cm"
     src_tag = hashlib.md5(repr(sources).encode()).hexdigest()[:8]
-    img_out = prep_dir / f"{Path(sources[0][0]).stem}_stack_{src_tag}_{gsd_tag}.tif"
+    # "_fp" marks stacks that carry the scene footprint as NaN; without it a
+    # cache written by the old footprint-less code would be silently reused.
+    img_out = prep_dir / f"{Path(sources[0][0]).stem}_stack_{src_tag}_{gsd_tag}_fp.tif"
     prep_dir.mkdir(parents=True, exist_ok=True)
 
     with rasterio.open(sources[0][0]) as ref:
@@ -320,18 +332,28 @@ def predict_scene(
                 batch_offs = offsets[start : start + batch_size]
                 tiles = []
                 for r, c in batch_offs:
-                    img = tile_raster(img_src, r, c, tile_size).astype(np.float32)[idx0]
-                    np.nan_to_num(img, copy=False, nan=0.0)
-                    ndsm = None
-                    if dsm_src is not None:
-                        ndsm = tile_raster(dsm_src, r, c, tile_size).astype(np.float32)
-                        np.nan_to_num(ndsm, copy=False, nan=0.0)
+                    img = tile_raster(
+                        img_src, r, c, tile_size, fill=np.nan
+                    ).astype(np.float32)[idx0]
 
                     th = min(tile_size, h - r)
                     tw = min(tile_size, w - c)
-                    valid_mask[r : r + th, c : c + tw] |= ~np.all(
-                        img[:, :th, :tw] == 0, axis=0
+                    # Footprint first: nan_to_num below erases the very NaNs
+                    # that mark out-of-footprint pixels.
+                    valid_mask[r : r + th, c : c + tw] |= footprint_from_stack(
+                        img[:, :th, :tw]
                     )
+
+                    np.nan_to_num(img, copy=False, nan=0.0)
+                    ndsm = None
+                    if dsm_src is not None:
+                        ndsm = tile_raster(
+                            dsm_src, r, c, tile_size, fill=np.nan
+                        ).astype(np.float32)
+                        # A DSM/DTM hole inside the footprint normalises to 0
+                        # ("ground level") at training time too, so it stays a
+                        # predictable pixel rather than a footprint gap.
+                        np.nan_to_num(ndsm, copy=False, nan=0.0)
 
                     tile = spec.assemble(img, ndsm)  # (in_channels, H, W)
                     if mean is not None:
@@ -383,9 +405,16 @@ def save_quicklook(
     binary: np.ndarray,
     save_path: Path,
     stack_names: list[str],
+    valid_mask: np.ndarray | None = None,
     max_dim: int = 2000,
 ) -> None:
-    """Pseudo-RGB | probability | binary side-by-side preview."""
+    """Pseudo-RGB | probability | binary side-by-side preview.
+
+    All three panels are blanked outside *valid_mask*. The probability panel in
+    particular used to be drawn raw, so the PNG showed confident predictions
+    over ground the drone never recorded even when the GeoTIFF beside it was
+    correctly flagged noData.
+    """
     import matplotlib.pyplot as plt
     from matplotlib.colors import ListedColormap
     from matplotlib.patches import Patch
@@ -394,9 +423,15 @@ def save_quicklook(
     with rasterio.open(image_path) as src:
         rgb = src.read(quicklook_band_indexes(stack_names)).astype(np.float32)
     rgb = rgb[:, ::ds, ::ds].transpose(1, 2, 0)
+    np.nan_to_num(rgb, copy=False, nan=0.0)
     rgb = np.clip((rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8), 0, 1)
 
-    prob_ds = prob[::ds, ::ds]
+    valid_ds = (
+        np.ones(prob[::ds, ::ds].shape, dtype=bool)
+        if valid_mask is None
+        else valid_mask[::ds, ::ds]
+    )
+    prob_ds = np.where(valid_ds, prob[::ds, ::ds], np.nan)
     bin_ds = binary[::ds, ::ds].astype(np.float32)
     bin_ds[bin_ds == _NODATA_BIN] = np.nan
 
@@ -404,10 +439,13 @@ def save_quicklook(
     bin_cmap = ListedColormap(["#ffffff", "#2e8b57"])
     bin_cmap.set_bad("#c8c8c8")
 
+    rgb = np.where(valid_ds[..., None], rgb, 0.78)  # light grey outside
+
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), constrained_layout=True)
     axes[0].imshow(rgb)
     axes[0].set_title("Pseudo-RGB")
-    im = axes[1].imshow(prob_ds, cmap="viridis", vmin=0, vmax=1)
+    prob_cmap = plt.get_cmap("viridis").with_extremes(bad="#c8c8c8")
+    im = axes[1].imshow(prob_ds, cmap=prob_cmap, vmin=0, vmax=1)
     axes[1].set_title("Crown probability")
     fig.colorbar(im, ax=axes[1], fraction=0.04)
     axes[2].imshow(bin_ds, cmap=bin_cmap, vmin=0, vmax=1)
@@ -569,12 +607,22 @@ def main() -> None:
         out_dir / f"{stem}_pred_t{threshold:g}.tif", binary, profile, nodata=_NODATA_BIN
     )
 
-    crown_frac = float((binary == 1).sum()) / max(int(valid_mask.sum()), 1)
+    n_valid = int(valid_mask.sum())
+    print(
+        f"Scene footprint: {n_valid:,} / {valid_mask.size:,} px "
+        f"({n_valid / valid_mask.size:.1%}) — the rest is written as noData"
+    )
+    crown_frac = float((binary == 1).sum()) / max(n_valid, 1)
     print(f"Threshold {threshold:g}: {crown_frac:.1%} of valid pixels classified as crown")
 
     if pcfg.get("quicklook", True):
         save_quicklook(
-            image_path, prob, binary, out_dir / f"{stem}_quicklook.png", stack_names
+            image_path,
+            prob,
+            binary,
+            out_dir / f"{stem}_quicklook.png",
+            stack_names,
+            valid_mask=valid_mask,
         )
 
 

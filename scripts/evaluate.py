@@ -14,6 +14,8 @@ CLI flags override config values when provided:
 import argparse
 import sys
 from pathlib import Path
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from omegaconf import OmegaConf
@@ -27,9 +29,8 @@ from scripts.train import _make_experiment_id
 from training.losses import CombinedLoss
 from training.metrics import MetricAccumulator
 from utils.device import get_device
+from utils.nodata import valid_target
 from utils.viz import plot_final_bars_multi, plot_samples
-
-_NODATA: int = 255
 
 
 def _collect_split(
@@ -47,7 +48,7 @@ def _collect_split(
             masks = masks.to(device, non_blocking=True)
             logits = model(images)
             loss = criterion(logits, masks)
-            n_valid = int((masks != _NODATA).sum().item())
+            n_valid = int(valid_target(masks).sum().item())
             accumulator.update(logits.detach(), masks, loss.item(), n_valid)
     return accumulator
 

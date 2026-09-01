@@ -1,0 +1,68 @@
+model_name: crown_rgb
+run_tag: 109
+output_dir: experiments
+debug: false
+dataset:
+  path: out/crown_fullstack_ms_hr2.0_ht_0.5
+  input_channels:
+  - red
+  - green
+  - blue
+  batch_size: 4
+  num_workers: 4
+model:
+  type: unet
+  num_classes: 1
+  weights_name: OAM_RGB_RESNET50_TCD
+  weights_path: null
+  frozen_pretrained_channels:
+  - red
+  - green
+  - blue
+  pretrained_channel_map: null
+transfer:
+  epochs: 80
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: cos
+  step_gamma: 0.3
+  warmup_epochs: 3
+  patience: 10
+fine_tune:
+  enabled: true
+  epochs: 30
+  lr: 5.0e-05
+  weight_decay: 0.001
+  unfreeze_keys:
+  - layer1
+  - layer4.2
+  encoder_lr_scale: 0.1
+  optimizer: adamw
+  scheduler: step
+  step_gamma: 0.5
+  warmup_epochs: 3
+  patience: 10
+logging:
+  use_wandb: false
+  project: deadwood
+  run_name: null
+  log_every_n_steps: 50
+loss:
+  bce: 0.2
+  dice: 0.8
+  dice_squared: false
+  iou: 0.0
+  mae: 0.0
+metrics:
+  thresholds:
+  - 0.6
+  - 0.8
+  - 0.9
+  target_thresholds:
+  - 0.6
+  - 0.8
+  - 0.9
+evaluate:
+  weights: null
+  n_samples: 6

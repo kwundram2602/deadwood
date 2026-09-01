@@ -3,8 +3,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.patches import Patch
 
-_NODATA = 255
+from utils.nodata import MASK_OUTSIDE, valid_target
 
 
 def plot_training_curves(
@@ -196,12 +197,19 @@ def plot_samples(
     threshold: float = 0.5,
     save_path: str | Path = "samples.png",
 ) -> None:
-    """Per-sample visualization: Pseudo-RGB | [nDSM] | GT Mask | Model sigma x2.
+    """Per-sample visualization: Pseudo-RGB | [nDSM] | GT Mask | Model sigma.
 
     The input tensor's channel layout comes from ``spec`` (a ChannelSpec), so
     this works for any input_channels selection: the pseudo-RGB panel uses
     ``spec.display_rgb_positions`` and the nDSM panel is dropped when the
     selection has no ndsm channel.
+
+    The two noData kinds are drawn differently on purpose (see utils.nodata).
+    Pixels outside the recorded footprint are blanked in every panel — there is
+    no imagery there, so a prediction over them is meaningless. Unlabelled
+    pixels are only hatched in the GT panel and keep their prediction visible:
+    the imagery is real, the loss just had nothing to say about them, and the
+    model predicting there is the intended behaviour rather than a defect.
     """
     model.eval()
     images_list: list[torch.Tensor] = []
@@ -228,7 +236,7 @@ def plot_samples(
     col_titles = ["Pseudo-RGB"]
     if ndsm_pos is not None:
         col_titles.append("nDSM")
-    col_titles += ["GT Mask", "Model sigma (masked)", "Model sigma (full)"]
+    col_titles += ["GT Mask", "Model sigma"]
     n_cols = len(col_titles)
 
     n_actual = len(images_list)
@@ -238,45 +246,44 @@ def plot_samples(
     if n_actual == 1:
         axes = axes[np.newaxis, :]
 
+    outside_colour = "#4d4d4d"
+    viridis_bad = plt.get_cmap("viridis").with_extremes(bad=outside_colour)
+    gray_bad = plt.get_cmap("gray").with_extremes(bad=outside_colour)
+
     im_pred = None
     for row, (img, mask, pred) in enumerate(zip(images_list, masks_list, preds_list)):
+        gt = mask.squeeze(0).numpy()
+        outside = gt == MASK_OUTSIDE
+        unlabelled = ~valid_target(gt) & ~outside
+
         rgb = img[rgb_pos].permute(1, 2, 0).numpy()
         rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
+        rgb = np.where(outside[..., None], 0.30, rgb)
 
-        gt = mask.squeeze(0).numpy()
-        nodata_mask = gt == _NODATA
-        gt_display = np.where(nodata_mask, np.nan, gt)
-
-        pred_np = pred.squeeze(0).numpy()
-        pred_display = np.where(nodata_mask, np.nan, pred_np)
+        gt_display = np.where(outside | unlabelled, np.nan, gt)
+        pred_np = np.where(outside, np.nan, pred.squeeze(0).numpy())
 
         axes[row, 0].imshow(rgb)
         col = 1
         if ndsm_pos is not None:
-            axes[row, col].imshow(img[ndsm_pos].numpy(), cmap="gray")
+            ndsm_display = np.where(outside, np.nan, img[ndsm_pos].numpy())
+            axes[row, col].imshow(ndsm_display, cmap=gray_bad)
             col += 1
 
-        gt_ax, masked_ax, full_ax = axes[row, col], axes[row, col + 1], axes[row, col + 2]
+        gt_ax, pred_ax = axes[row, col], axes[row, col + 1]
 
-        gt_ax.imshow(gt_display, cmap="viridis", vmin=0, vmax=1)
+        gt_ax.imshow(gt_display, cmap=viridis_bad, vmin=0, vmax=1)
+        # Unlabelled only — the outside region is already painted by the
+        # colormap's "bad" colour and must not be softened to look the same.
         gt_ax.imshow(
-            np.where(nodata_mask, 1.0, np.nan),
+            np.where(unlabelled, 1.0, np.nan),
             cmap="gray",
             vmin=0,
             vmax=1,
             alpha=0.4,
         )
 
-        im_pred = masked_ax.imshow(pred_display, cmap="viridis", vmin=0, vmax=1)
-        masked_ax.imshow(
-            np.where(nodata_mask, 1.0, np.nan),
-            cmap="gray",
-            vmin=0,
-            vmax=1,
-            alpha=0.4,
-        )
-
-        full_ax.imshow(pred_np, cmap="viridis", vmin=0, vmax=1)
+        im_pred = pred_ax.imshow(pred_np, cmap=viridis_bad, vmin=0, vmax=1)
 
         for c in range(n_cols):
             axes[row, c].axis("off")
@@ -285,6 +292,16 @@ def plot_samples(
 
     if im_pred is not None:
         fig.colorbar(im_pred, ax=axes, shrink=0.6, label="probability")
+    fig.legend(
+        handles=[
+            Patch(facecolor=outside_colour, label="outside footprint (no imagery)"),
+            Patch(facecolor="#bfbfbf", label="unlabelled (imagery valid, no label)"),
+        ],
+        loc="lower center",
+        ncol=2,
+        fontsize=9,
+        frameon=False,
+    )
     fig.savefig(save_path, dpi=150)
     plt.close(fig)
     print(f"Saved samples -> {save_path}")
