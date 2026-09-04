@@ -30,6 +30,7 @@ def main() -> None:
         out_dir=cfg.overview.out_dir,
         tree_ids=None if tree_ids is None else list(tree_ids),
         categories=list(cfg.overview.categories),
+        exclude_coverage=list(cfg.overview.get("exclude_coverage", ["fc"])),
         buffer_m=cfg.aoi.buffer_m,
         ring_gap_m=cfg.aoi.ring_gap_m,
         ring_width_m=cfg.aoi.ring_width_m,

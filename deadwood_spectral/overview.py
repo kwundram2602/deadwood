@@ -27,7 +27,7 @@ from shapely.geometry import Point
 from deadwood_spectral.align import parse_date
 from deadwood_spectral.grid import ReferenceGrid, assert_matches_grid
 from deadwood_spectral.indices import BAND_NAMES, INDEX_NAMES, compute_indices
-from deadwood_spectral.masks import CLASS_NAMES, ClassMasks
+from deadwood_spectral.masks import CLASS_NAMES, EXCLUDE_COVERAGE, ClassMasks
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +327,7 @@ def run_overview(
     erode_min_area_m2: float = 1.0,
     exclude_buffer_m: float = 1.0,
     edge_buffer_m: float = 0.25,
+    exclude_coverage: Sequence[str] = EXCLUDE_COVERAGE,
     max_pixels_per_class: int = 50_000,
     seed: int = 0,
     chunk_rows: int = 512,
@@ -361,6 +362,7 @@ def run_overview(
         erode_min_area_m2=erode_min_area_m2,
         exclude_buffer_m=exclude_buffer_m,
         edge_buffer_m=edge_buffer_m,
+        exclude_coverage=exclude_coverage,
     )
 
     pixels = select_pixels(masks, max_pixels_per_class=max_pixels_per_class, seed=seed)

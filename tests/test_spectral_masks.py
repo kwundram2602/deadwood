@@ -217,3 +217,32 @@ def test_erosion_that_would_empty_a_crown_keeps_it_in_the_deadwood_mask(tmp_path
     ]
     masks = _built(tmp_path, rows=rows, erode_m=3.0, erode_min_area_m2=100.0)
     assert set(np.unique(masks.tree_idx[masks.deadwood]).tolist()) == {1, 2}
+
+
+def test_a_fully_covered_crown_leaves_the_deadwood_class(tmp_path):
+    rows = [*_default_rows(), ("4196", "soff", "fc", 1045.0, 1910.0, 10.0)]
+    masks = _built(tmp_path, rows)
+    assert "4196" not in set(masks.tree_ids.values())
+
+
+def test_a_fully_covered_crown_does_not_fall_into_the_reference_classes(tmp_path):
+    """The whole reason the filter is not applied by dropping it from `gdf`.
+
+    An excluded crown must stop being measured, not turn into reference ground:
+    a dead crown under a closed canopy is neither living canopy nor bare soil,
+    and letting it into either class contaminates the curve deadwood is
+    compared against.
+    """
+    rows = [*_default_rows(), ("4196", "soff", "fc", 1045.0, 1910.0, 10.0)]
+    masks = _built(tmp_path, rows)
+    # the fc crown's own pixels, in grid coordinates (1 px == 1 m, see GRID)
+    patch = (slice(2000 - 1920, 2000 - 1910), slice(1045 - 1000, 1055 - 1000))
+    assert not masks.deadwood[patch].any()
+    assert not masks.living[patch].any()
+    assert not masks.background[patch].any()
+
+
+def test_the_coverage_filter_can_be_switched_off(tmp_path):
+    rows = [*_default_rows(), ("4196", "soff", "fc", 1045.0, 1910.0, 10.0)]
+    masks = _built(tmp_path, rows, exclude_coverage=())
+    assert "4196" in set(masks.tree_ids.values())

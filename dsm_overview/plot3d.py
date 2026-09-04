@@ -236,35 +236,48 @@ def dem_figure(
 
     # Panel 5 exists because panels 1-3 can no longer show this: with depth
     # sorting off the DSM covers the DTM everywhere, including where the
-    # aligned DTM was lifted above it. Here that overshoot is the whole subject
-    # and nothing hides it.
-    overshoot = -ndsm
+    # aligned DTM was lifted above it. Here that case is the whole subject and
+    # nothing hides it.
+    #
+    # Same quantity and the same sign as every other panel: nDSM = DSM - DTM.
+    # Plotting DTM - DSM instead would put the impossible half *upwards*, the
+    # opposite of panels 1-4 where up always means "above the ground", and the
+    # colour then reads as the exact reverse of what it marks.
     ax = _new_axes(fig, 5, elev, azim)
-    above = overshoot > 0
+    # Scaled to the impossible half, and *cut* to it rather than only clipping
+    # the axis: every tree in the patch stands metres above zero here, and
+    # drawn at a half-metre z range those faces become vertical walls that fill
+    # the panel. Dropping them leaves the ground, which is where the question
+    # is asked.
+    below = ndsm[np.isfinite(ndsm) & (ndsm < 0)]
+    limit = max(0.5, float(np.percentile(-below, 99))) if below.size else 0.5
+    ground = np.where(np.abs(ndsm) <= limit, ndsm, np.nan)
     _surface(
         ax,
         x,
         y,
-        overshoot,
-        DTM_COLOR,
+        ground,
+        DSM_COLOR,
         0.95,
-        "DTM (aligned) - DSM",
-        mask=above,
+        "nDSM = DSM - DTM",
+        mask=ground < 0,
         zorder=Z_DSM,
         highlight=OVERSHOOT_COLOR,
     )
-    _surface(ax, x, y, np.zeros_like(overshoot), "#7f8c8d", 0.35, "DSM surface", zorder=Z_DTM)
-    _outline(ax, rings, -ndsm_full, res_x, res_y, lift, label="crown polygon")
-    # Scaled to the overshoot, not to the data: the crown itself reaches tens of
-    # metres below zero here and would flatten the half-metre that matters into
-    # a line. Faces outside the range are clipped, which is the intent.
-    positive = overshoot[np.isfinite(overshoot) & above]
-    limit = max(0.5, float(np.percentile(positive, 99))) if positive.size else 0.5
     ax.set_zlim(-limit, limit)
-    ax.set_title("control: DTM above DSM (purple = impossible)", fontsize=9)
+    # Zero is the aligned DTM, so it carries the DTM colour of panels 1-3
+    # rather than the grey of panel 4's threshold: it is the same surface, and
+    # a second grey plane meaning something else is what made this panel
+    # unreadable.
+    _surface(ax, x, y, np.zeros_like(ndsm), DTM_COLOR, 0.45, "DTM (aligned) = 0", zorder=Z_DTM)
+    # The crown polygon flat on the DTM. Its real value here is the tree
+    # height, far outside the range above, and tracing the surface would drag
+    # the line off the panel.
+    _outline(ax, rings, np.zeros_like(ndsm_full), res_x, res_y, 0.0, label="crown polygon")
+    ax.set_title("control: ground band (purple = DTM above DSM)", fontsize=9)
     ax.set_xlabel("x [m]", fontsize=7)
     ax.set_ylabel("y [m]", fontsize=7)
-    ax.set_zlabel("DTM - DSM [m]", fontsize=7)
+    ax.set_zlabel("nDSM = DSM - DTM [m]", fontsize=7)
     ax.tick_params(labelsize=6)
     ax.legend(fontsize=7, loc="upper left")
 

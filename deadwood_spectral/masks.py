@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 CLASS_NAMES: tuple[str, ...] = ("deadwood", "living", "background")
 INCLUDE_CATEGORIES = ("son", "soff")
+# Coverage classes that cannot be measured: `fc` is fully covered, the crown
+# sits under a closed canopy. What DSM and sensor see there is the tree above
+# it, not the dead one — so those crowns are dropped from the measured class.
+# Their footprints are still cut out of the reference classes, see build_masks.
+EXCLUDE_COVERAGE: tuple[str, ...] = ("fc",)
 # Both the soft [0,1] label mask and predict.py's uint8 {0,1} output use 255.
 MASK_NODATA = 255.0
 
@@ -148,15 +153,41 @@ def build_masks(
     erode_min_area_m2: float = 1.0,
     exclude_buffer_m: float = 1.0,
     edge_buffer_m: float = 0.25,
+    exclude_coverage: Sequence[str] = EXCLUDE_COVERAGE,
 ) -> ClassMasks:
-    """Three disjoint masks on the reference grid, plus per-tree attribution."""
+    """Three disjoint masks on the reference grid, plus per-tree attribution.
+
+    `exclude_coverage` drops crowns from the *measured* class only. It must not
+    be applied by removing them from `gdf`: their pixels would then fall into
+    `background` or `living`, and a dead crown under a closed canopy would
+    become reference ground — exactly the contamination `exclude_buffer_m`
+    exists to prevent. So `measured` feeds the deadwood mask while `soff` and
+    `gdf` keep every polygon for the cut-outs.
+    """
     soff = gdf[gdf["crown_category"] == "soff"]
+    # NA coverage stays in: unknown is not the same as fully covered, and
+    # `.isin()` returns False for NA, which is the behaviour wanted here — it
+    # reads like an accident otherwise.
+    measured = soff[~soff["coverage"].isin(list(exclude_coverage))]
+    dropped = sorted(set(soff["tree_id"]) - set(measured["tree_id"]))
+    if dropped:
+        logger.info(
+            "coverage %s excludes %d of %d soff crown(s) from the deadwood class: %s",
+            "/".join(exclude_coverage),
+            len(dropped),
+            len(soff),
+            ", ".join(dropped),
+        )
+    # Only when coverage is what emptied it. No soff polygon at all is a
+    # different fault and already has its own message further down.
+    if not soff.empty and measured.empty:
+        raise ValueError(f"every soff crown is excluded by coverage {tuple(exclude_coverage)}")
 
     tree_idx = rasterize_polygons(
-        soff,
+        measured,
         grid,
-        values=soff["poly_idx"],
-        geometry=erode_by_area(soff, erode_m, erode_min_area_m2),
+        values=measured["poly_idx"],
+        geometry=erode_by_area(measured, erode_m, erode_min_area_m2),
     )
     deadwood = (tree_idx > 0) & valid
     tree_idx = np.where(deadwood, tree_idx, 0).astype(np.int32)
@@ -180,7 +211,7 @@ def build_masks(
         living=living,
         background=background,
         tree_idx=tree_idx,
-        tree_ids={int(i): str(t) for i, t in zip(soff["poly_idx"], soff["tree_id"])},
+        tree_ids={int(i): str(t) for i, t in zip(measured["poly_idx"], measured["tree_id"])},
     )
     for name, array in masks.as_dict().items():
         logger.info("mask %-10s %d px", name, int(array.sum()))

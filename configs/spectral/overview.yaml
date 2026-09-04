@@ -42,6 +42,12 @@ sampling:
   erode_min_area_m2: 1.0
   exclude_buffer_m: 1.0
   edge_buffer_m: 0.25
+  # `fc` = fully covered: die Krone liegt unter geschlossenem Kronendach, die
+  # gemessene Signatur ist die des Baumes darueber. Solche Kronen fallen aus
+  # der Klasse `deadwood` heraus — ihre Flaeche bleibt aber aus `living` und
+  # `background` ausgeschnitten, sonst wuerde eine ueberwachsene Totkrone zum
+  # Referenz-Hintergrund.
+  exclude_coverage: [fc]
   # Per reference class, not in total. The deadwood mask is always taken whole.
   # Drawn once and reused at every date: a sample redrawn per acquisition would
   # make every step in a curve ambiguous between phenology and resampling.

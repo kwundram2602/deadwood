@@ -112,3 +112,23 @@ def test_the_control_panel_is_scaled_to_the_overshoot_not_the_crown(surfaces, ao
     low, high = fig.axes[4].get_zlim()
     assert high <= 1.0 and low >= -1.0
     plt.close(fig)
+
+
+def test_the_control_panel_uses_the_same_sign_as_every_other_panel(surfaces, grid):
+    """nDSM = DSM - DTM, so DTM above DSM is *below* zero, never above it.
+
+    Plotted as DTM - DSM the impossible half points upwards, against panels 1-4
+    where up means "above the ground" — and then the highlight colour reads as
+    the exact reverse of what it marks.
+    """
+    dtm = {stage: array.copy() for stage, array in surfaces.dtm.items()}
+    dtm["aligned"][60:80, 60:80] = 100.8  # aligned DTM lifted 0.8 m through the DSM
+    lifted = Surfaces(grid=grid, dsm=surfaces.dsm, dtm=dtm, info=surfaces.info)
+    aoi = aoi_from_bounds((1020.0, 1976.0, 1024.0, 1980.0), grid, buffer_m=8.0, tree_id="4157")
+
+    fig = dem_figure(lifted, aoi)
+    low, high = fig.axes[4].get_zlim()
+    # The 0.8 m of DTM-above-DSM sets the scale, and it sets it downwards.
+    assert low == pytest.approx(-0.8, abs=0.05)
+    assert high == pytest.approx(0.8, abs=0.05)
+    plt.close(fig)

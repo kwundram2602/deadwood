@@ -11,6 +11,10 @@ overview:
   crowns:
     - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
   categories: [soff]
+  # Coverage-Klassen, die nicht auswertbar sind. `fc` = fully covered: die
+  # Krone steht unter geschlossenem Kronendach, das DSM zeigt dort den Baum
+  # darueber. Betrifft 4 der 18 soff-Kronen.
+  exclude_coverage: [fc]
   # null = every crown in the categories above. A list restricts the run, which
   # is what you want while iterating on the view angle. Written as a plain
   # list here, so a bare number like `4144` parses as YAML int; run_dsm_overview

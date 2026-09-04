@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from deadwood_spectral.grid import load_reference_grid
-from deadwood_spectral.masks import load_crowns
+from deadwood_spectral.masks import EXCLUDE_COVERAGE, load_crowns
 from dsm_overview.plot3d import DEFAULT_AZIM, DEFAULT_ELEV, plot_dem_overview
 from dsm_overview.stats import aoi_stats, stats_table
 from dsm_overview.surfaces import load_surfaces
@@ -28,6 +28,7 @@ def run_dsm_overview(
     out_dir: str | Path,
     tree_ids: Sequence[str] | None = None,
     categories: Sequence[str] = ("soff",),
+    exclude_coverage: Sequence[str] = EXCLUDE_COVERAGE,
     buffer_m: float = 15.0,
     ring_gap_m: float = 2.0,
     ring_width_m: float = 8.0,
@@ -43,6 +44,17 @@ def run_dsm_overview(
     # load_surfaces — two header reads, not two raster reads.
     gdf = load_crowns(crowns, load_reference_grid(reference))
     gdf = gdf[gdf["crown_category"].isin(list(categories))]
+    # Before the tree_ids filter, so an explicitly requested crown that is
+    # excluded here fails the `missing` check below instead of vanishing.
+    excluded = gdf[gdf["coverage"].isin(list(exclude_coverage))]
+    if not excluded.empty:
+        logger.info(
+            "coverage %s excludes %d crown(s): %s",
+            "/".join(exclude_coverage),
+            len(excluded),
+            ", ".join(sorted(excluded["tree_id"])),
+        )
+    gdf = gdf.drop(index=excluded.index)
     if tree_ids is not None:
         # Coerced to str: gdf["tree_id"] is a pandas string column, but an
         # unquoted YAML list like `tree_ids: [4144]` parses as int. Comparing
@@ -51,10 +63,13 @@ def run_dsm_overview(
         tree_ids = [str(t) for t in tree_ids]
         missing = sorted(set(tree_ids) - set(gdf["tree_id"]))
         if missing:
-            raise ValueError(f"no crown polygon for tree_id(s): {', '.join(missing)}")
+            raise ValueError(
+                "no crown polygon for tree_id(s), or excluded by category/coverage: "
+                + ", ".join(missing)
+            )
         gdf = gdf[gdf["tree_id"].isin(list(tree_ids))]
     if gdf.empty:
-        raise ValueError("no crown selected — check categories/tree_ids")
+        raise ValueError("no crown selected — check categories/tree_ids/exclude_coverage")
     gdf = gdf.sort_values("tree_id")
 
     surfaces = load_surfaces(reference, dsm, dtm, local_blocks, clamp_to_dsm)

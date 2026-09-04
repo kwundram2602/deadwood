@@ -67,6 +67,14 @@ def project(tmp_path):
                 "coverage": "nc",
                 "geometry": box(1005.0, 1976.0, 1009.0, 1980.0),
             },
+            {
+                # fully covered: under a closed canopy, so the DSM here shows
+                # the tree above it and the panels would be misread.
+                "tree_id": "4196",
+                "crown_category": "soff",
+                "coverage": "fc",
+                "geometry": box(1045.0, 1976.0, 1049.0, 1980.0),
+            },
         ],
         crs=CRS,
     )
@@ -130,3 +138,21 @@ def test_an_int_tree_id_from_unquoted_yaml_still_matches(project):
     tree_id column is str — the config must not have to be hand-quoted."""
     outputs = run_dsm_overview(**project, tree_ids=[4170])
     assert set(k for k in outputs if k.startswith("plot_")) == {"plot_4170"}
+
+
+def test_a_fully_covered_crown_gets_neither_a_plot_nor_a_row(project):
+    outputs = run_dsm_overview(**project)
+    assert "plot_4196" not in outputs
+    table = pd.read_csv(outputs["stats_csv"], dtype={"tree_id": str})
+    assert "4196" not in set(table["tree_id"])
+
+
+def test_asking_for_an_excluded_crown_by_id_is_an_error(project):
+    """Silently returning nothing would read as "this tree has no polygon"."""
+    with pytest.raises(ValueError, match="4196"):
+        run_dsm_overview(**project, tree_ids=["4196"])
+
+
+def test_the_coverage_filter_can_be_switched_off(project):
+    outputs = run_dsm_overview(**project, exclude_coverage=())
+    assert "plot_4196" in outputs

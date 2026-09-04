@@ -36,6 +36,7 @@ def main() -> None:
         erode_min_area_m2=cfg.sampling.erode_min_area_m2,
         exclude_buffer_m=cfg.sampling.exclude_buffer_m,
         edge_buffer_m=cfg.sampling.edge_buffer_m,
+        exclude_coverage=list(cfg.sampling.get("exclude_coverage", ["fc"])),
         max_pixels_per_class=cfg.sampling.max_pixels_per_class,
         seed=cfg.sampling.seed,
         chunk_rows=cfg.read.chunk_rows,
