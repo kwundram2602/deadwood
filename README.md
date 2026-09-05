@@ -16,6 +16,7 @@ cd path/to/deadwood && uv sync
 git lfs install          
 git lfs pull             
 ```
+
 ## Crown Segmentation
 
 ### Preprocessing
