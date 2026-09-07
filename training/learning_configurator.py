@@ -25,6 +25,14 @@ class LearningConfigurator:
         self._print_trainable_table(model)
         return model
 
+    def prepare_model_for_head_only(self, model: nn.Module) -> nn.Module:
+        print("Head only: freezing encoder and decoder, training segmentation head")
+        self._freeze_encoder(model)
+        self._set_trainable(model, "decoder", False)
+        self._set_trainable(model, "segmentation_head", True)
+        self._print_trainable_table(model)
+        return model
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -38,14 +46,28 @@ class LearningConfigurator:
             print("WARNING: model has no 'encoder' attribute")
 
     def _unfreeze_first_conv(self, model: nn.Module) -> None:
-        """First conv (channel-frozen via gradient mask) + its BN train in every phase."""
+        """First conv (channel-frozen via gradient mask) + its BN train in every phase.
+
+        Only ResNet-style encoders name these conv1/bn1. Transformer encoders
+        such as mit_b5 call theirs patch_embed1.proj, so nothing matches — say
+        so rather than returning silently, which reads as "first conv trained"
+        when it was not.
+        """
         m = model.module if hasattr(model, "module") else model
         if not hasattr(m, "encoder"):
             return
+        found = False
         for attr in ("conv1", "bn1"):
             if hasattr(m.encoder, attr):
+                found = True
                 for p in getattr(m.encoder, attr).parameters():
                     p.requires_grad = True
+        if not found:
+            print(
+                "  NOTE: encoder has no conv1/bn1 — first conv stays frozen. "
+                "Transformer encoders name it patch_embed1.proj; unfreeze it via "
+                "unfreeze_keys if that is what you want."
+            )
 
     def _set_trainable(self, model: nn.Module, attr: str, trainable: bool) -> None:
         m = model.module if hasattr(model, "module") else model
@@ -127,9 +149,7 @@ class LearningConfigurator:
                     sub_tr, sub_tot = counts(sub)
                     if sub_tot == 0:
                         continue
-                    rows.append(
-                        (f"  {bname}.{sub_name}", status(sub_tr, sub_tot), sub_tr, sub_tot)
-                    )
+                    rows.append((f"  {bname}.{sub_name}", status(sub_tr, sub_tot), sub_tr, sub_tot))
             if not found_blocks:
                 tr, tot = counts(m.encoder)
                 rows.append(("encoder", status(tr, tot), tr, tot))
