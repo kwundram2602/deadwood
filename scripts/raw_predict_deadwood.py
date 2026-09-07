@@ -53,11 +53,9 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from data.deadwood_dataset import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 from utils.device import get_device  # noqa: E402
 
-# The model was trained on ImageNet-normalised uint8 RGB; these must not change.
-_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 _NODATA_MASK = 255
 
 
@@ -203,7 +201,7 @@ class RGBTileDataset(Dataset):
         valid = self.src.dataset_mask(window=window, boundless=True) == 255
 
         tensor = image.astype(np.float32).transpose(1, 2, 0) / 255.0
-        tensor = (tensor - _IMAGENET_MEAN) / _IMAGENET_STD
+        tensor = (tensor - IMAGENET_MEAN) / IMAGENET_STD
         tensor = torch.from_numpy(tensor.transpose(2, 0, 1)).contiguous()
         return tensor, torch.from_numpy(valid), row, col
 
