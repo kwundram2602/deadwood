@@ -1,0 +1,55 @@
+# Deadwood fine-tuning preprocessing. Runs on its own — not part of
+# scripts/preprocess.py and not sharing its config.
+#
+# Usage:
+#   uv run python scripts/preprocess_deadwood.py \
+#       --config configs/preprocess/deadwood.yaml --working_dir .
+
+deadwood_preprocess:
+  # Scene → uint8 RGB. These four blocks are passed verbatim to
+  # raw_predict_deadwood.prepare_rgb8, so the training pixels are byte-identical
+  # to the ones the baseline was measured on.
+  source:
+    path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
+    bands: [1, 2, 3]
+  clip:
+    vector: datafiles/crown_poly/soff_altered.gpkg
+    buffer: 20.0
+  target_gsd: 0.05        # the model's own minimum inference resolution
+  scale:
+    mode: linear
+    source_max: 65535
+
+  labels:
+    path: datafiles/crown_poly/soff_altered.gpkg
+    # fid 21 is 0.018 m2 (8x8 px) — below min_polygon_area: 0.1, so no
+    # prediction that size survives vectorisation and it can never be hit.
+    exclude_fids: [21]
+
+  split:
+    mode: spatial         # spatial | random
+    train: 19
+    val: 6
+    test: 6
+    seed: 0
+
+  mask:
+    # sigma/nodata_threshold match the crown pipeline: a soft crown edge with a
+    # falloff out to roughly 1.64*sigma ≈ 6.6 px ≈ 33 cm.
+    sigma: 4.0
+    nodata_threshold: 0.05
+    # Hard background. The blur alone produces NO pixel labelled 0.0 — beyond
+    # 4*sigma the Gaussian is exactly zero, which falls under nodata_threshold
+    # and becomes unlabelled. Unlabelled pixels within this distance of a crown
+    # are set to 0.0 instead; everything beyond stays unlabelled, because with
+    # sparse labels "no polygon here" is not evidence of no deadwood.
+    # 2 m gives roughly a 30 m2 annulus per median crown: ~12k negatives
+    # against ~1.2k positives.
+    negative_buffer_m: 2.0
+
+  patches:
+    crop_size: 1024       # the model's native tile size; 1.74 GiB at batch 2
+    n_jitter: 1           # >1 adds jittered replicates of each crown
+    jitter_px: 128
+
+  out_dir: out/deadwood_patches
