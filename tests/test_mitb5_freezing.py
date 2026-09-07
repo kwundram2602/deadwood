@@ -34,7 +34,12 @@ def test_transfer_learning_trains_decoder_and_head_only():
 
 def test_first_conv_helper_warns_instead_of_silently_doing_nothing(capsys):
     LearningConfigurator().prepare_model_for_transfer_learning(_model())
-    assert "patch_embed1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # Assert on text unique to the NOTE. A bare "patch_embed1" would also match
+    # the trainable-table row _print_trainable_table emits for that encoder
+    # child, so the test would pass even with the warning deleted.
+    assert "NOTE: encoder has no conv1/bn1" in out
+    assert "patch_embed1.proj" in out
 
 
 def test_block4_is_a_valid_unfreeze_key():
