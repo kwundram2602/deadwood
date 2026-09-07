@@ -113,7 +113,13 @@ def test_binarize_threshold_sweeps(t, expected_ones):
 
 # ------------------------------------------------------------- predict config
 ROOT = Path(os.path.join(os.path.dirname(__file__), ".."))
-PREDICT_CONFIGS = sorted((ROOT / "configs/predict").glob("*.yaml"))
+# configs/predict/ also holds the deadtrees deadwood pipeline's config, which has a
+# different contract (namespaced under its own key, no channel stack). These tests
+# validate the crown predict contract only.
+_NON_CROWN_PREDICT = {"raw_deadwood.yaml"}
+PREDICT_CONFIGS = sorted(
+    p for p in (ROOT / "configs/predict").glob("*.yaml") if p.name not in _NON_CROWN_PREDICT
+)
 
 
 def _triples(sources):
