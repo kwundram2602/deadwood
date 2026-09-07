@@ -208,26 +208,40 @@ class RGBTileDataset(Dataset):
         return tensor, torch.from_numpy(valid), row, col
 
 
-def load_model(weights: str | Path, device: torch.device) -> torch.nn.Module:
-    """Build the deadtrees architecture and load its published checkpoint.
+def _load_state_dict(weights: str | Path) -> dict[str, torch.Tensor]:
+    """Read a checkpoint and strip the torch.compile wrapper prefix.
 
-    The checkpoint was saved from a torch.compile-wrapped model, so every key
-    carries an `_orig_mod.` prefix; stripping it lets the plain module load the
-    weights strictly, which is what we want — a silent partial load here would
-    look like a badly performing model rather than a bug.
+    Two formats reach this: the published .safetensors checkpoint, and the .pt
+    state dicts training/trainer.py writes. Both carry plain module keys once
+    the `_orig_mod.` prefix a compiled model adds is removed.
+    """
+    path = Path(weights)
+    if path.suffix == ".safetensors":
+        state = safetensors.torch.load_file(str(path))
+    else:
+        state = torch.load(path, map_location="cpu", weights_only=True)
+    return {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+
+
+def load_model(weights: str | Path, device: torch.device) -> torch.nn.Module:
+    """Build the deadtrees architecture and load a checkpoint into it.
+
+    Loading is strict: a silent partial load here would look like a badly
+    performing model rather than a bug.
     """
     model = smp.Unet(encoder_name="mit_b5", encoder_weights=None, in_channels=3, classes=1)
-    state = safetensors.torch.load_file(str(weights))
-    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-    model.load_state_dict(state, strict=True)
+    model.load_state_dict(_load_state_dict(weights), strict=True)
     return model.to(device).eval()
 
 
-def predict_mask(src, model, device, cfg) -> np.ndarray:
-    """Slide the model over the scene and return the thresholded deadwood mask."""
+def predict_probs(src, model, device, cfg) -> tuple[np.ndarray, np.ndarray]:
+    """Slide the model over the scene and return (probabilities, valid).
+
+    Kept separate from thresholding so a decision-threshold sweep can reuse one
+    expensive pass instead of re-running inference per threshold.
+    """
     tile_size = int(cfg.get("tile_size", 1024))
     padding = int(cfg.get("padding", 256))
-    threshold = float(cfg.get("threshold", 0.5))
 
     dataset = RGBTileDataset(src, tile_size, padding)
     # num_workers stays 0: forked workers share the parent's GDAL handle and
@@ -240,7 +254,8 @@ def predict_mask(src, model, device, cfg) -> np.ndarray:
         shuffle=False,
     )
 
-    mask = np.zeros((dataset.height, dataset.width), dtype=np.uint8)
+    probs_out = np.zeros((dataset.height, dataset.width), dtype=np.float32)
+    valid_out = np.zeros((dataset.height, dataset.width), dtype=bool)
     step = tile_size - 2 * padding
 
     for images, valid, rows, cols in tqdm(loader, desc="inference"):
@@ -255,10 +270,17 @@ def predict_mask(src, model, device, cfg) -> np.ndarray:
 
             h = min(step, dataset.height - row)
             w = min(step, dataset.width - col)
-            tile = (core[:h, :w] > threshold).astype(np.uint8)
-            tile[~core_valid[:h, :w]] = 0
-            mask[row : row + h, col : col + w] = tile
+            probs_out[row : row + h, col : col + w] = core[:h, :w]
+            valid_out[row : row + h, col : col + w] = core_valid[:h, :w]
 
+    return probs_out, valid_out
+
+
+def predict_mask(src, model, device, cfg) -> np.ndarray:
+    """Slide the model over the scene and return the thresholded deadwood mask."""
+    probs, valid = predict_probs(src, model, device, cfg)
+    mask = (probs > float(cfg.get("threshold", 0.5))).astype(np.uint8)
+    mask[~valid] = 0
     return mask
 
 
