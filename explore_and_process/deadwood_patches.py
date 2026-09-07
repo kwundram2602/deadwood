@@ -1,0 +1,160 @@
+"""Crown splitting and crop cutting for the deadwood fine-tuning path.
+
+Separate from the crown pipeline's tile_patches on purpose: that one grid-tiles
+a whole scene, which here would yield ~20 tiles of which most hold no crown at
+all. Crops are centred on crowns instead, one per crown.
+"""
+
+import numpy as np
+import rasterio
+from rasterio import features, windows
+from rasterio.transform import rowcol
+
+from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
+
+SPLIT_NAMES = ("train", "val", "test")
+
+
+def split_crowns(crowns, n_train, n_val, n_test, mode="spatial", seed=0):
+    """Assign crown fids to train/val/test.
+
+    ``spatial`` orders crowns along the principal axis of their centroids and
+    cuts contiguous bands, so a held-out crown sits at one end of the site
+    rather than interleaved with training crowns. ``random`` is a seeded
+    shuffle, for checking how much the spatial arrangement is worth.
+    """
+    total = n_train + n_val + n_test
+    if total != len(crowns):
+        raise ValueError(
+            f"split counts sum to {total} but got {len(crowns)} crowns "
+            f"(train {n_train} + val {n_val} + test {n_test})"
+        )
+
+    fids = np.asarray([int(f) for f in crowns.index])
+    if mode == "spatial":
+        xy = np.c_[crowns.geometry.centroid.x, crowns.geometry.centroid.y]
+        centred = xy - xy.mean(axis=0)
+        _, _, vt = np.linalg.svd(centred, full_matrices=False)
+        axis = vt[0]
+        # SVD leaves the component's sign arbitrary; pin it so the same crowns
+        # land in the same split across numpy versions and row orderings.
+        if axis[np.argmax(np.abs(axis))] < 0:
+            axis = -axis
+        order = np.argsort(centred @ axis, kind="stable")
+    elif mode == "random":
+        order = np.random.default_rng(seed).permutation(len(fids))
+    else:
+        raise ValueError(f"mode must be 'spatial' or 'random', got {mode!r}")
+
+    ordered = fids[order]
+    return {
+        "train": ordered[:n_train].tolist(),
+        "val": ordered[n_train : n_train + n_val].tolist(),
+        "test": ordered[n_train + n_val :].tolist(),
+    }
+
+
+def crown_crop_window(geom, transform, crop_size, jitter=(0, 0)):
+    """A crop_size square window centred on the crown's centroid pixel."""
+    row, col = rowcol(transform, geom.centroid.x, geom.centroid.y)
+    half = crop_size // 2
+    return windows.Window(
+        col_off=int(col) - half + int(jitter[1]),
+        row_off=int(row) - half + int(jitter[0]),
+        width=crop_size,
+        height=crop_size,
+    )
+
+
+def array_window(arr, window, fill):
+    """Boundless slice of an in-memory 2D array, padded with ``fill``.
+
+    rasterio does this for datasets; the split masks live in RAM, so crops that
+    run off the scene edge need the same treatment here.
+    """
+    out = np.full((int(window.height), int(window.width)), fill, dtype=arr.dtype)
+    r0, c0 = int(window.row_off), int(window.col_off)
+    src_r0, src_c0 = max(r0, 0), max(c0, 0)
+    src_r1 = min(r0 + int(window.height), arr.shape[0])
+    src_c1 = min(c0 + int(window.width), arr.shape[1])
+    if src_r1 <= src_r0 or src_c1 <= src_c0:
+        return out
+    out[src_r0 - r0 : src_r1 - r0, src_c0 - c0 : src_c1 - c0] = arr[src_r0:src_r1, src_c0:src_c1]
+    return out
+
+
+def ring_negatives(mask, geoms, transform, buffer_m):
+    """Turn unlabelled pixels within buffer_m of a crown into hard 0.0.
+
+    soft_mask_from_geoms emits no 0.0 at all: beyond 4*sigma the Gaussian is
+    exactly zero, which falls under nodata_threshold and becomes
+    MASK_UNLABELLED. Without this step the lowest target the model ever sees is
+    nodata_threshold, so it is never told that anything is *not* deadwood.
+
+    Only MASK_UNLABELLED pixels are touched. Crown pixels, the soft falloff, and
+    off-footprint pixels keep what they have — and everything beyond the buffer
+    stays unlabelled, which is the whole point of ring-only negatives under
+    sparse labelling.
+    """
+    buffered = [g.buffer(buffer_m) for g in geoms if g is not None and not g.is_empty]
+    if not buffered:
+        return mask
+    near = features.rasterize(
+        [(g, 1) for g in buffered],
+        out_shape=mask.shape,
+        transform=transform,
+        fill=0,
+        dtype="uint8",
+    ).astype(bool)
+    out = mask.copy()
+    out[near & (mask == MASK_UNLABELLED)] = 0.0
+    return out
+
+
+def _write(path, data, transform, crs, nodata):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=data.shape[-2],
+        width=data.shape[-1],
+        count=data.shape[0],
+        dtype=data.dtype,
+        crs=crs,
+        transform=transform,
+        nodata=nodata,
+        compress="deflate",
+        tiled=True,
+    ) as dst:
+        dst.write(data)
+
+
+def cut_split(
+    rgb_path, mask, transform, crs, crowns, out_dir, crop_size, n_jitter=1, jitter_px=0, seed=0
+):
+    """Write one image/mask patch per crown (times n_jitter) under out_dir."""
+    rng = np.random.default_rng(seed)
+    written = 0
+    with rasterio.open(rgb_path) as src:
+        for fid, geom in zip(crowns.index, crowns.geometry):
+            for rep in range(n_jitter):
+                jitter = (0, 0)
+                if rep > 0 and jitter_px > 0:
+                    jitter = tuple(rng.integers(-jitter_px, jitter_px + 1, size=2).tolist())
+                win = crown_crop_window(geom, transform, crop_size, jitter)
+                image = src.read((1, 2, 3), window=win, boundless=True, fill_value=0)
+                mask_crop = array_window(mask, win, fill=MASK_OUTSIDE)
+                pt = windows.transform(win, transform)
+
+                stem = f"{int(fid)}" if n_jitter == 1 else f"{int(fid)}_j{rep}"
+                _write(out_dir / "images" / f"{stem}.tif", image, pt, crs, 0)
+                _write(
+                    out_dir / "masks" / f"{stem}_mask.tif",
+                    mask_crop[None, ...],
+                    pt,
+                    crs,
+                    MASK_RASTER_NODATA,
+                )
+                written += 1
+    return written
