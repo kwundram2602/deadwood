@@ -1,0 +1,46 @@
+# Raw deadwood prediction with the pretrained deadtrees.earth model (no fine-tuning).
+# Run from deadwood/ as working directory; all paths are relative to --working_dir.
+#
+# Usage:
+#   uv run python scripts/raw_predict_deadwood.py \
+#       --config configs/predict/raw_deadwood.yaml --working_dir .
+
+raw_deadwood:
+  # Published checkpoint: segformer_b5 encoder in an smp UNet, 3-band RGB in, 1 class out.
+  weights: datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
+
+  # The only model input. bands must name exactly the three RGB bands.
+  source:
+    path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
+    bands: [1, 2, 3]
+
+  # Optional: restrict the run to the extent of a vector layer plus a buffer (m).
+  # vector: null -> whole scene.
+  clip:
+    vector: datafiles/crown_poly/soff_altered.gpkg
+    buffer: 20.0
+
+  # The model's own minimum inference resolution is 0.05 m; going finer costs
+  # runtime without giving the model anything it was trained to use.
+  target_gsd: 0.05
+
+  # float32/uint16 source -> uint8, since the model expects ImageNet-normalised
+  # uint8 RGB. 0 is reserved for noData.
+  scale:
+    mode: linear          # linear | percentile
+    source_max: 65535     # linear: value range mapped onto 255. null -> scene max
+    percentiles: [2, 98]  # percentile: computed over all bands jointly
+
+  # Sliding window. padding is discarded context on each side, so each tile
+  # contributes tile_size - 2*padding pixels.
+  tile_size: 1024
+  padding: 256
+  # 2 fits a 4 GB laptop GPU at 1024x1024 (~2.3 GB). Raise on bigger cards.
+  batch_size: 2
+
+  threshold: 0.5
+  min_polygon_area: 0.1   # m2
+
+  out_dir: out/raw_deadwood
+  save_input: true        # keep the uint8 RGB that went into the model
+  save_mask: true         # keep the binary mask alongside the polygons

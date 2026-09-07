@@ -17,6 +17,7 @@ checkpoints/
 data/raw/
 notes/
 .vscode/
+datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
 datafiles/dtms
 datafiles/raster
 datafiles/raster_tiles
