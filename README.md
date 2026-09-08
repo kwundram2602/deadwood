@@ -55,6 +55,79 @@ If you trained your model on rgb and the multispectral scene, you also must prov
 uv run python scripts/predict.py --config configs/predict/predict_sample_rgb_ms.yaml
 ```
 
+## Deadwood Fine-Tuning
+
+Adapts the pretrained deadtrees.earth model (`smp.Unet(mit_b5)`, 84.7 M params) to our
+site. Separate from the crown pipeline above — shares code, not configs or execution.
+
+Input contract, fixed by the checkpoint: 3-band **uint8** RGB, `/255`, ImageNet
+mean/std, 0.05 m GSD, 1024 px tiles with 256 px discarded padding. Our orthos are
+float32 in a ~16-bit range, so `scale.mode: linear` + `source_max: 65535` is mandatory.
+
+### Baseline prediction (no fine-tuning)
+```
+uv run python scripts/raw_predict_deadwood.py --config configs/predict/raw_deadwood.yaml --working_dir .
+```
+`clip.vector: null` → whole scene (~10 min). Writes `*_rgb8.tif`, `*_deadwood_mask.tif`,
+`*_deadwood.gpkg`. Keep `num_workers` at 0 (forked workers corrupt the shared GDAL handle)
+and `batch_size` at 2 on a 4 GB card.
+
+### Preprocessing — crown-centred patches
+```
+uv run python scripts/preprocess_deadwood.py --config configs/preprocess/deadwood.yaml --working_dir .
+```
+One 1024² patch per crown into `out/deadwood_patches/{train,val,test}/{images,masks}/`
+plus `meta.json`. Each split's mask burns **only its own crowns**, so a held-out crown
+inside a training crop stays unlabelled — that is the leakage guarantee, and it is needed
+because crowns sit 7–12 m apart while a crop spans 51 m, so disjoint crops do not exist.
+
+Mask values: `1.0` crown · `0.05–1.0` Gaussian falloff (`sigma`) · `0.0` ring negatives
+(`negative_buffer_m`) · `255.0` unlabelled · `-1.0` outside footprint. Only `[0,1]` enters
+the loss (`utils.nodata.valid_target`).
+
+Drop bad crowns with `labels.exclude_fids` — real GPKG fids, not row indices — and adjust
+`split.train/val/test` to sum to what remains (explicit counts; raises on mismatch).
+
+### Training
+```
+uv run python scripts/finetune_deadwood.py --config configs/finetune/deadwood.yaml --working_dir .
+```
+`stage: head|decoder` (145 vs 3.28 M trainable params). `fine_tune.enabled: true` adds an
+encoder-unfreeze phase; valid `unfreeze_keys` are `patch_embed1..4`, `block1..4`,
+`norm1..4`. Checkpoint → `experiments/<id>/tl_best.pt`. 1024², batch 2, bf16 peaks ~1.7 GiB.
+
+### Prediction with a fine-tuned checkpoint
+```
+uv run python scripts/raw_predict_deadwood.py --config configs/predict/finetuned_deadwood.yaml --working_dir .
+```
+Any checkpoint without editing a config (`--weights` takes `.pt` and `.safetensors`):
+```
+uv run python scripts/raw_predict_deadwood.py --config configs/predict/raw_deadwood.yaml --working_dir . \
+    --weights experiments/<run>/tl_best.pt --out_dir out/predict_<run> --threshold 0.3
+```
+
+### Evaluation — per-crown recall
+```
+uv run python scripts/evaluate_deadwood.py --config configs/predict/finetuned_deadwood.yaml --working_dir . --probs out/eval/ft_probs.tif
+```
+`--probs` caches the probability raster and reuses it, so re-scoring at another threshold
+skips inference. Writes `<ckpt>_crown_coverage.csv` and `<ckpt>_threshold_sweep.csv` to
+`out/eval/`. **Recall only** — the labels are sparse-sampled, so predictions outside the
+polygons are not false positives and no precision figure is derivable from them.
+
+### Status (2026-09-07)
+
+Raw model: **20/31** crowns hit at >10 % overlap. The threshold sweep is flat from 0.9 down
+to 0.1 — 9 of the 11 misses have max probability `0.0000` across the whole polygon, so
+recalibration cannot recover them.
+
+First fine-tune (decoder+head, `bce 1.0`, 18 epochs) made it **worse**: test split 3/6 → 0/6,
+all crowns 20/31 → 3/31, with loss falling while F1 collapsed 0.48 → 0.07. Cause: the 2 m
+ring negatives land exactly on the model's crown-boundary overhang — 13 % of ring pixels are
+predicted deadwood by the raw model, at 5.3:1 negative-dominated — which teaches suppression.
+Open fix: leave an unlabelled gap between the polygon and the hard negatives, so boundary
+disagreement is never penalised. See `docs/HANDOFF-deadtrees-finetune.md`.
+
 ## Spectral Analysis
 
 Standing deadwood detection from the multi-year orthomosaic time series.
