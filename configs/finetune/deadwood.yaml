@@ -1,0 +1,68 @@
+# Fine-tuning the pretrained deadtrees deadwood model on the Airport crowns.
+#
+# Usage:
+#   uv run python scripts/finetune_deadwood.py \
+#       --config configs/finetune/deadwood.yaml --working_dir .
+
+model_name: deadwood_ft
+run_tag: null
+output_dir: experiments
+weights: datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
+
+dataset:
+  path: out/deadwood_patches   # written by scripts/preprocess_deadwood.py
+  batch_size: 2                # 1024 px, decoder+head: 1.74 GiB peak on 4 GB
+  num_workers: 2               # safe here — patches are per-file reads, not a
+                               # shared whole-scene GDAL handle
+
+# head | decoder — how much of the model adapts. 19 training crowns against
+# 84.7 M params, so decoder+head (3.3 M) is already generous.
+stage: decoder
+
+transfer:
+  epochs: 40
+  lr: 0.0001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: step
+  step_gamma: 0.5
+  warmup_epochs: 3
+  patience: 10
+
+# Second phase: partial encoder unfreeze. Valid mit_b5 keys are
+# patch_embed1..4, block1..4, norm1..4.
+fine_tune:
+  enabled: false
+  epochs: 15
+  lr: 0.00002
+  weight_decay: 0.001
+  unfreeze_keys: ["block4"]
+  encoder_lr_scale: 0.1
+  optimizer: adamw
+  scheduler: step
+  step_gamma: 0.5
+  warmup_epochs: 2
+  patience: 8
+
+loss:
+  # Within the valid (non-sentinel) pixels the balance is crown against ring —
+  # roughly 1:10, not the 1:300 of the whole scene — so plain BCE is reasonable.
+  # Raise dice if the ring turns out to dominate.
+  bce: 1.0
+  dice: 0.0
+  dice_squared: false
+  iou: 0.0
+  mae: 0.0
+
+metrics:
+  thresholds: [0.5]
+  target_thresholds: [0.5]
+
+train:
+  amp: true
+
+logging:
+  use_wandb: false
+  project: deadwood
+  run_name: null
+  log_every_n_steps: 50
