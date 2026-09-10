@@ -9,10 +9,57 @@ import numpy as np
 import rasterio
 from rasterio import features, windows
 from rasterio.transform import rowcol
+from scipy.ndimage import gaussian_filter
 
+from explore_and_process.rasterize_crowns import rasterize_binary
 from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
 
 SPLIT_NAMES = ("train", "val", "test")
+
+
+def deadwood_scene_mask(
+    pos_geoms,
+    neg_geoms,
+    h,
+    w,
+    transform,
+    *,
+    sigma_pos,
+    sigma_neg,
+    pos_threshold,
+    neg_threshold,
+    footprint=None,
+):
+    """One whole-scene mask carrying both label classes.
+
+    The two classes are treated asymmetrically on purpose. Positives keep their
+    blur as a soft target and reach past the drawn edge, so a crown boundary
+    that is a little wrong is not a hard error. Negatives are thresholded high,
+    which erodes them back to a confident core well inside their own edge. What
+    is left between the two is MASK_UNLABELLED and draws no gradient.
+
+    That band is never empty, even for polygons drawn edge to edge, which is the
+    whole reason sigma_neg exceeds sigma_pos. A hard 1.0 adjacent to a hard 0.0
+    is what the deleted ring negatives produced, and it taught the model to
+    shrink predictions it had right.
+
+    Application order is the contract: negatives, then positives over them, then
+    MASK_OUTSIDE over everything.
+    """
+    pos_binary = rasterize_binary(pos_geoms, h, w, transform)
+    neg_binary = rasterize_binary(neg_geoms, h, w, transform)
+    pos = gaussian_filter(pos_binary, sigma=sigma_pos)
+    neg = gaussian_filter(neg_binary, sigma=sigma_neg)
+
+    mask = np.full((h, w), MASK_UNLABELLED, dtype=np.float32)
+    mask[neg >= neg_threshold] = 0.0
+    # `| pos_binary > 0` keeps a polygon narrower than its own sigma labelled:
+    # its blurred peak can fall below pos_threshold, but it was still drawn.
+    labelled = (pos >= pos_threshold) | (pos_binary > 0)
+    mask[labelled] = pos[labelled]
+    if footprint is not None:
+        mask[~footprint] = MASK_OUTSIDE
+    return mask
 
 
 def split_crowns(crowns, n_train, n_val, n_test, mode="spatial", seed=0):
