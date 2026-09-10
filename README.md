@@ -66,27 +66,42 @@ float32 in a ~16-bit range, so `scale.mode: linear` + `source_max: 65535` is man
 
 ### Baseline prediction (no fine-tuning)
 ```
-uv run python scripts/raw_predict_deadwood.py --config configs/predict/raw_deadwood.yaml --working_dir .
+uv run python scripts/raw_predict_deadwood.py --config configs/predict/deadwood/raw_deadwood.yaml --working_dir .
 ```
-`clip.vector: null` → whole scene (~10 min). Writes `*_rgb8.tif`, `*_deadwood_mask.tif`,
+Always the whole scene (~10 min). Writes `*_rgb8.tif`, `*_deadwood_mask.tif`,
 `*_deadwood.gpkg`. Keep `num_workers` at 0 (forked workers corrupt the shared GDAL handle)
 and `batch_size` at 2 on a 4 GB card.
 
-### Preprocessing — crown-centred patches
+### Preprocessing — whole-scene mask, grid tiles
 ```
 uv run python scripts/preprocess_deadwood.py --config configs/preprocess/deadwood.yaml --working_dir .
 ```
-One 1024² patch per crown into `out/deadwood_patches/{train,val,test}/{images,masks}/`
-plus `meta.json`. Each split's mask burns **only its own crowns**, so a held-out crown
-inside a training crop stays unlabelled — that is the leakage guarantee, and it is needed
-because crowns sit 7–12 m apart while a crop spans 51 m, so disjoint crops do not exist.
+One mask over the whole scene, cut into a disjoint 512 px grid into
+`out/deadwood_patches/{train,val,test}/{images,masks}/`. Tiles share no ground, so the
+split is assigned per tile (stratified random, by fraction) and there is no leakage to
+guard against.
 
-Mask values: `1.0` crown · `0.05–1.0` Gaussian falloff (`sigma`) · `0.0` ring negatives
-(`negative_buffer_m`) · `255.0` unlabelled · `-1.0` outside footprint. Only `[0,1]` enters
-the loss (`utils.nodata.valid_target`).
+Two label layers: `labels.deadwood_path` (positives) and `labels.background_path`
+(digitised confirmed non-deadwood). Mask values: `1.0` crown core · `0.05–1.0` Gaussian
+falloff (`sigma_pos`) · `0.0` background core (`sigma_neg` + `neg_threshold`) · `255.0`
+unlabelled · `-1.0` outside footprint. Only `[0,1]` enters the loss
+(`utils.nodata.valid_target`).
 
-Drop bad crowns with `labels.exclude_fids` — real GPKG fids, not row indices — and adjust
-`split.train/val/test` to sum to what remains (explicit counts; raises on mismatch).
+The two sigmas differ on purpose. Blurring conserves burned area, so a wide sigma flattens
+small polygons — at 50 cm a 0.32 m² crown peaks at 0.18 — which caps `sigma_pos` near 4 px
+(20 cm). Background polygons are ~5× larger and absorb 10 px (50 cm), and that wider blur
+is what guarantees an unlabelled band between the classes even where they are drawn edge to
+edge. A hard `1.0` next to a hard `0.0` is what the old ring negatives produced.
+
+Tiles are dropped by two independent filters: `min_labelled_px` (a label must be present —
+it does **not** require positives, since background-only tiles are the false-positive
+signal) and `max_outside_frac` (the imagery must be present).
+
+Written alongside the patches for visual QA: `deadwood_mask_scene.tif` (the whole mask,
+noData transparent in QGIS) and `tiles.gpkg` (every grid tile with its `split`, `kind`,
+`labelled_px` and `outside_frac`, dropped tiles included).
+
+Drop bad crowns with `labels.exclude_fids` — real GPKG fids, not row indices.
 
 ### Training
 ```
@@ -94,21 +109,23 @@ uv run python scripts/finetune_deadwood.py --config configs/finetune/deadwood.ya
 ```
 `stage: head|decoder` (145 vs 3.28 M trainable params). `fine_tune.enabled: true` adds an
 encoder-unfreeze phase; valid `unfreeze_keys` are `patch_embed1..4`, `block1..4`,
-`norm1..4`. Checkpoint → `experiments/<id>/tl_best.pt`. 1024², batch 2, bf16 peaks ~1.7 GiB.
+`norm1..4`. Checkpoint → `experiments/<id>/tl_best.pt`. Patches are 512² since the mask
+rework, so `batch_size: 8` costs about what 1024² at batch 2 did (~1.7 GiB) — worth raising,
+because most tiles carry only one label class and small batches make the gradient very noisy.
 
 ### Prediction with a fine-tuned checkpoint
 ```
-uv run python scripts/raw_predict_deadwood.py --config configs/predict/finetuned_deadwood.yaml --working_dir .
+uv run python scripts/raw_predict_deadwood.py --config configs/predict/deadwood/finetuned_deadwood.yaml --working_dir .
 ```
 Any checkpoint without editing a config (`--weights` takes `.pt` and `.safetensors`):
 ```
-uv run python scripts/raw_predict_deadwood.py --config configs/predict/raw_deadwood.yaml --working_dir . \
+uv run python scripts/raw_predict_deadwood.py --config configs/predict/deadwood/raw_deadwood.yaml --working_dir . \
     --weights experiments/<run>/tl_best.pt --out_dir out/predict_<run> --threshold 0.3
 ```
 
 ### Evaluation — per-crown recall
 ```
-uv run python scripts/evaluate_deadwood.py --config configs/predict/finetuned_deadwood.yaml --working_dir . --probs out/eval/ft_probs.tif
+uv run python scripts/evaluate_deadwood.py --config configs/predict/deadwood/finetuned_deadwood.yaml --working_dir . --probs out/eval/ft_probs.tif
 ```
 `--probs` caches the probability raster and reuses it, so re-scoring at another threshold
 skips inference. Writes `<ckpt>_crown_coverage.csv` and `<ckpt>_threshold_sweep.csv` to

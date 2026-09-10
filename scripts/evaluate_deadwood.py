@@ -6,11 +6,11 @@ incomparable ones. Recall only — see training/crown_recall for why.
 
 Usage:
     uv run python scripts/evaluate_deadwood.py \\
-        --config configs/predict/raw_deadwood.yaml --working_dir .
+        --config configs/predict/deadwood/raw_deadwood.yaml --working_dir .
 
     # score a fine-tuned checkpoint, reusing a cached probability raster
     uv run python scripts/evaluate_deadwood.py \\
-        --config configs/predict/raw_deadwood.yaml --working_dir . \\
+        --config configs/predict/deadwood/raw_deadwood.yaml --working_dir . \\
         --weights experiments/deadwood_ft/tl_best.pt --probs out/eval/probs.tif
 """
 

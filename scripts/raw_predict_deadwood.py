@@ -27,7 +27,7 @@ Outputs (out_dir):
 
 Usage:
     uv run python scripts/raw_predict_deadwood.py \\
-        --config configs/predict/raw_deadwood.yaml \\
+        --config configs/predict/deadwood/raw_deadwood.yaml \\
         --working_dir .
 
 CLI flags override config values when provided:

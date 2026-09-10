@@ -33,8 +33,9 @@ def test_pixels_beyond_the_bleed_are_unlabelled_not_background():
 def test_the_falloff_produces_no_hard_zero():
     # Beyond 4*sigma the Gaussian is exactly 0, which falls under
     # nodata_threshold and becomes MASK_UNLABELLED — so this function emits no
-    # pixel labelled 0.0 at all. Hard negatives come from ring_negatives()
-    # instead; asserting it here keeps that from being rediscovered the hard way.
+    # pixel labelled 0.0 at all. Hard negatives come from the digitised
+    # background layer via deadwood_scene_mask instead; asserting it here keeps
+    # that from being rediscovered the hard way.
     mask = soft_mask_from_geoms(
         [box(9, 9, 11, 11)], 20, 20, TRANSFORM, sigma=1.0, nodata_threshold=0.05
     )
