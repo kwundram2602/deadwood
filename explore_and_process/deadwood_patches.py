@@ -173,6 +173,39 @@ def assign_splits(kinds, fractions, seed=0, stratify=True):
     return splits
 
 
+def write_tiles(rgb_path, mask, transform, crs, scan, splits, out_dir, size):
+    """Write one image/mask patch pair per assigned tile under out_dir/<split>/.
+
+    Only tiles present in ``splits`` are written; everything the filters dropped
+    is simply absent. The layout and the ``<stem>`` / ``<stem>_mask`` naming are
+    the contract DeadwoodPatchDataset reads, so they must not drift.
+    """
+    counts = {name: 0 for name in SPLIT_NAMES}
+    with rasterio.open(rgb_path) as src:
+        for tile_id, split in sorted(splits.items()):
+            stats = scan[tile_id]
+            window = windows.Window(
+                col_off=stats["col"] * size,
+                row_off=stats["row"] * size,
+                width=size,
+                height=size,
+            )
+            image = src.read((1, 2, 3), window=window, boundless=True, fill_value=0)
+            mask_crop = array_window(mask, window, fill=MASK_OUTSIDE)
+            patch_transform = windows.transform(window, transform)
+
+            _write(out_dir / split / "images" / f"{tile_id}.tif", image, patch_transform, crs, 0)
+            _write(
+                out_dir / split / "masks" / f"{tile_id}_mask.tif",
+                mask_crop[None, ...],
+                patch_transform,
+                crs,
+                MASK_RASTER_NODATA,
+            )
+            counts[split] += 1
+    return counts
+
+
 def split_crowns(crowns, n_train, n_val, n_test, mode="spatial", seed=0):
     """Assign crown fids to train/val/test.
 

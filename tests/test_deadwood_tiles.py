@@ -2,6 +2,8 @@ import os
 import sys
 
 import numpy as np
+import rasterio
+from rasterio.transform import from_origin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -10,8 +12,9 @@ from explore_and_process.deadwood_patches import (
     scan_tiles,
     tile_kind,
     tile_stats,
+    write_tiles,
 )
-from utils.nodata import MASK_OUTSIDE, MASK_UNLABELLED
+from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
 
 
 def _crop(labelled=0, negatives=0, outside=0, size=10):
@@ -78,3 +81,62 @@ def test_scan_ids_are_zero_padded_so_they_sort_in_grid_order():
     mask = np.full((110, 110), MASK_UNLABELLED, dtype=np.float32)
     scan = scan_tiles(mask, size=10)
     assert sorted(scan)[:2] == ["00_00", "00_01"]
+
+
+def _scene(tmp_path, size=20):
+    """A tiny uint8 RGB scene on disk plus a matching mask in memory."""
+    transform = from_origin(0, size, 1, 1)
+    image = np.full((3, size, size), 7, dtype=np.uint8)
+    path = tmp_path / "scene.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=size, width=size, count=3,
+        dtype="uint8", crs="EPSG:32736", transform=transform, nodata=0,
+    ) as dst:
+        dst.write(image)
+    mask = np.full((size, size), MASK_UNLABELLED, dtype=np.float32)
+    mask[:5, :5] = 1.0
+    mask[15:, 15:] = 0.0
+    return path, mask, transform
+
+
+def test_write_tiles_writes_a_patch_pair_per_kept_tile(tmp_path):
+    path, mask, transform = _scene(tmp_path)
+    scan = scan_tiles(mask, size=10)
+    splits = {"0_0": "train", "1_1": "val"}
+    counts = write_tiles(path, mask, transform, "EPSG:32736", scan, splits, tmp_path / "out", 10)
+
+    assert counts == {"train": 1, "val": 1, "test": 0}
+    assert (tmp_path / "out" / "train" / "images" / "0_0.tif").exists()
+    assert (tmp_path / "out" / "train" / "masks" / "0_0_mask.tif").exists()
+    # Tiles not in `splits` were dropped by the filters and must not be written.
+    assert not (tmp_path / "out" / "train" / "images" / "0_1.tif").exists()
+
+
+def test_written_mask_keeps_its_sentinels_and_georeference(tmp_path):
+    path, mask, transform = _scene(tmp_path)
+    scan = scan_tiles(mask, size=10)
+    write_tiles(path, mask, transform, "EPSG:32736", scan, {"0_0": "train"}, tmp_path / "out", 10)
+
+    with rasterio.open(tmp_path / "out" / "train" / "masks" / "0_0_mask.tif") as src:
+        written = src.read(1)
+        assert src.nodata == MASK_RASTER_NODATA
+        assert src.transform == transform
+    assert (written[:5, :5] == 1.0).all()
+    assert (written[5:, 5:] == MASK_UNLABELLED).all()
+
+
+def test_edge_tiles_are_padded_to_full_size(tmp_path):
+    # A 25 px scene at size 10 leaves a 5 px overhang. The patch must still be
+    # 10x10, padded with MASK_OUTSIDE on the mask side and 0 on the image side.
+    path, mask, transform = _scene(tmp_path, size=25)
+    scan = scan_tiles(mask, size=10)
+    write_tiles(path, mask, transform, "EPSG:32736", scan, {"2_2": "test"}, tmp_path / "out", 10)
+
+    with rasterio.open(tmp_path / "out" / "test" / "masks" / "2_2_mask.tif") as src:
+        written = src.read(1)
+    with rasterio.open(tmp_path / "out" / "test" / "images" / "2_2.tif") as src:
+        image = src.read()
+    assert written.shape == (10, 10)
+    assert image.shape == (3, 10, 10)
+    assert (written[5:, :] == MASK_OUTSIDE).all()
+    assert (image[:, 5:, :] == 0).all()
