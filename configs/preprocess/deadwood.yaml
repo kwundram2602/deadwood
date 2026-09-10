@@ -6,50 +6,54 @@
 #       --config configs/preprocess/deadwood.yaml --working_dir .
 
 deadwood_preprocess:
-  # Scene → uint8 RGB. These four blocks are passed verbatim to
+  # Scene → uint8 RGB. These three blocks are passed verbatim to
   # raw_predict_deadwood.prepare_rgb8, so the training pixels are byte-identical
-  # to the ones the baseline was measured on.
+  # to the ones the baseline was measured on. The whole scene is prepared: the
+  # tile filter drops what carries no label, which is the same job a clip did
+  # worse.
   source:
     path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
     bands: [1, 2, 3]
-  clip:
-    vector: datafiles/crown_poly/soff_altered.gpkg
-    buffer: 20.0
   target_gsd: 0.05        # the model's own minimum inference resolution
   scale:
     mode: linear
     source_max: 65535
 
   labels:
-    path: datafiles/crown_poly/soff_altered.gpkg
+    deadwood_path: datafiles/crown_poly/soff_altered.gpkg
+    background_path: datafiles/crown_poly/background_not_deadwood_digital.gpkg
     # fid 21 is 0.018 m2 (8x8 px) — below min_polygon_area: 0.1, so no
     # prediction that size survives vectorisation and it can never be hit.
     exclude_fids: [21]
 
-  split:
-    mode: spatial         # spatial | random
-    train: 19
-    val: 6
-    test: 6
-    seed: 0
-
   mask:
-    # sigma/nodata_threshold match the crown pipeline: a soft crown edge with a
-    # falloff out to roughly 1.64*sigma ≈ 6.6 px ≈ 33 cm.
-    sigma: 4.0
-    nodata_threshold: 0.05
-    # Hard background. The blur alone produces NO pixel labelled 0.0 — beyond
-    # 4*sigma the Gaussian is exactly zero, which falls under nodata_threshold
-    # and becomes unlabelled. Unlabelled pixels within this distance of a crown
-    # are set to 0.0 instead; everything beyond stays unlabelled, because with
-    # sparse labels "no polygon here" is not evidence of no deadwood.
-    # 2 m gives roughly a 30 m2 annulus per median crown: ~12k negatives
-    # against ~1.2k positives.
-    negative_buffer_m: 2.0
+    # Asymmetric on purpose. Blurring conserves burned area, so a wide sigma
+    # flattens small polygons: at 50 cm a 0.32 m2 crown peaks at 0.18. The
+    # smallest kept crowns are 0.32 and 0.48 m2, which caps sigma_pos near 4 px.
+    # Background polygons have a median area of 21.5 m2 and absorb 10 px
+    # harmlessly — and the wider blur is what guarantees an unlabelled band
+    # between the classes even where they are drawn edge to edge.
+    sigma_pos: 4.0        # 20 cm at 0.05 m GSD
+    sigma_neg: 10.0       # 50 cm
+    # Positives are kept out to 35 cm past the drawn edge; negatives start 65 cm
+    # inside their own. Band between two polygons = separation + 30 cm.
+    pos_threshold: 0.05
+    neg_threshold: 0.9
 
-  patches:
-    crop_size: 1024       # the model's native tile size; 1.74 GiB at batch 2
-    n_jitter: 1           # >1 adds jittered replicates of each crown
-    jitter_px: 128
+  tiling:
+    size: 512             # 25.6 m. Inference still runs at the native 1024.
+    # Two independent filters. min_labelled_px is about a label being present
+    # and deliberately does not require positives — background-only tiles are
+    # the false-positive-suppression signal. max_outside_frac is about the
+    # imagery being present.
+    min_labelled_px: 500
+    max_outside_frac: 0.5
+
+  split:
+    train: 0.6
+    val: 0.2
+    test: 0.2
+    stratify: true        # deal each tile kind separately
+    seed: 0
 
   out_dir: out/deadwood_patches

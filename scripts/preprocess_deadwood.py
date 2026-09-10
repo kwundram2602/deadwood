@@ -1,13 +1,12 @@
-"""Cut crown-centred training patches for deadwood fine-tuning.
+"""Cut training tiles for deadwood fine-tuning from a whole-scene two-class mask.
 
 Runs separately from the crown preprocessing pipeline: it reuses functions from
 it but shares no config and no execution path.
 
-Each split gets its own label mask, carrying only that split's crowns. A
-validation crown falling inside a training crop is therefore MASK_UNLABELLED
-there and contributes nothing to the loss. That is the leakage guarantee — with
-crowns 7-12 m apart and a 51 m crop, spatially disjoint crops do not exist on
-this site.
+One mask covers the scene, carrying deadwood crowns as soft positives and the
+digitised background layer as hard negatives, with an unlabelled band between
+them. It is cut on a disjoint grid, so tiles share no ground and the split can
+be assigned per tile — no per-split masks, and no leakage to guard against.
 
 Usage:
     uv run python scripts/preprocess_deadwood.py \\
@@ -18,9 +17,11 @@ import argparse
 import json
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import rasterio
 from omegaconf import DictConfig, OmegaConf
 
@@ -28,12 +29,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from explore_and_process.deadwood_patches import (  # noqa: E402
     SPLIT_NAMES,
-    cut_split,
-    ring_negatives,
-    split_crowns,
+    assign_splits,
+    deadwood_scene_mask,
+    keep_tile,
+    scan_tiles,
+    tile_footprints,
+    tile_kind,
+    write_tiles,
 )
-from explore_and_process.rasterize_crowns import soft_mask_from_geoms  # noqa: E402
 from scripts.raw_predict_deadwood import prepare_rgb8  # noqa: E402
+from utils.nodata import MASK_RASTER_NODATA  # noqa: E402
 
 
 def _git_rev(root: Path) -> str:
@@ -45,84 +50,144 @@ def _git_rev(root: Path) -> str:
         return "unknown"
 
 
+def _write_scene_mask(path: Path, mask, transform, crs) -> None:
+    """The whole-scene mask as a GeoTIFF, for checking the labels in QGIS.
+
+    MASK_OUTSIDE is declared as the GDAL noData value so a GIS renders the
+    off-footprint region transparent rather than as a dark band.
+    """
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=mask.shape[0],
+        width=mask.shape[1],
+        count=1,
+        dtype="float32",
+        crs=crs,
+        transform=transform,
+        nodata=MASK_RASTER_NODATA,
+        compress="deflate",
+        tiled=True,
+    ) as dst:
+        dst.write(mask[None, ...])
+    print(f"  wrote {path}")
+
+
 def run(cfg, root: Path) -> Path:
     out_dir = (root / str(cfg.out_dir)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("Preparing model input")
     stem = Path(str(cfg.source.path)).stem
-    # prepare_rgb8 opens these paths directly, so resolve them against
+    # prepare_rgb8 opens this path directly, so resolve it against
     # --working_dir rather than relying on the process cwd.
     cfg.source.path = str((root / str(cfg.source.path)).resolve())
-    if cfg.get("clip", None) and cfg.clip.get("vector", None):
-        cfg.clip.vector = str((root / str(cfg.clip.vector)).resolve())
     rgb8_path = prepare_rgb8(cfg, out_dir / f"{stem}_rgb8.tif")
 
-    crowns = gpd.read_file(root / str(cfg.labels.path), fid_as_index=True)
-    excluded = [int(f) for f in cfg.labels.get("exclude_fids", [])]
-    crowns = crowns.drop(index=[f for f in excluded if f in crowns.index])
     with rasterio.open(rgb8_path) as src:
-        crowns = crowns.to_crs(src.crs)
         h, w, transform, crs = src.height, src.width, src.transform, src.crs
-    print(f"{len(crowns)} crowns (excluded {excluded})")
+        # prepare_rgb8 maps valid data onto [1, 255] and reserves 0 for noData,
+        # so an all-bands-positive test is the footprint, no heuristics needed.
+        footprint = np.all(src.read((1, 2, 3)) > 0, axis=0)
+    print(f"Scene {w}x{h} px, footprint {footprint.mean():.1%}")
+
+    crowns = gpd.read_file(root / str(cfg.labels.deadwood_path), fid_as_index=True)
+    excluded = [int(f) for f in cfg.labels.get("exclude_fids", [])]
+    crowns = crowns.drop(index=[f for f in excluded if f in crowns.index]).to_crs(crs)
+    background = gpd.read_file(root / str(cfg.labels.background_path)).to_crs(crs)
+    print(f"{len(crowns)} crowns (excluded {excluded}), {len(background)} background polygons")
+
+    mask = deadwood_scene_mask(
+        crowns.geometry,
+        background.geometry,
+        h,
+        w,
+        transform,
+        sigma_pos=float(cfg.mask.sigma_pos),
+        sigma_neg=float(cfg.mask.sigma_neg),
+        pos_threshold=float(cfg.mask.pos_threshold),
+        neg_threshold=float(cfg.mask.neg_threshold),
+        footprint=footprint,
+    )
+    n_pos = int(((mask > 0.0) & (mask <= 1.0)).sum())
+    n_neg = int((mask == 0.0).sum())
+    print(f"Mask: positives {n_pos:,}  negatives {n_neg:,}")
+    _write_scene_mask(out_dir / "deadwood_mask_scene.tif", mask, transform, crs)
+
+    size = int(cfg.tiling.size)
+    scan = scan_tiles(mask, size)
+    kept = {
+        tile_id: tile_kind(stats)
+        for tile_id, stats in scan.items()
+        if tile_kind(stats) != "empty"
+        and keep_tile(
+            stats,
+            int(cfg.tiling.min_labelled_px),
+            float(cfg.tiling.max_outside_frac),
+        )
+    }
+    dropped = Counter(
+        tile_kind(stats) for tile_id, stats in scan.items() if tile_id not in kept
+    )
+    print(f"\nTiles: {len(scan)} in the grid, {len(kept)} kept")
+    print(f"  kept by kind    : {dict(Counter(kept.values()))}")
+    print(f"  dropped by kind : {dict(dropped)}")
 
     sp = cfg.split
-    splits = split_crowns(
-        crowns,
-        int(sp.train),
-        int(sp.val),
-        int(sp.test),
-        mode=str(sp.mode),
+    splits = assign_splits(
+        kept,
+        {name: float(sp[name]) for name in SPLIT_NAMES},
         seed=int(sp.get("seed", 0)),
+        stratify=bool(sp.get("stratify", True)),
     )
-
-    counts = {}
+    counts = write_tiles(rgb8_path, mask, transform, crs, scan, splits, out_dir, size)
     for name in SPLIT_NAMES:
-        fids = splits[name]
-        subset = crowns.loc[fids]
-        print(f"\n{name}: {len(fids)} crowns {fids}")
-        # Only this split's crowns are burned, so crowns from the other splits
-        # stay MASK_UNLABELLED even where a crop overlaps them.
-        mask = soft_mask_from_geoms(
-            subset.geometry,
-            h,
-            w,
-            transform,
-            float(cfg.mask.sigma),
-            float(cfg.mask.nodata_threshold),
-        )
-        mask = ring_negatives(mask, subset.geometry, transform, float(cfg.mask.negative_buffer_m))
-        n_pos = int(((mask > 0.0) & (mask <= 1.0)).sum())
-        n_neg = int((mask == 0.0).sum())
-        print(f"  positives {n_pos:,}  hard negatives {n_neg:,}")
-        counts[name] = cut_split(
-            rgb8_path,
-            mask,
-            transform,
-            crs,
-            subset,
-            out_dir / name,
-            crop_size=int(cfg.patches.crop_size),
-            n_jitter=int(cfg.patches.get("n_jitter", 1)),
-            jitter_px=int(cfg.patches.get("jitter_px", 0)),
-            seed=int(sp.get("seed", 0)),
-        )
-        print(f"  wrote {counts[name]} patches -> {out_dir / name}")
+        by_kind = Counter(kept[t] for t, s in splits.items() if s == name)
+        print(f"  {name:5s}: {counts[name]:3d} tiles  {dict(by_kind)}")
+
+    tile_footprints(scan, splits, transform, crs, size).to_file(
+        out_dir / "tiles.gpkg", driver="GPKG"
+    )
+    print(f"Wrote {out_dir / 'tiles.gpkg'}")
 
     meta = {
         "scene": str(cfg.source.path),
         "target_gsd": float(cfg.target_gsd),
         "scale": OmegaConf.to_container(cfg.scale),
-        "labels": str(cfg.labels.path),
-        "exclude_fids": excluded,
-        "split_mode": str(sp.mode),
-        "splits": splits,
-        "patch_counts": counts,
-        "crop_size": int(cfg.patches.crop_size),
+        "labels": {
+            "deadwood_path": str(cfg.labels.deadwood_path),
+            "background_path": str(cfg.labels.background_path),
+            "exclude_fids": excluded,
+        },
         "mask": {
-            "sigma": float(cfg.mask.sigma),
-            "nodata_threshold": float(cfg.mask.nodata_threshold),
-            "negative_buffer_m": float(cfg.mask.negative_buffer_m),
+            "sigma_pos": float(cfg.mask.sigma_pos),
+            "sigma_neg": float(cfg.mask.sigma_neg),
+            "pos_threshold": float(cfg.mask.pos_threshold),
+            "neg_threshold": float(cfg.mask.neg_threshold),
+            "positive_px": n_pos,
+            "negative_px": n_neg,
+        },
+        "tiling": {
+            "size": size,
+            "min_labelled_px": int(cfg.tiling.min_labelled_px),
+            "max_outside_frac": float(cfg.tiling.max_outside_frac),
+            "grid_tiles": len(scan),
+            "kept_tiles": len(kept),
+            "dropped_by_kind": dict(dropped),
+        },
+        "split": {
+            "fractions": {name: float(sp[name]) for name in SPLIT_NAMES},
+            "seed": int(sp.get("seed", 0)),
+            "stratify": bool(sp.get("stratify", True)),
+            "counts": counts,
+            "by_kind": {
+                name: dict(Counter(kept[t] for t, s in splits.items() if s == name))
+                for name in SPLIT_NAMES
+            },
+            "tiles": {
+                name: sorted(t for t, s in splits.items() if s == name) for name in SPLIT_NAMES
+            },
         },
         "git_rev": _git_rev(root),
     }
