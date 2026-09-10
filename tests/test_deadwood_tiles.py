@@ -167,5 +167,11 @@ def test_tile_footprint_geometry_matches_the_tile_window(tmp_path):
     gdf = tile_footprints(scan, {}, transform, "EPSG:32736", 10)
 
     assert gdf.crs.to_string() == "EPSG:32736"
+    bounds = gdf.set_index("tile_id").geometry.bounds
     # Scene origin is (0, 20) with 1 m pixels, so tile 0_0 spans x 0..10, y 10..20.
-    assert gdf.set_index("tile_id").loc["0_0"].geometry.bounds == (0.0, 10.0, 10.0, 20.0)
+    assert tuple(bounds.loc["0_0"]) == (0.0, 10.0, 10.0, 20.0)
+    # 0_0 alone cannot catch a row/col transpose — its row and col are both 0, so
+    # swapped offsets land on the same square. These two are mirror images, so a
+    # transpose swaps them and both assertions fail.
+    assert tuple(bounds.loc["0_1"]) == (10.0, 10.0, 20.0, 20.0)
+    assert tuple(bounds.loc["1_0"]) == (0.0, 0.0, 10.0, 10.0)
