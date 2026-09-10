@@ -17,8 +17,8 @@ dataset:
   num_workers: 2               # safe here — patches are per-file reads, not a
                                # shared whole-scene GDAL handle
 
-# head | decoder — how much of the model adapts. 19 training crowns against
-# 84.7 M params, so decoder+head (3.3 M) is already generous.
+# head | decoder — how much of the model adapts. 28 training tiles drawn from
+# 35 crowns against 84.7 M params, so decoder+head (3.3 M) is already generous.
 stage: decoder
 
 transfer:

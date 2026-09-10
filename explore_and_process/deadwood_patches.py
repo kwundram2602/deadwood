@@ -241,7 +241,7 @@ def tile_footprints(scan, splits, transform, crs, size):
 def array_window(arr, window, fill):
     """Boundless slice of an in-memory 2D array, padded with ``fill``.
 
-    rasterio does this for datasets; the split masks live in RAM, so crops that
+    rasterio does this for datasets; the scene mask lives in RAM, so crops that
     run off the scene edge need the same treatment here.
     """
     out = np.full((int(window.height), int(window.width)), fill, dtype=arr.dtype)
