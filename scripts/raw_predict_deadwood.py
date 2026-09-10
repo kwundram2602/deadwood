@@ -31,7 +31,7 @@ Usage:
         --working_dir .
 
 CLI flags override config values when provided:
-    --source --weights --clip --threshold --batch_size --out_dir
+    --source --weights --threshold --batch_size --out_dir
 """
 
 import argparse
@@ -60,13 +60,6 @@ _NODATA_MASK = 255
 
 
 # ── input preparation ───────────────────────────────────────────────────────
-
-
-def _clip_bounds(vector: str | Path, buffer: float, crs) -> tuple[float, ...]:
-    """Total bounds of a vector layer, buffered, in the raster's CRS."""
-    gdf = gpd.read_file(vector).to_crs(crs)
-    minx, miny, maxx, maxy = gdf.total_bounds
-    return (minx - buffer, miny - buffer, maxx + buffer, maxy + buffer)
 
 
 def _scale_to_uint8(data: np.ndarray, valid: np.ndarray, cfg) -> np.ndarray:
@@ -102,10 +95,6 @@ def prepare_rgb8(cfg, out_path: Path) -> Path:
 
     with rasterio.open(src_cfg.path) as src:
         window = windows.Window(col_off=0, row_off=0, width=src.width, height=src.height)
-        if cfg.get("clip", None) and cfg.clip.get("vector", None):
-            bounds = _clip_bounds(cfg.clip.vector, float(cfg.clip.get("buffer", 0.0)), src.crs)
-            window = windows.from_bounds(*bounds, transform=src.transform)
-            window = window.round_offsets().round_lengths()
 
         src_gsd = abs(src.transform.a)
         gsd = float(cfg.get("target_gsd", src_gsd))
@@ -357,7 +346,6 @@ def main() -> None:
     parser.add_argument("--working_dir", default=".")
     parser.add_argument("--source", help="override source.path")
     parser.add_argument("--weights", help="override weights")
-    parser.add_argument("--clip", help="override clip.vector")
     parser.add_argument("--threshold", type=float, help="override threshold")
     parser.add_argument("--batch_size", type=int, help="override batch_size")
     parser.add_argument("--out_dir", help="override out_dir")
@@ -372,8 +360,6 @@ def main() -> None:
         cfg.source.path = args.source
     if args.weights:
         cfg.weights = args.weights
-    if args.clip:
-        cfg.clip = OmegaConf.merge(cfg.get("clip", OmegaConf.create({})), {"vector": args.clip})
     if args.threshold is not None:
         cfg.threshold = args.threshold
     if args.batch_size is not None:

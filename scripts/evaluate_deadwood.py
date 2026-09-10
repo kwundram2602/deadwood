@@ -80,7 +80,10 @@ def main() -> None:
     out_dir = (root / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     weights = (root / (args.weights or str(cfg.weights))).resolve()
-    crowns_path = root / (args.crowns or str(cfg.clip.vector))
+    # Its own key, not the clip extent it used to borrow: an extent to predict
+    # over and a label set to score against are unrelated things that merely
+    # happened to be the same file.
+    crowns_path = root / (args.crowns or str(cfg.labels.deadwood_path))
     cache = (root / args.probs).resolve() if args.probs else None
 
     probs, transform, crs = _probability_raster(cfg, out_dir, weights, cache)

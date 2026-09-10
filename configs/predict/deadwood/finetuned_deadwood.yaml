@@ -1,0 +1,40 @@
+# Deadwood prediction with a FINE-TUNED checkpoint from scripts/finetune_deadwood.py.
+#
+# Identical to raw_deadwood.yaml except for `weights` and `out_dir` — the input
+# contract (uint8 RGB, ImageNet normalisation, 0.05 m, 1024 px tiles) belongs to
+# the architecture, not to the checkpoint, so it must not drift between the two.
+# Keeping them in step is what makes raw-vs-fine-tuned a like-for-like comparison.
+#
+# Usage:
+#   uv run python scripts/raw_predict_deadwood.py \
+#       --config configs/predict/finetuned_deadwood.yaml --working_dir .
+
+raw_deadwood:
+  # A .pt state dict written by training/trainer.py. load_model accepts both
+  # .pt and .safetensors and loads strictly either way.
+  weights: experiments/deadwood_ft__decoder__bce1/tl_best.pt
+
+  source:
+    path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
+    bands: [1, 2, 3]
+
+  labels:
+    deadwood_path: datafiles/crown_poly/soff_altered.gpkg
+
+  target_gsd: 0.05
+
+  scale:
+    mode: linear
+    source_max: 65535
+    percentiles: [2, 98]
+
+  tile_size: 1024
+  padding: 256
+  batch_size: 2
+
+  threshold: 0.5
+  min_polygon_area: 0.1   # m2
+
+  out_dir: out/predict_deadwood_finetuned
+  save_input: true
+  save_mask: true
