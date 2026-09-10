@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from explore_and_process.deadwood_patches import (
     keep_tile,
     scan_tiles,
+    tile_footprints,
     tile_kind,
     tile_stats,
     write_tiles,
@@ -140,3 +141,31 @@ def test_edge_tiles_are_padded_to_full_size(tmp_path):
     assert image.shape == (3, 10, 10)
     assert (written[5:, :] == MASK_OUTSIDE).all()
     assert (image[:, 5:, :] == 0).all()
+
+
+def test_tile_footprints_labels_every_tile_including_dropped_ones(tmp_path):
+    # The point of the layer is answering "why is there no patch here?" in QGIS,
+    # so dropped tiles must appear too, with the numbers that dropped them.
+    _, mask, transform = _scene(tmp_path)
+    scan = scan_tiles(mask, size=10)
+    gdf = tile_footprints(scan, {"0_0": "train"}, transform, "EPSG:32736", 10)
+
+    assert len(gdf) == len(scan)
+    assert set(gdf.columns) == {
+        "tile_id", "split", "kind", "labelled_px", "outside_frac", "geometry"
+    }
+    row = gdf.set_index("tile_id").loc["0_0"]
+    assert row["split"] == "train"
+    assert row["kind"] == "pos"
+    assert row["labelled_px"] == 25
+    assert gdf.set_index("tile_id").loc["0_1"]["split"] == "dropped"
+
+
+def test_tile_footprint_geometry_matches_the_tile_window(tmp_path):
+    _, mask, transform = _scene(tmp_path)
+    scan = scan_tiles(mask, size=10)
+    gdf = tile_footprints(scan, {}, transform, "EPSG:32736", 10)
+
+    assert gdf.crs.to_string() == "EPSG:32736"
+    # Scene origin is (0, 20) with 1 m pixels, so tile 0_0 spans x 0..10, y 10..20.
+    assert gdf.set_index("tile_id").loc["0_0"].geometry.bounds == (0.0, 10.0, 10.0, 20.0)

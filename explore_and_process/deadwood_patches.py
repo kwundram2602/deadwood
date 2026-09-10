@@ -8,11 +8,13 @@ all. Crops are centred on crowns instead, one per crown.
 import math
 from collections import defaultdict
 
+import geopandas as gpd
 import numpy as np
 import rasterio
 from rasterio import features, windows
 from rasterio.transform import rowcol
 from scipy.ndimage import gaussian_filter
+from shapely.geometry import box
 
 from explore_and_process.rasterize_crowns import rasterize_binary
 from utils.nodata import (
@@ -204,6 +206,32 @@ def write_tiles(rgb_path, mask, transform, crs, scan, splits, out_dir, size):
             )
             counts[split] += 1
     return counts
+
+
+def tile_footprints(scan, splits, transform, crs, size):
+    """Every grid tile as a polygon, carrying its split, kind and filter numbers.
+
+    Written next to the patches so the split and the drop decisions can be read
+    off the map in QGIS instead of inferred from console output. Dropped tiles
+    are included on purpose — "why is there no patch here" is the question this
+    layer exists to answer.
+    """
+    rows = []
+    for tile_id, stats in sorted(scan.items()):
+        window = windows.Window(
+            col_off=stats["col"] * size, row_off=stats["row"] * size, width=size, height=size
+        )
+        rows.append(
+            {
+                "tile_id": tile_id,
+                "split": splits.get(tile_id, "dropped"),
+                "kind": tile_kind(stats),
+                "labelled_px": stats["labelled_px"],
+                "outside_frac": round(stats["outside_frac"], 4),
+                "geometry": box(*windows.bounds(window, transform)),
+            }
+        )
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=crs)
 
 
 def split_crowns(crowns, n_train, n_val, n_test, mode="spatial", seed=0):
