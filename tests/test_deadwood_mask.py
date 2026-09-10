@@ -18,9 +18,19 @@ KW = dict(sigma_pos=1.0, sigma_neg=4.0, pos_threshold=0.05, neg_threshold=0.9)
 def test_positives_win_where_the_classes_overlap():
     # Same polygon in both layers. Application order is the contract: negatives
     # are laid down first and positives overwrite them, never the reverse.
-    crown = box(10, 80, 20, 90)
-    mask = deadwood_scene_mask([crown], [crown], 100, 100, TRANSFORM, **KW)
-    assert mask[15, 15] == 1.0
+    #
+    # The polygon must be big enough that the blurred negative actually clears
+    # neg_threshold inside it. A 10x10 one does not (it peaks at 0.62), which
+    # makes the assertion true under either order and the test worthless.
+    overlap = box(10, 50, 60, 90)
+    mask = deadwood_scene_mask([overlap], [overlap], 100, 100, TRANSFORM, **KW)
+    assert mask[30, 35] == 1.0
+
+    # Control: without the crown the same pixel is hard background, so the
+    # assertion above really is the positive winning a contested pixel rather
+    # than the negative quietly failing to reach its threshold.
+    negative_only = deadwood_scene_mask([], [overlap], 100, 100, TRANSFORM, **KW)
+    assert negative_only[30, 35] == 0.0
 
 
 def test_background_core_is_zero_but_its_border_is_unlabelled():
