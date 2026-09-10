@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -8,6 +9,7 @@ from rasterio.transform import from_origin
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from explore_and_process.deadwood_patches import (
+    SPLIT_NAMES,
     keep_tile,
     scan_tiles,
     tile_footprints,
@@ -44,7 +46,7 @@ def test_unlabelled_pixels_are_not_counted_as_outside():
     assert stats["labelled_px"] == 1
 
 
-def test_tile_kind_distinguishes_the_three_useful_cases():
+def test_tile_kind_distinguishes_all_four_cases():
     assert tile_kind(tile_stats(_crop(labelled=4, negatives=6))) == "both"
     assert tile_kind(tile_stats(_crop(labelled=4))) == "pos"
     assert tile_kind(tile_stats(_crop(negatives=6))) == "neg"
@@ -159,6 +161,25 @@ def test_tile_footprints_labels_every_tile_including_dropped_ones(tmp_path):
     assert row["kind"] == "pos"
     assert row["labelled_px"] == 25
     assert gdf.set_index("tile_id").loc["0_1"]["split"] == "dropped"
+
+
+def test_rerun_clears_stale_split_directories(tmp_path):
+    # Regression guard: a re-run with a different seed/threshold moves a tile
+    # to another split. Without clearing the split directories first, the old
+    # copy is left behind — the same ground in two splits at once.
+    for name in SPLIT_NAMES:
+        stale = tmp_path / name / "images" / "stale.tif"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("stale")
+    sibling = tmp_path / "deadwood_mask_scene.tif"
+    sibling.write_text("keep me")
+
+    for name in SPLIT_NAMES:
+        shutil.rmtree(tmp_path / name, ignore_errors=True)
+
+    for name in SPLIT_NAMES:
+        assert not (tmp_path / name / "images" / "stale.tif").exists()
+    assert sibling.exists()
 
 
 def test_tile_footprint_geometry_matches_the_tile_window(tmp_path):

@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from collections import Counter
@@ -77,12 +78,19 @@ def _write_scene_mask(path: Path, mask, transform, crs) -> None:
 def run(cfg, root: Path) -> Path:
     out_dir = (root / str(cfg.out_dir)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Tile ids are grid positions and so are stable across runs. Without this,
+    # a re-run with a different seed or filter threshold moves a tile to
+    # another split and leaves the previous copy behind — the same ground in
+    # two splits at once, which nothing downstream would notice.
+    for name in SPLIT_NAMES:
+        shutil.rmtree(out_dir / name, ignore_errors=True)
 
     print("Preparing model input")
     stem = Path(str(cfg.source.path)).stem
+    scene_rel = str(cfg.source.path)
     # prepare_rgb8 opens this path directly, so resolve it against
     # --working_dir rather than relying on the process cwd.
-    cfg.source.path = str((root / str(cfg.source.path)).resolve())
+    cfg.source.path = str((root / scene_rel).resolve())
     rgb8_path = prepare_rgb8(cfg, out_dir / f"{stem}_rgb8.tif")
 
     with rasterio.open(rgb8_path) as src:
@@ -117,22 +125,23 @@ def run(cfg, root: Path) -> Path:
 
     size = int(cfg.tiling.size)
     scan = scan_tiles(mask, size)
+    kinds = {tile_id: tile_kind(stats) for tile_id, stats in scan.items()}
     kept = {
-        tile_id: tile_kind(stats)
+        tile_id: kinds[tile_id]
         for tile_id, stats in scan.items()
-        if tile_kind(stats) != "empty"
+        if kinds[tile_id] != "empty"
         and keep_tile(
             stats,
             int(cfg.tiling.min_labelled_px),
             float(cfg.tiling.max_outside_frac),
         )
     }
-    dropped = Counter(
-        tile_kind(stats) for tile_id, stats in scan.items() if tile_id not in kept
-    )
+    dropped = Counter(kinds[tile_id] for tile_id in scan if tile_id not in kept)
+    n_empty = dropped.pop("empty", 0)
     print(f"\nTiles: {len(scan)} in the grid, {len(kept)} kept")
-    print(f"  kept by kind    : {dict(Counter(kept.values()))}")
-    print(f"  dropped by kind : {dict(dropped)}")
+    print(f"  kept by kind      : {dict(Counter(kept.values()))}")
+    print(f"  dropped by filter : {dict(dropped)}")
+    print(f"  no polygon at all : {n_empty}")
 
     sp = cfg.split
     splits = assign_splits(
@@ -152,7 +161,7 @@ def run(cfg, root: Path) -> Path:
     print(f"Wrote {out_dir / 'tiles.gpkg'}")
 
     meta = {
-        "scene": str(cfg.source.path),
+        "scene": scene_rel,
         "target_gsd": float(cfg.target_gsd),
         "scale": OmegaConf.to_container(cfg.scale),
         "labels": {

@@ -3,11 +3,11 @@ import sys
 
 import numpy as np
 from rasterio.transform import from_origin
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from explore_and_process.rasterize_crowns import soft_mask_from_geoms
+from explore_and_process.rasterize_crowns import rasterize_binary, soft_mask_from_geoms
 from utils.nodata import MASK_OUTSIDE, MASK_UNLABELLED
 
 TRANSFORM = from_origin(0, 20, 1, 1)
@@ -80,3 +80,16 @@ def test_lower_nodata_threshold_labels_more_pixels():
         return int(((mask >= 0.0) & (mask <= 1.0)).sum())
 
     assert n_labelled(0.01) > n_labelled(0.05) > n_labelled(0.5)
+
+
+def test_invalid_geometry_is_skipped_with_a_warning(capsys):
+    # Confirmed: shapely does call this bowtie invalid.
+    bowtie = Polygon([(0, 0), (2, 2), (2, 0), (0, 2)])
+    assert not bowtie.is_valid
+    valid = box(5, 5, 15, 15)
+
+    binary = rasterize_binary([bowtie, valid], 20, 20, TRANSFORM)
+
+    assert binary[10, 10] == 1.0
+    captured = capsys.readouterr()
+    assert "skipped 1 null/invalid geometry" in captured.out

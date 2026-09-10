@@ -122,7 +122,11 @@ def rasterize_binary(geoms, h, w, transform):
     An empty geometry list yields all zeros rather than raising, so a scene with
     only one of the two classes digitised is a valid input.
     """
+    geoms = list(geoms)
     shapes = [(geom, 1.0) for geom in geoms if geom is not None and geom.is_valid]
+    n_skipped = len(geoms) - len(shapes)
+    if n_skipped:
+        print(f"  [WARN] rasterize_binary skipped {n_skipped} null/invalid geometry(ies)")
     if not shapes:
         return np.zeros((h, w), dtype=np.float32)
     return rio_rasterize(shapes, out_shape=(h, w), transform=transform, fill=0.0, dtype="float32")
