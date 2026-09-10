@@ -111,6 +111,23 @@ def write_tif(path, data, transform, crs, nodata=None, descriptions=None):
 # ---------------------------------------------------------------------------
 
 
+def rasterize_binary(geoms, h, w, transform):
+    """Burn geometries into a binary raster: inside = 1.0, background = 0.0.
+
+    Split out of soft_mask_from_geoms because the deadwood mask builds two of
+    these — one per label class — and needs each binary raster as well as its
+    blur: a polygon narrower than its own sigma blurs to a peak below any
+    sensible threshold, and the binary is what keeps it labelled anyway.
+
+    An empty geometry list yields all zeros rather than raising, so a scene with
+    only one of the two classes digitised is a valid input.
+    """
+    shapes = [(geom, 1.0) for geom in geoms if geom is not None and geom.is_valid]
+    if not shapes:
+        return np.zeros((h, w), dtype=np.float32)
+    return rio_rasterize(shapes, out_shape=(h, w), transform=transform, fill=0.0, dtype="float32")
+
+
 def soft_mask_from_geoms(geoms, h, w, transform, sigma, nodata_threshold, footprint=None):
     """Rasterize geometries → Gaussian blur → noData sentinels.
 
@@ -121,9 +138,7 @@ def soft_mask_from_geoms(geoms, h, w, transform, sigma, nodata_threshold, footpr
     one sentinel, "outside the scene" and "unlabelled background" are
     indistinguishable and the model is never told the difference.
     """
-    shapes = [(geom, 1.0) for geom in geoms if geom is not None and geom.is_valid]
-    # Burn polygons into a binary raster: inside = 1.0, background = 0.0
-    binary = rio_rasterize(shapes, out_shape=(h, w), transform=transform, fill=0.0, dtype="float32")
+    binary = rasterize_binary(geoms, h, w, transform)
 
     soft = gaussian_filter(binary, sigma=sigma)
     # Pixels outside all polygons that received no Gaussian bleed-over are
