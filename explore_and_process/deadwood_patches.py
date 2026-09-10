@@ -6,6 +6,7 @@ all. Crops are centred on crowns instead, one per crown.
 """
 
 import math
+from collections import defaultdict
 
 import numpy as np
 import rasterio
@@ -130,6 +131,46 @@ def scan_tiles(mask, size):
             stats["col"] = col
             scan[f"{row:0{pad_r}d}_{col:0{pad_c}d}"] = stats
     return scan
+
+
+def assign_splits(kinds, fractions, seed=0, stratify=True):
+    """Deal tile ids into train/val/test.
+
+    Random rather than spatial: on this site the crowns cluster along one end of
+    the principal axis, so a spatial band cut hands one split almost every crown
+    tile and another almost none. Grid tiles are disjoint on the ground, so the
+    overlap that made a random split unsafe for crown-centred crops is gone.
+
+    ``stratify`` deals each kind separately, so a split cannot come up short of
+    one class by luck. Ids are sorted before shuffling so the result depends on
+    the seed alone, never on dict ordering.
+    """
+    total = sum(float(fractions[name]) for name in SPLIT_NAMES)
+    if abs(total - 1.0) > 1e-9:
+        raise ValueError(
+            f"split fractions must sum to 1.0, got {total} "
+            f"({', '.join(f'{n}={float(fractions[n])}' for n in SPLIT_NAMES)})"
+        )
+
+    rng = np.random.default_rng(seed)
+    groups = defaultdict(list)
+    for tile_id in sorted(kinds):
+        groups[kinds[tile_id] if stratify else "all"].append(tile_id)
+
+    splits = {}
+    for _, tile_ids in sorted(groups.items()):
+        rng.shuffle(tile_ids)
+        n = len(tile_ids)
+        n_train = min(int(round(n * float(fractions["train"]))), n)
+        n_val = min(int(round(n * float(fractions["val"]))), n - n_train)
+        for i, tile_id in enumerate(tile_ids):
+            if i < n_train:
+                splits[tile_id] = "train"
+            elif i < n_train + n_val:
+                splits[tile_id] = "val"
+            else:
+                splits[tile_id] = "test"
+    return splits
 
 
 def split_crowns(crowns, n_train, n_val, n_test, mode="spatial", seed=0):
