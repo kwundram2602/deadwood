@@ -5,6 +5,8 @@ a whole scene, which here would yield ~20 tiles of which most hold no crown at
 all. Crops are centred on crowns instead, one per crown.
 """
 
+import math
+
 import numpy as np
 import rasterio
 from rasterio import features, windows
@@ -12,7 +14,12 @@ from rasterio.transform import rowcol
 from scipy.ndimage import gaussian_filter
 
 from explore_and_process.rasterize_crowns import rasterize_binary
-from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
+from utils.nodata import (
+    MASK_OUTSIDE,
+    MASK_RASTER_NODATA,
+    MASK_UNLABELLED,
+    valid_target,
+)
 
 SPLIT_NAMES = ("train", "val", "test")
 
@@ -60,6 +67,69 @@ def deadwood_scene_mask(
     if footprint is not None:
         mask[~footprint] = MASK_OUTSIDE
     return mask
+
+
+def tile_stats(mask_crop):
+    """Per-tile pixel accounting, keeping the two sentinels apart.
+
+    ``outside_frac`` is about the imagery being absent; ``labelled_px`` is about
+    a label being present. They are separate numbers because they drive separate
+    filters — see keep_tile.
+    """
+    valid = valid_target(mask_crop)
+    return {
+        "outside_frac": float(np.mean(mask_crop == MASK_OUTSIDE)),
+        "labelled_px": int(valid.sum()),
+        "pos_px": int((valid & (mask_crop > 0.0)).sum()),
+        "neg_px": int((mask_crop == 0.0).sum()),
+    }
+
+
+def tile_kind(stats):
+    """Which label classes a tile carries: both, pos, neg, or empty."""
+    if stats["pos_px"] and stats["neg_px"]:
+        return "both"
+    if stats["pos_px"]:
+        return "pos"
+    if stats["neg_px"]:
+        return "neg"
+    return "empty"
+
+
+def keep_tile(stats, min_labelled_px, max_outside_frac):
+    """Two independent filters, never one combined "noData fraction".
+
+    Deliberately does NOT require positives: a tile holding only background is
+    the false-positive-suppression signal, and dropping those is exactly the
+    failure this pipeline was rewritten to fix.
+    """
+    return stats["labelled_px"] >= min_labelled_px and stats["outside_frac"] <= max_outside_frac
+
+
+def scan_tiles(mask, size):
+    """tile id -> stats for every window of a disjoint grid over ``mask``.
+
+    The last row and column overhang the array when the shape is not a multiple
+    of ``size``; array_window pads them with MASK_OUTSIDE so every tile stays
+    exactly size x size. Ids are zero-padded so lexical order is grid order.
+    """
+    h, w = mask.shape
+    n_rows = math.ceil(h / size)
+    n_cols = math.ceil(w / size)
+    pad_r = len(str(n_rows - 1))
+    pad_c = len(str(n_cols - 1))
+
+    scan = {}
+    for row in range(n_rows):
+        for col in range(n_cols):
+            window = windows.Window(
+                col_off=col * size, row_off=row * size, width=size, height=size
+            )
+            stats = tile_stats(array_window(mask, window, fill=MASK_OUTSIDE))
+            stats["row"] = row
+            stats["col"] = col
+            scan[f"{row:0{pad_r}d}_{col:0{pad_c}d}"] = stats
+    return scan
 
 
 def split_crowns(crowns, n_train, n_val, n_test, mode="spatial", seed=0):
