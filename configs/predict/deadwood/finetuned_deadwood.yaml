@@ -7,7 +7,7 @@
 #
 # Usage:
 #   uv run python scripts/raw_predict_deadwood.py \
-#       --config configs/predict/finetuned_deadwood.yaml --working_dir .
+#       --config configs/predict/deadwood/finetuned_deadwood.yaml --working_dir .
 
 raw_deadwood:
   # A .pt state dict written by training/trainer.py. load_model accepts both

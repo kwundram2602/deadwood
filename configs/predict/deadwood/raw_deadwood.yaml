@@ -3,7 +3,7 @@
 #
 # Usage:
 #   uv run python scripts/raw_predict_deadwood.py \
-#       --config configs/predict/raw_deadwood.yaml --working_dir .
+#       --config configs/predict/deadwood/raw_deadwood.yaml --working_dir .
 
 raw_deadwood:
   # Published checkpoint: segformer_b5 encoder in an smp UNet, 3-band RGB in, 1 class out.

@@ -28,7 +28,7 @@ git lfs pull
 
 *Run full pipeline (1 - 2 +  data split)*
 ```
-uv run python scripts/preprocess.py --config ./configs/preprocess.yaml
+uv run python scripts/preprocess.py --config ./configs/preprocess/preprocess.yaml
 ```
 ### Training
 

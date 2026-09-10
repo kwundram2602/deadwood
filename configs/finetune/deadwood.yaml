@@ -11,7 +11,9 @@ weights: datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
 
 dataset:
   path: out/deadwood_patches   # written by scripts/preprocess_deadwood.py
-  batch_size: 2                # 1024 px, decoder+head: 1.74 GiB peak on 4 GB
+  batch_size: 2                # 512 px since the mask rework. decoder+head peaked at
+                               # 1.74 GiB on a 4 GB card back when patches were 1024 px,
+                               # so there is headroom to raise this now — see README.
   num_workers: 2               # safe here — patches are per-file reads, not a
                                # shared whole-scene GDAL handle
 
