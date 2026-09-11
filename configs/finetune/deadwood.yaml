@@ -11,9 +11,14 @@ weights: datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
 
 dataset:
   path: out/deadwood_patches   # written by scripts/preprocess_deadwood.py
-  batch_size: 2                # 512 px since the mask rework. decoder+head peaked at
-                               # 1.74 GiB on a 4 GB card back when patches were 1024 px,
-                               # so there is headroom to raise this now — see README.
+  batch_size: 8                # Patches are 512 px since the mask rework — a quarter
+                               # the pixels of the old 1024 px crops — so 8 here costs
+                               # roughly what 2 did then (~1.74 GiB on a 4 GB card).
+                               # Raised from 2 because most tiles hold only one class
+                               # (21 crown-only, 18 background-only, 7 both): at batch 2
+                               # a step usually sees "everything labelled is deadwood" or
+                               # "everything labelled is not", and the gradient swings
+                               # with it. Lower it again if the card runs out.
   num_workers: 2               # safe here — patches are per-file reads, not a
                                # shared whole-scene GDAL handle
 
