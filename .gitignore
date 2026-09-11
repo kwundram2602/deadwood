@@ -19,6 +19,8 @@ notes/
 .vscode/
 datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
 datafiles/dtms
+**/*.gpkg-shm
+**/*.gpkg-wal
 datafiles/raster
 datafiles/raster_tiles
 datafiles/raster_merged
