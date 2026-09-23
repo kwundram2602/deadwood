@@ -1,10 +1,10 @@
 model_name: crown_rgb_ms
-run_tag: 31_08       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
+run_tag: 23_09       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
 output_dir: experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
-  path: out/crown_fullstack_ms_hr2.0_ht_0.5    # path relative to --working_dir (deadwood/)
+  path: out/crown_patches_fullstack_hr2.5_ht_0.7    # path relative to --working_dir (deadwood/)
   # Model input channels by name, in order. Spectral names come from the
   # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
   # Examples:
@@ -62,8 +62,8 @@ logging:
 
 # Loss function — weighted sum of active terms (weight 0.0 = term disabled)
 loss:
-  bce: 0.2
-  dice: 0.8
+  bce: 0.3
+  dice: 1.0
   dice_squared: false   # true -> squared denominator variant (p^2+t^2)
   iou: 0.0
   mae: 0.0
