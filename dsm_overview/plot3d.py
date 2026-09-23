@@ -173,12 +173,17 @@ def dem_figure(
     geometry=None,
     elev: float = DEFAULT_ELEV,
     azim: float = DEFAULT_AZIM,
+    label: str | None = None,
 ):
     """The four panels for one crown.
 
     `geometry` is the crown polygon in the grid's CRS. It is optional so the
     figure still builds from a bare AOI, but every production call has it and
     without it the panels show a mound with no way to say which tree it is.
+
+    `label` names what the figure shows. It defaults to the crown the AOI was
+    cut for; the scene run passes its own, because an AOI spanning the whole
+    survey is not a tree and must not be captioned as one.
     """
     dsm_full = crop(surfaces.dsm, aoi)
     dsm, step = decimate(dsm_full, max_side)
@@ -281,7 +286,7 @@ def dem_figure(
     ax.tick_params(labelsize=6)
     ax.legend(fontsize=7, loc="upper left")
 
-    fig.suptitle(f"tree {aoi.tree_id} — every {step}th pixel", fontsize=11)
+    fig.suptitle(f"{label or f'tree {aoi.tree_id}'} — every {step}th pixel", fontsize=11)
     fig.tight_layout()
     return fig
 
@@ -295,11 +300,12 @@ def plot_dem_overview(
     geometry=None,
     elev: float = DEFAULT_ELEV,
     azim: float = DEFAULT_AZIM,
+    label: str | None = None,
 ) -> Path:
     """Build the figure for one crown and write it."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig = dem_figure(surfaces, aoi, height_threshold, max_side, geometry, elev, azim)
+    fig = dem_figure(surfaces, aoi, height_threshold, max_side, geometry, elev, azim, label)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("wrote %s", path)

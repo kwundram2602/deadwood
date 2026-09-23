@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from explore_and_process.apply_dsm_mask import (  # noqa: E402
     _smoothstep_confidence,
     apply_soft_blend,
+    preserved_crown,
 )
 
 
@@ -74,6 +75,77 @@ def test_mixed_array():
     assert result[1] == pytest.approx(1.0 - 0.9, abs=1e-6)  # noData resolved
     assert result[2] == pytest.approx(255.0, abs=1e-6)  # noData stays
     assert result[3] == pytest.approx(0.0, abs=1e-6)  # zero stays zero
+
+
+def test_preserved_crown_keeps_full_label_despite_ground_conf():
+    mask = _arr(1.0)
+    conf = _arr(0.9)
+    result = apply_soft_blend(
+        mask, conf, nodata_resolve_threshold=0.7, preserve_crown_threshold=1.0
+    )
+    assert result[0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_preserve_disabled_by_default_dampens_full_label():
+    mask = _arr(1.0)
+    conf = _arr(0.9)
+    result = apply_soft_blend(mask, conf, nodata_resolve_threshold=0.7)
+    assert result[0] == pytest.approx(0.1, abs=1e-6)
+
+
+def test_preserve_leaves_soft_crown_below_threshold_dampened():
+    mask = _arr(0.6)
+    conf = _arr(0.5)
+    result = apply_soft_blend(
+        mask, conf, nodata_resolve_threshold=0.7, preserve_crown_threshold=1.0
+    )
+    assert result[0] == pytest.approx(0.3, abs=1e-6)
+
+
+def test_preserve_threshold_below_one_protects_soft_edge():
+    mask = _arr(0.8, 0.4)
+    conf = _arr(0.9, 0.9)
+    result = apply_soft_blend(
+        mask, conf, nodata_resolve_threshold=0.7, preserve_crown_threshold=0.5
+    )
+    assert result[0] == pytest.approx(0.8, abs=1e-6)  # protected
+    assert result[1] == pytest.approx(0.04, abs=1e-6)  # still dampened
+
+
+def test_preserve_does_not_touch_sentinels():
+    # 255 (unlabelled) and -1 (outside footprint) must never count as crown
+    mask = _arr(255.0, -1.0)
+    conf = _arr(0.2, 0.2)
+    result = apply_soft_blend(
+        mask,
+        conf,
+        nodata_resolve_threshold=0.7,
+        crown_resolve_threshold=0.5,
+        preserve_crown_threshold=1.0,
+    )
+    assert result[0] == pytest.approx(0.8, abs=1e-6)  # resolved to crown
+    assert result[1] == pytest.approx(-1.0, abs=1e-6)  # untouched
+
+
+def test_preserved_crown_excludes_unlabelled_sentinel():
+    mask = _arr(1.0, 0.99, 255.0, -1.0)
+    np.testing.assert_array_equal(
+        preserved_crown(mask, 1.0), [True, False, False, False]
+    )
+
+
+def test_preserved_crown_none_selects_nothing():
+    mask = _arr(1.0, 0.5)
+    assert not preserved_crown(mask, None).any()
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.5, 1.5])
+def test_preserve_threshold_out_of_range_raises(bad):
+    with pytest.raises(ValueError, match="preserve_crown_threshold"):
+        apply_soft_blend(
+            _arr(1.0), _arr(0.5), nodata_resolve_threshold=0.7,
+            preserve_crown_threshold=bad,
+        )
 
 
 def test_smoothstep_below_threshold_is_one():

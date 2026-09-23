@@ -26,6 +26,7 @@ datafiles/raster_tiles
 datafiles/raster_merged
 datafiles/process_out
 datafiles/dtm
+datafiles/DSM_domAligned
 configs/user/
 configs/**/user/
 wandb

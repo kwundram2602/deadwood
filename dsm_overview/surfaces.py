@@ -14,8 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import rasterio
 
-from deadwood_spectral.grid import ReferenceGrid, load_reference_grid
+from deadwood_spectral.grid import (
+    ReferenceGrid,
+    assert_matches_grid,
+    load_reference_grid,
+)
 from dsm_overview.window import Aoi, crop
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -123,3 +128,65 @@ def load_surfaces(
     dsm = resample_raster(str(dsm_path), grid.height, grid.width, grid.transform, grid.crs)
     dtm = resample_raster(str(dtm_path), grid.height, grid.width, grid.transform, grid.crs)
     return build_surfaces(dsm, dtm, grid, local_blocks, clamp_to_dsm)
+
+
+def _read_on_grid(path: str | Path, grid: ReferenceGrid, context: str) -> np.ndarray:
+    """One band of a raster that is already on the reference grid.
+
+    Deliberately not `resample_raster`: a stage raster that does not match the
+    grid means the `dtm_coreg` run directory belongs to a different mask, and
+    resampling it would quietly compare two unrelated scenes. `assert_matches_grid`
+    turns that into a ValueError naming the stage.
+    """
+    with rasterio.open(path) as src:
+        assert_matches_grid(src, grid, context)
+        array = src.read(1).astype(np.float32)
+        nodata = src.nodata
+    if nodata is not None and not np.isnan(nodata):
+        array[array == nodata] = np.nan
+    return array
+
+
+def load_surfaces_from_stages(
+    reference: str | Path,
+    dsm_path: str | Path,
+    dtm_path: str | Path,
+    plane_path: str | Path,
+    aligned_path: str | Path,
+) -> Surfaces:
+    """The same three stages, but read from disk instead of re-fitted.
+
+    `apply_dsm_mask` already wrote `plane` and `aligned` to
+    `process_out/dtm_coreg/<run_id>/`, on the reference grid, from the inputs
+    and settings production actually used — including `clamp_to_dsm`, which
+    this package's own fit deliberately switches off. Re-running the fit here
+    would therefore answer a subtly different question than the one the mask
+    was built on, so the stages are taken verbatim and only `raw` and the DSM,
+    which live on their own grids, are resampled.
+
+    `info` stays empty for every stage: no fit ran, so there is no `mean_shift`
+    or `local_rms` to report, and inventing one would be worse than its absence.
+    """
+    grid = load_reference_grid(reference)
+    logger.info("reference grid %s from %s", grid.shape, reference)
+    dsm = resample_raster(str(dsm_path), grid.height, grid.width, grid.transform, grid.crs)
+    raw = resample_raster(str(dtm_path), grid.height, grid.width, grid.transform, grid.crs)
+    stages = {
+        "raw": raw,
+        "plane": _read_on_grid(plane_path, grid, "DTM stage plane"),
+        "aligned": _read_on_grid(aligned_path, grid, "DTM stage aligned"),
+    }
+    for name, stage in stages.items():
+        finite = stage[np.isfinite(stage)]
+        logger.info(
+            "stage %-7s median %.2f m over %d valid px",
+            name,
+            float(np.median(finite)) if finite.size else np.nan,
+            finite.size,
+        )
+    return Surfaces(
+        grid=grid,
+        dsm=dsm.astype(np.float32),
+        dtm=stages,
+        info={stage: {} for stage in STAGES},
+    )

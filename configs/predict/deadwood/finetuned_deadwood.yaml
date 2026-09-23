@@ -12,7 +12,7 @@
 raw_deadwood:
   # A .pt state dict written by training/trainer.py. load_model accepts both
   # .pt and .safetensors and loads strictly either way.
-  weights: experiments/deadwood_ft__decoder__bce1/tl_best.pt
+  weights: experiments/deadwood/dice/deadwood_ft__decoder__bce0.5_dice1/ft_best.pt
 
   source:
     path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif

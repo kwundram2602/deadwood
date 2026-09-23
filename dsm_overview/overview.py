@@ -14,8 +14,8 @@ from deadwood_spectral.grid import load_reference_grid
 from deadwood_spectral.masks import EXCLUDE_COVERAGE, load_crowns
 from dsm_overview.plot3d import DEFAULT_AZIM, DEFAULT_ELEV, plot_dem_overview
 from dsm_overview.stats import aoi_stats, stats_table
-from dsm_overview.surfaces import load_surfaces
-from dsm_overview.window import aoi_from_bounds
+from dsm_overview.surfaces import load_surfaces, load_surfaces_from_stages
+from dsm_overview.window import aoi_from_bounds, scene_aoi
 
 logger = logging.getLogger(__name__)
 
@@ -97,3 +97,46 @@ def run_dsm_overview(
     table.to_csv(outputs["stats_csv"], index=False)
     logger.info("wrote %s (%d rows)", outputs["stats_csv"], len(table))
     return outputs
+
+
+def run_scene_overview(
+    reference: str | Path,
+    dsm: str | Path,
+    dtm: str | Path,
+    dtm_plane: str | Path,
+    dtm_aligned: str | Path,
+    out_dir: str | Path,
+    height_threshold: float = 0.5,
+    max_side: int = 400,
+    elev: float = DEFAULT_ELEV,
+    azim: float = DEFAULT_AZIM,
+    label: str = "whole scene",
+) -> dict[str, Path]:
+    """The same five panels, once, over the entire reference grid.
+
+    The per-crown run asks whether the ground under *one* tree ends up at zero;
+    this one asks what the co-registration did to the survey as a whole. There
+    is no crown and therefore no ring, so there is nothing to tabulate either —
+    the figure is the whole output.
+
+    The DTM stages come from `apply_dsm_mask`'s `dtm_coreg` run directory
+    rather than from a fresh fit; see `load_surfaces_from_stages`.
+    """
+    surfaces = load_surfaces_from_stages(reference, dsm, dtm, dtm_plane, dtm_aligned)
+    aoi = scene_aoi(surfaces.grid)
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "plot_scene": plot_dem_overview(
+            surfaces,
+            aoi,
+            out_dir / "dem_scene.png",
+            height_threshold,
+            max_side,
+            geometry=None,
+            elev=elev,
+            azim=azim,
+            label=label,
+        )
+    }

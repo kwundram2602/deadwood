@@ -33,8 +33,8 @@ deadwood_preprocess:
     # Background polygons have a median area of 21.5 m2 and absorb 10 px
     # harmlessly — and the wider blur is what guarantees an unlabelled band
     # between the classes even where they are drawn edge to edge.
-    sigma_pos: 4.0        # 20 cm at 0.05 m GSD
-    sigma_neg: 10.0       # 50 cm
+    sigma_pos: 0.0        # 
+    sigma_neg: 0.0       #  
     # Positives are kept out to 35 cm past the drawn edge; negatives start 65 cm
     # inside their own. Band between two polygons = separation + 30 cm.
     pos_threshold: 0.05

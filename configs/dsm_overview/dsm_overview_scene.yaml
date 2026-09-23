@@ -1,0 +1,34 @@
+# The same five panels as the per-crown run, once, over the whole survey.
+# uv run python scripts/dsm_overview_scene.py --config configs/dsm_overview/dsm_overview_scene.yaml
+scene:
+  # Grid only — and the grid the dtm_coreg stages below were written on. A
+  # stage raster off this grid means the run directory belongs to a different
+  # mask; load_surfaces_from_stages raises rather than resampling it.
+  reference: datafiles/process_out/masks/crown_mask_intermediate_erode.tif
+  # The vertically corrected DSM, the same one preprocess.yaml feeds
+  # apply_dsm_mask. See the note on the ~7 m offset of the merged DSM.
+  dsm: datafiles/DSM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_coreg.tif
+  # The `raw` stage: 0.5 m, flown 2025-07-27, as delivered.
+  dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
+  # The other two stages as apply_dsm_mask wrote them, not re-fitted here —
+  # so the panels show the surfaces the production mask was actually built on,
+  # clamp_to_dsm and all. Swap the run id to compare a different run.
+  dtm_plane: datafiles/process_out/dtm_coreg/20260917_142553/crown_mask_intermediate_erode_final_dtm_ht0.7_aligned_b6_hr2.5_cr0.3_pc1.0_dtm_plane.tif
+  dtm_aligned: datafiles/process_out/dtm_coreg/20260917_142553/crown_mask_intermediate_erode_final_dtm_ht0.7_aligned_b6_hr2.5_cr0.3_pc1.0_dtm_aligned.tif
+  out_dir: out/dsm_overview/scene
+  # Printed above the panels. The run id belongs in it: the stages are the
+  # whole subject here, and next month there will be more than one of them.
+  label: whole scene — DTM stages from 20260917_142553
+
+plot:
+  # The threshold apply_dsm_mask calls ground, drawn into the nDSM panel as a
+  # plane. 0.7 m, matching `ht0.7` in the stage filenames above.
+  height_threshold: 0.7
+  # Longest side after striding. The scene is 6459 x 6962 px at 0.05 m, so 400
+  # means every 18th pixel — roughly 0.9 m sampling. Raising this costs
+  # quadratically in the surface plot and buys little: a 45-million-pixel
+  # surface is not readable at any stride.
+  max_side: 400
+  # Blickwinkel der 3D-Panels, wie im Kronen-Run.
+  elev: 45.0
+  azim: -60.0

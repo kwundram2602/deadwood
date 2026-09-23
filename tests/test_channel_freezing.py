@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data.channels import ChannelSpec
 from models.model import build_model
 from training.learning_configurator import LearningConfigurator
+from training.trainable_report import effective_counts, plot_trainable
 from training.trainer import _build_optimizer
 
 STACK = ["green_ms", "red_ms", "rededge", "nir"]
@@ -112,3 +113,80 @@ def test_empty_frozen_list_trains_all_channels():
     assert torch.any(conv1.weight.grad[:, :2] != 0), (
         "with empty frozen list all channel slices must receive gradients"
     )
+
+
+def test_effective_counts_discounts_mask_frozen_weights():
+    """conv1's masked input columns must not count as trainable.
+
+    requires_grad stays True on the whole conv1.weight — the freeze is a
+    gradient hook — so a requires_grad-only count would return the full
+    15,680 weights here and hide the 6,272 that can never move.
+    """
+    device = torch.device("cpu")
+    model = build_model(_make_cfg(["green_ms", "red_ms"]), device, _make_spec())
+    model = LearningConfigurator().prepare_model_for_transfer_learning(model)
+
+    conv1 = _first_conv(model)
+    masked = 2 * conv1.out_channels * conv1.kernel_size[0] * conv1.kernel_size[1]
+
+    trainable, total = effective_counts(conv1)
+
+    assert total == sum(p.numel() for p in conv1.parameters())
+    assert trainable == total - masked
+
+
+def test_trainable_table_reports_conv1_as_partial(capsys):
+    """The regression test for the bug: the table used to print TRAINABLE.
+
+    Freezing input channels via a gradient hook leaves requires_grad True, so
+    the requires_grad-only table showed encoder.conv1 as fully trainable.
+    """
+    device = torch.device("cpu")
+    model = build_model(_make_cfg(["green_ms", "red_ms"]), device, _make_spec())
+    LearningConfigurator().prepare_model_for_transfer_learning(model)
+
+    conv1 = _first_conv(model)
+    total = sum(p.numel() for p in conv1.parameters())
+    masked = 2 * conv1.out_channels * conv1.kernel_size[0] * conv1.kernel_size[1]
+
+    # Match the table row, not build_model's "Adapted encoder.conv1" log line:
+    # only table rows carry the "<trainable> / <total>" pair.
+    line = next(
+        ln
+        for ln in capsys.readouterr().out.splitlines()
+        if ln.strip().startswith("encoder.conv1") and " / " in ln
+    )
+    assert "PARTIAL" in line, f"expected a PARTIAL conv1 row, got: {line}"
+    assert f"{total - masked:,}" in line
+    assert f"{total:,}" in line
+
+
+def test_plot_trainable_writes_png_and_svg(tmp_path):
+    device = torch.device("cpu")
+    model = build_model(_make_cfg(["green_ms", "red_ms"]), device, _make_spec())
+    LearningConfigurator().prepare_model_for_transfer_learning(model)
+
+    written = plot_trainable(model, tmp_path, "tl", _make_spec())
+
+    assert {p.suffix for p in written} == {".png", ".svg"}
+    for path in written:
+        assert path.exists() and path.stat().st_size > 0
+        assert path.stem == "trainable_tl"
+
+
+def test_plot_labels_conv_columns_with_channel_names(tmp_path):
+    """Panel B must name the columns, not just index them.
+
+    svg.fonttype="none" keeps labels as real <text>, so the SVG is the honest
+    place to assert the figure says what it should.
+    """
+    device = torch.device("cpu")
+    model = build_model(_make_cfg(["green_ms", "red_ms"]), device, _make_spec())
+    LearningConfigurator().prepare_model_for_transfer_learning(model)
+
+    written = plot_trainable(model, tmp_path, "tl", _make_spec())
+    svg = next(p for p in written if p.suffix == ".svg").read_text()
+
+    for name in INPUTS:
+        assert name in svg, f"channel {name} missing from the figure"
+    assert "encoder.conv1" in svg

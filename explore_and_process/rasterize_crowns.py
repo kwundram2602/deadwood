@@ -7,8 +7,10 @@ batch-export band-selected, normalised, resampled MS images.
 Steps:
   1. Load crown polygons, keep only son/soff
   2. Reproject polygons to raster CRS
-  3. Rasterize to binary mask at target GSD
-  4. Gaussian blur for soft crown boundaries
+  3. Optionally erode and round the polygons, then rasterize to a binary
+     mask at target GSD
+  4. Gaussian blur for soft crown boundaries, optionally rescaled so the
+     falloff bottoms out at `soft_floor` instead of 0
   5. Set noData=255 for pixels inside the footprint but far from any crown,
      and noData=-1 for pixels outside the recorded scene footprint
   6. Save mask
@@ -111,6 +113,67 @@ def write_tif(path, data, transform, crs, nodata=None, descriptions=None):
 # ---------------------------------------------------------------------------
 
 
+def reshape_polygons(geoms, erode: float = 0.0, round_radius: float = 0.0):
+    """Shrink and round crown polygons before they are burned to raster.
+
+    Hand-digitised crowns are angular: straight runs between clicked vertices,
+    plus the occasional thin spike where one vertex landed on a branch. Both are
+    artefacts of drawing rather than shape the model should learn.
+
+    ``erode`` shrinks every polygon by that distance (CRS units — metres in a
+    UTM scene). ``round_radius`` runs a morphological opening followed by a
+    closing — buffer(-r), buffer(2r), buffer(-r), all with round joins — which
+    rounds convex corners, cuts spikes thinner than 2r, and fills notches while
+    leaving the area roughly intact (a square loses (4 - π)r² to its corners).
+
+    Invalid geometries pass through untouched: buffering them yields garbage,
+    and rasterize_binary already reports and skips them.
+
+    Polygons that vanish are dropped with a warning — their pixels fall back to
+    MASK_UNLABELLED rather than being taught as background, but a label is gone,
+    so the count is the signal that the distance is too large. Rounding can also
+    pinch a polygon into two parts; both are kept.
+    """
+    if erode < 0.0 or round_radius < 0.0:
+        raise ValueError(
+            f"erode and round_radius must be >= 0; got {erode}, {round_radius}"
+        )
+    if erode == 0.0 and round_radius == 0.0:
+        return geoms
+
+    kept, index, vanished = [], [], []
+    for idx, geom in geoms.items():
+        if geom is None or not geom.is_valid:
+            kept.append(geom)
+            index.append(idx)
+            continue
+        shaped = geom
+        if erode > 0.0:
+            shaped = shaped.buffer(-erode, join_style="round")
+        if round_radius > 0.0:
+            r = round_radius
+            shaped = (
+                shaped.buffer(-r, join_style="round")
+                .buffer(2 * r, join_style="round")
+                .buffer(-r, join_style="round")
+            )
+        if shaped.is_empty:
+            vanished.append(idx)
+            continue
+        kept.append(shaped)
+        index.append(idx)
+
+    if vanished:
+        shown = ", ".join(str(i) for i in vanished[:10])
+        more = f", ... (+{len(vanished) - 10})" if len(vanished) > 10 else ""
+        print(
+            f"  [WARN] reshape_polygons: {len(vanished)} of {len(geoms)} polygon(s) "
+            f"vanished (erode={erode} m, round_radius={round_radius} m); "
+            f"index: {shown}{more}"
+        )
+    return gpd.GeoSeries(kept, index=index, crs=geoms.crs)
+
+
 def rasterize_binary(geoms, h, w, transform):
     """Burn geometries into a binary raster: inside = 1.0, background = 0.0.
 
@@ -132,7 +195,36 @@ def rasterize_binary(geoms, h, w, transform):
     return rio_rasterize(shapes, out_shape=(h, w), transform=transform, fill=0.0, dtype="float32")
 
 
-def soft_mask_from_geoms(geoms, h, w, transform, sigma, nodata_threshold, footprint=None):
+def rescale_soft_floor(
+    soft: np.ndarray, nodata_threshold: float, soft_floor: float | None
+) -> np.ndarray:
+    """Stretch the labelled blur range [nodata_threshold, 1] onto [soft_floor, 1].
+
+    The Gaussian falloff reaches 0 at the outer edge of a crown, which labels
+    the rim of every polygon as confident background — a statement the blur was
+    never meant to make. Lifting the bottom of the range keeps the rim a weak
+    *positive*: the gradient stays monotonic everywhere, only its minimum moves.
+
+    Must run before the noData sentinels are written, because afterwards the
+    values that decide what is unlabelled no longer exist. None disables it.
+    """
+    if soft_floor is None:
+        return soft
+    if not 0.0 <= soft_floor < 1.0:
+        raise ValueError(
+            f"soft_floor must be in [0, 1) or null; got {soft_floor}"
+        )
+    scaled = soft_floor + (1.0 - soft_floor) * (soft - nodata_threshold) / (
+        1.0 - nodata_threshold
+    )
+    # Polygons narrower than their own sigma peak below nodata_threshold and
+    # would map under the floor; the floor is a floor for them too.
+    return np.clip(scaled, soft_floor, 1.0).astype(np.float32)
+
+
+def soft_mask_from_geoms(
+    geoms, h, w, transform, sigma, nodata_threshold, footprint=None, soft_floor=None
+):
     """Rasterize geometries → Gaussian blur → noData sentinels.
 
     ``footprint`` is the boolean scene footprint from the image sources. Pixels
@@ -141,13 +233,19 @@ def soft_mask_from_geoms(geoms, h, w, transform, sigma, nodata_threshold, footpr
     apart is what lets predict suppress output beyond the flight extent — with
     one sentinel, "outside the scene" and "unlabelled background" are
     indistinguishable and the model is never told the difference.
+
+    ``soft_floor`` is the value the blur is allowed to sink to at most; see
+    rescale_soft_floor.
     """
     binary = rasterize_binary(geoms, h, w, transform)
 
     soft = gaussian_filter(binary, sigma=sigma)
     # Pixels outside all polygons that received no Gaussian bleed-over are
-    # unlabelled: valid imagery, no statement about membership
-    soft[(binary == 0) & (soft < nodata_threshold)] = MASK_UNLABELLED
+    # unlabelled: valid imagery, no statement about membership. Decided on the
+    # raw blur, before the floor lifts every labelled value above it.
+    unlabelled = (binary == 0) & (soft < nodata_threshold)
+    soft = rescale_soft_floor(soft, nodata_threshold, soft_floor)
+    soft[unlabelled] = MASK_UNLABELLED
     if footprint is not None:
         soft[~footprint] = MASK_OUTSIDE
 
@@ -162,15 +260,22 @@ def soft_mask_from_geoms(geoms, h, w, transform, sigma, nodata_threshold, footpr
     return soft
 
 
-def build_mask(crowns_paths, src, h, w, transform, sigma, nodata_threshold, footprint=None):
+def build_mask(
+    crowns_paths, src, h, w, transform, sigma, nodata_threshold,
+    footprint=None, soft_floor=None, erode=0.0, round_radius=0.0,
+):
     """Load son/soff crown polygons and rasterize them to a soft training mask."""
     gdfs = [gpd.read_file(p) for p in crowns_paths]
     gdf = pd.concat(gdfs, ignore_index=True)
     gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=gdfs[0].crs)
     gdf = gdf[gdf["crown_category"].isin(INCLUDE_CATEGORIES)].to_crs(src.crs)
     print(f"  {len(gdf)} crown polygons (son/soff) from {len(crowns_paths)} file(s)")
+    if erode > 0.0 or round_radius > 0.0:
+        print(f"  reshaping polygons: erode={erode} m, round_radius={round_radius} m")
+    geoms = reshape_polygons(gdf.geometry, erode=erode, round_radius=round_radius)
     return soft_mask_from_geoms(
-        gdf.geometry, h, w, transform, sigma, nodata_threshold, footprint=footprint
+        geoms, h, w, transform, sigma, nodata_threshold,
+        footprint=footprint, soft_floor=soft_floor,
     )
 
 
@@ -308,6 +413,9 @@ def main(args):
             args.sigma,
             args.nodata_threshold,
             footprint=footprint,
+            soft_floor=args.get("soft_floor", None),
+            erode=float(args.get("erode", 0.0) or 0.0),
+            round_radius=float(args.get("round_radius", 0.0) or 0.0),
         )  # args.crowns is a list
         write_tif(args.out_mask, mask, transform, crs, nodata=MASK_RASTER_NODATA)
         print(f"Mask saved: {args.out_mask}")

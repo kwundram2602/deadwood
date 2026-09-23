@@ -8,7 +8,7 @@
 #   --image --dsm --dtm --weights --threshold --out
 
 # Trained checkpoint (.pt). Architecture is inferred from the checkpoint.
-weights: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.2_dice0.8__30082/ft_best.pt
+weights: experiments/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice1__1709/ft_best.pt
 
 # Model input channels manifest. null → <weights_dir>/channels.json
 # (written by scripts/train.py next to the checkpoint).
@@ -22,7 +22,7 @@ stats: sample_exp/sample_train_stats.json
 
 # Raw absolute-elevation DSM. Only required when the model's channels
 # include 'ndsm'.
-dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
+dsm: datafiles/DSM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_coreg.tif
 
 # Optional external DTM. When set, the nDSM is DSM - DTM (apply_dsm_mask
 # `method: dtm`) instead of DSM minus a minimum filter.
@@ -40,12 +40,9 @@ preprocess:
   enabled: true
   target_gsd: 0.05
   sources:
-    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged.tif
-      bands: [1, 2, 3]
-      names: [red, green, blue]
-    - path: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_MS_merged.tif
-      bands: [1, 2, 3, 4]
-      names: [green_ms, red_ms, rededge, nir]   # native M3M order
+    - path: datafiles/OM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg.tif
+      bands: [1, 2, 3, 4, 5, 6, 7]
+      names: [red, green, blue, green_ms, red_ms, rededge, nir]  # native M3M order
   windows: [500]     # dsm_mask.windows — minimum-filter sizes for nDSM (ignored when dtm: is set)
   max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
   # Muss mit dem Trainingslauf übereinstimmen, sonst weicht der nDSM ab:

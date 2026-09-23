@@ -6,12 +6,12 @@
 
 model_name: deadwood_ft
 run_tag: null
-output_dir: experiments
+output_dir: experiments/deadwood/dice
 weights: datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
 
 dataset:
   path: out/deadwood_patches   # written by scripts/preprocess_deadwood.py
-  batch_size: 8                # Patches are 512 px since the mask rework — a quarter
+  batch_size: 4                # Patches are 512 px since the mask rework — a quarter
                                # the pixels of the old 1024 px crops — so 8 here costs
                                # roughly what 2 did then (~1.74 GiB on a 4 GB card).
                                # Raised from 2 because most tiles hold only one class
@@ -22,28 +22,29 @@ dataset:
   num_workers: 2               # safe here — patches are per-file reads, not a
                                # shared whole-scene GDAL handle
 
-# head | decoder — how much of the model adapts. 28 training tiles drawn from
-# 35 crowns against 84.7 M params, so decoder+head (3.3 M) is already generous.
+# head | decoder — how much of the model adapts.
 stage: decoder
 
 transfer:
-  epochs: 40
-  lr: 0.0001
+  epochs: 80
+  lr: 0.00002
   weight_decay: 0.001
   optimizer: adamw
   scheduler: step
-  step_gamma: 0.5
+  step_gamma: 0.76
   warmup_epochs: 3
   patience: 10
 
 # Second phase: partial encoder unfreeze. Valid mit_b5 keys are
-# patch_embed1..4, block1..4, norm1..4.
+# patch_embed1..4, block1..4, norm1..4 — encoder-relative, so "norm4", not
+# "encoder.norm4". Decoder and segmentation_head need no key: every phase
+# trains them. block3 (66.3 M of the 84.7 M) stays frozen either way.
 fine_tune:
-  enabled: false
+  enabled: true
   epochs: 15
   lr: 0.00002
   weight_decay: 0.001
-  unfreeze_keys: ["block4"]
+  unfreeze_keys: ["block4", "norm4"]
   encoder_lr_scale: 0.1
   optimizer: adamw
   scheduler: step
@@ -52,11 +53,8 @@ fine_tune:
   patience: 8
 
 loss:
-  # Within the valid (non-sentinel) pixels the balance is crown against ring —
-  # roughly 1:10, not the 1:300 of the whole scene — so plain BCE is reasonable.
-  # Raise dice if the ring turns out to dominate.
-  bce: 1.0
-  dice: 0.0
+  bce: 0.5
+  dice: 1.0
   dice_squared: false
   iou: 0.0
   mae: 0.0

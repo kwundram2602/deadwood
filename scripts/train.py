@@ -28,6 +28,7 @@ from data.dataset import make_loaders
 from models.model import build_model
 from training.learning_configurator import LearningConfigurator, print_model_key_tree
 from training.losses import CombinedLoss
+from training.trainable_report import plot_trainable
 from training.trainer import train
 from utils.device import get_device
 from utils.logger import init_wandb
@@ -131,6 +132,7 @@ def main() -> None:
     print("Phase 1: Transfer Learning")
     print("=" * 60)
     lc.prepare_model_for_transfer_learning(model)
+    plot_trainable(model, out_dir, "tl", spec)
     tl_result = train(
         model,
         train_loader,
@@ -154,6 +156,7 @@ def main() -> None:
         print("Phase 2: Fine-tuning")
         print("=" * 60)
         lc.prepare_model_for_fine_tuning(model, list(cfg.fine_tune.unfreeze_keys))
+        plot_trainable(model, out_dir, "ft", spec)
         ft_result = train(
             model,
             train_loader,

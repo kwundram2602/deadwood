@@ -123,3 +123,15 @@ def patch_coordinates(aoi: Aoi, grid: ReferenceGrid, step: int) -> tuple[np.ndar
     rows = np.arange(0, aoi.window.height, step, dtype=np.float32) * res_y
     cols = np.arange(0, aoi.window.width, step, dtype=np.float32) * res_x
     return np.meshgrid(cols, rows)
+
+
+def scene_aoi(grid: ReferenceGrid, tree_id: str = "scene") -> Aoi:
+    """The whole reference grid as one AOI.
+
+    The scene run has no crown to centre on, so there is nothing to buffer and
+    nothing to clip — the window simply is the grid. `tree_id` keeps the field
+    name the rest of the package already uses; for a scene it is a label, not
+    an id, and `plot_dem_overview`'s `label` decides what the figure says.
+    """
+    window_args = {"col_off": 0, "row_off": 0, "width": grid.width, "height": grid.height}
+    return Aoi(tree_id, Window(**window_args))

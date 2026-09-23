@@ -28,9 +28,11 @@ from data.deadwood_dataset import make_deadwood_loaders  # noqa: E402
 from scripts.raw_predict_deadwood import load_model  # noqa: E402
 from training.learning_configurator import LearningConfigurator  # noqa: E402
 from training.losses import CombinedLoss  # noqa: E402
+from training.trainable_report import plot_trainable  # noqa: E402
 from training.trainer import train  # noqa: E402
 from utils.device import get_device  # noqa: E402
 from utils.logger import init_wandb  # noqa: E402
+from utils.viz import save_model_graph  # noqa: E402
 
 
 def _reload_best(model: torch.nn.Module, ckpt_path: Path, device: torch.device) -> None:
@@ -85,6 +87,9 @@ def main() -> None:
     model = load_model(root / str(cfg.weights), device)
     model.train()
 
+    # in_channels=3: load_model builds smp.Unet with that fixed contract.
+    save_model_graph(model, out_dir, 3, device=device)
+
     lc = LearningConfigurator()
     criterion = CombinedLoss(cfg.loss)
     threshold = float(cfg.metrics.thresholds[0])
@@ -101,6 +106,9 @@ def main() -> None:
         lc.prepare_model_for_head_only(model)
     else:
         lc.prepare_model_for_transfer_learning(model)
+    # cfg.stage ('head' or 'decoder'), not the 'tl' checkpoint tag: the figure
+    # should name the phase this script printed above it.
+    plot_trainable(model, out_dir, str(cfg.stage))
 
     tl = train(
         model,
@@ -122,6 +130,7 @@ def main() -> None:
         print("Phase 2: encoder unfreeze")
         print("=" * 60)
         lc.prepare_model_for_fine_tuning(model, list(cfg.fine_tune.unfreeze_keys))
+        plot_trainable(model, out_dir, "ft")
         ft = train(
             model,
             train_loader,

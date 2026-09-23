@@ -25,6 +25,10 @@ Ground pixels soft-blend into the crown mask: crown pixels (0–1) are
 multiplied by (1 − ground_conf); noData pixels are resolved to ground
 only when ground_conf exceeds --nodata_resolve_threshold.
 
+preserve_crown_threshold exempts the confident stage-1a crown pixels from that
+blend: with 1.0, everything a crown polygon covers outright keeps its label
+whatever the height model says.
+
 Remaining noData pixels (255) — no crown polygon, not confirmed ground —
 are excluded from the loss during training.
 
@@ -572,12 +576,27 @@ def combine(
     return a_bin & b_bin, np.minimum(a_conf, b_conf)
 
 
+def preserved_crown(
+    mask: np.ndarray, preserve_crown_threshold: float | None
+) -> np.ndarray:
+    """Stage-1a crown pixels the DSM is not allowed to overwrite.
+
+    Everything the polygons labelled at or above `preserve_crown_threshold`
+    (1.0 = only the pixels a polygon covers outright) keeps its stage-1a value:
+    the digitised crown outranks the height model there. None disables it.
+    """
+    if preserve_crown_threshold is None:
+        return np.zeros_like(mask, dtype=bool)
+    return (mask >= preserve_crown_threshold) & (mask < MASK_UNLABELLED)
+
+
 def apply_soft_blend(
     mask: np.ndarray,
     ground_conf: np.ndarray,
     nodata_resolve_threshold: float,
     crown_resolve_threshold: float | None = None,
     height_valid: np.ndarray | None = None,
+    preserve_crown_threshold: float | None = None,
 ) -> np.ndarray:
     """Soft-blend ground confidence into the crown mask.
 
@@ -585,7 +604,8 @@ def apply_soft_blend(
     DSM confidence can invent imagery the drone did not record. Both guards
     below (`mask >= 0.0` and `mask == MASK_UNLABELLED`) exclude them already.
 
-    Crown pixels (0–1): multiplied by (1 - ground_conf).
+    Crown pixels (0–1): multiplied by (1 - ground_conf), except those at or
+      above `preserve_crown_threshold`, which keep their stage-1a value.
     Unlabelled pixels (255): resolved to (1 - ground_conf) when
       ground_conf >= nodata_resolve_threshold (confident ground), or when
       ground_conf <= crown_resolve_threshold (confident crown, requires
@@ -599,10 +619,18 @@ def apply_soft_blend(
         raise ValueError(
             "crown_resolve_threshold must be < nodata_resolve_threshold"
         )
+    if preserve_crown_threshold is not None and not (
+        0.0 < preserve_crown_threshold <= 1.0
+    ):
+        raise ValueError(
+            "preserve_crown_threshold must be in (0, 1] or null"
+        )
     result = mask.copy()
 
     # Alle gültigen Kronenpixel (Konfidenz 0–1, kein noData-Sentinel)
     crown = (mask >= 0.0) & (mask < MASK_UNLABELLED)
+    # Sichere Kronenpixel aus Stufe 1a bleiben unangetastet (result ist eine Kopie)
+    crown &= ~preserved_crown(mask, preserve_crown_threshold)
     # Krone × (1 – Bodenwahrscheinlichkeit): hohe Bodenkonf. → Kronenwert sinkt gegen 0
     result[crown] = mask[crown] * (1.0 - ground_conf[crown])
 
@@ -725,6 +753,14 @@ def main(args):
     dtm_local_blocks = int(args.get("dtm_local_blocks", 12))
     dtm_clamp_to_dsm = bool(args.get("dtm_clamp_to_dsm", True))
     crown_resolve_threshold = args.get("crown_resolve_threshold", None)
+    preserve_crown_threshold = args.get("preserve_crown_threshold", None)
+    if preserve_crown_threshold is not None:
+        preserve_crown_threshold = float(preserve_crown_threshold)
+        if not 0.0 < preserve_crown_threshold <= 1.0:
+            raise ValueError(
+                "dsm_mask.preserve_crown_threshold must be in (0, 1] or null; "
+                f"got {preserve_crown_threshold}"
+            )
     if use_external_dtm and args.method in ("dtm", "both"):
         # Two runs that differ only in the stage must not overwrite each other
         mask_suffix += f"_{dtm_stage}_b{dtm_local_blocks}"
@@ -732,6 +768,8 @@ def main(args):
         mask_suffix += f"_hr{height_ramp}"
     if crown_resolve_threshold is not None:
         mask_suffix += f"_cr{crown_resolve_threshold}"
+    if preserve_crown_threshold is not None:
+        mask_suffix += f"_pc{preserve_crown_threshold}"
 
     args.out = _embed_params(args.out, mask_suffix)
     mask_dir, mask_file = os.path.dirname(args.out), os.path.basename(args.out)
@@ -857,7 +895,11 @@ def main(args):
         ground_bin, ground_conf = combine(lm_bin, lm_conf, gr_bin, gr_conf, mode=args.combine)
 
     # --- Apply soft ground blend to crown mask --------------------------------
-    n_crown_dampened = int(np.sum((mask >= 0.0) & (mask < MASK_UNLABELLED) & (ground_conf > 0.0)))
+    preserved = preserved_crown(mask, preserve_crown_threshold)
+    n_crown_dampened = int(np.sum(
+        (mask >= 0.0) & (mask < MASK_UNLABELLED) & (ground_conf > 0.0) & ~preserved
+    ))
+    n_crown_preserved = int(np.sum(preserved & (ground_conf > 0.0)))
     nodata_before = mask == MASK_UNLABELLED
     height_valid = height_data_valid(ndsm, dsm)
     n_no_height = int(np.sum(~height_valid & ~np.isnan(dsm)))
@@ -869,6 +911,7 @@ def main(args):
         args.nodata_resolve_threshold,
         crown_resolve_threshold=crown_resolve_threshold,
         height_valid=height_valid,
+        preserve_crown_threshold=preserve_crown_threshold,
     )
     n_ground_resolved = int(np.sum(nodata_before & (ground_conf >= args.nodata_resolve_threshold)))
     n_crown_resolved = 0
@@ -879,6 +922,9 @@ def main(args):
     n_nodata = int(np.sum(mask == MASK_UNLABELLED))
     n_outside = int(np.sum(mask == MASK_OUTSIDE))
     print(f"\nCrown pixels dampened by DSM:     {n_crown_dampened:,}  (multiplicative blend)")
+    if preserve_crown_threshold is not None:
+        print(f"Crown pixels kept from stage 1a:  {n_crown_preserved:,}  "
+              f"(mask >= {preserve_crown_threshold:.2f}, DSM ignored)")
     print(f"noData pixels resolved to ground: {n_ground_resolved:,}  (ground_conf >= {args.nodata_resolve_threshold:.2f})")
     if crown_resolve_threshold is not None:
         print(f"noData pixels resolved to crown:  {n_crown_resolved:,}  (ground_conf <= {crown_resolve_threshold:.2f})")
