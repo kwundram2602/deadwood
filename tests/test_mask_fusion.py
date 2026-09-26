@@ -1,8 +1,11 @@
+import csv
 import os
 import sys
 
 import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mask_fusion.codes import (  # noqa: E402
@@ -16,6 +19,7 @@ from mask_fusion.codes import (  # noqa: E402
     height_class,
     parse_classes,
 )
+from mask_fusion.run import default_stem, run_fusion  # noqa: E402
 
 H1, H2 = 1.0, 3.0
 
@@ -163,3 +167,118 @@ def test_build_lookup_maps_every_code_and_keeps_nodata():
     np.testing.assert_array_equal(lut[:N_CODES], [3, 1, 2, 2, 3, 1, 2, 2, 3, 1, 2, 2])
     assert lut[NODATA] == NODATA
     assert (lut[N_CODES:] == NODATA).all()
+
+
+def _write(path, arr, nodata, left=1000.0, top=2000.0, res=0.05):
+    profile = dict(
+        driver="GTiff",
+        dtype=arr.dtype.name,
+        width=arr.shape[1],
+        height=arr.shape[0],
+        count=1,
+        crs="EPSG:32736",
+        transform=from_origin(left, top, res, res),
+        nodata=nodata,
+    )
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(arr, 1)
+    return path
+
+
+def _inputs(tmp_path, shape=(10, 6), dead_left=1000.0):
+    rng = np.random.default_rng(0)
+    crown = rng.integers(0, 2, shape).astype(np.uint8)
+    crown[0, :] = NODATA
+    dead = rng.integers(0, 2, shape).astype(np.uint8)
+    dead[2, 3] = NODATA
+    ndsm = rng.uniform(-0.2, 6.0, shape).astype(np.float32)
+    ndsm[1, 0] = np.nan
+    paths = dict(
+        crown=_write(tmp_path / "crown.tif", crown, NODATA),
+        deadwood=_write(tmp_path / "x_deadwood_mask.tif", dead, NODATA, left=dead_left),
+        ndsm=_write(tmp_path / "ndsm.tif", ndsm, float("nan")),
+    )
+    return paths, (crown, dead, ndsm)
+
+
+def _read(path):
+    with rasterio.open(path) as src:
+        return src.read(1), src.colormap(1), src.nodata
+
+
+def test_default_stem_strips_mask_suffix():
+    assert default_stem("a/b/scene_OM_coreg_deadwood_mask.tif") == "scene_OM_coreg"
+    assert default_stem("a/other.tif") == "other"
+
+
+def test_run_fusion_end_to_end(tmp_path):
+    paths, (crown, dead, ndsm) = _inputs(tmp_path)
+    out = run_fusion(
+        **paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "out", chunk_rows=4
+    )
+    assert out["combo"].name == "x_combo.tif"
+
+    combo, combo_cmap, combo_nodata = _read(out["combo"])
+    np.testing.assert_array_equal(combo, combo_codes(crown, dead, ndsm, H1, H2))
+    assert combo_nodata == NODATA
+    assert combo_cmap[9][:3] == (0x1A, 0x96, 0x41)
+    assert combo_cmap[NODATA][3] == 0
+
+    eco, eco_cmap, _ = _read(out["eco"])
+    np.testing.assert_array_equal(eco, build_lookup(parse_classes(_classes()))[combo])
+    assert eco_cmap[1] == (0, 255, 0, 255)
+
+    with open(out["stats"], newline="") as f:
+        rows = list(csv.DictReader(f))
+    valid = int((combo != NODATA).sum())
+    combo_rows = [r for r in rows if r["layer"] == "combo"]
+    eco_rows = [r for r in rows if r["layer"] == "eco"]
+    assert [r["name"] for r in combo_rows] == list(COMBO_NAMES)
+    assert [r["name"] for r in eco_rows] == ["living", "dead", "rest"]
+    for layer_rows in (combo_rows, eco_rows):
+        assert sum(int(r["pixels"]) for r in layer_rows) == valid
+        assert sum(float(r["share_pct"]) for r in layer_rows) == pytest.approx(100.0, abs=1e-3)
+    for r in rows:
+        assert float(r["area_m2"]) == pytest.approx(int(r["pixels"]) * 0.05 * 0.05, abs=1e-4)
+
+
+def test_chunk_size_does_not_change_result(tmp_path):
+    paths, _ = _inputs(tmp_path)
+    a = run_fusion(
+        **paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "a", chunk_rows=3
+    )
+    b = run_fusion(
+        **paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "b", chunk_rows=100
+    )
+    np.testing.assert_array_equal(_read(a["combo"])[0], _read(b["combo"])[0])
+    np.testing.assert_array_equal(_read(a["eco"])[0], _read(b["eco"])[0])
+
+
+def test_grid_mismatch_raises(tmp_path):
+    paths, _ = _inputs(tmp_path, dead_left=1002.0)
+    with pytest.raises(ValueError, match="transform"):
+        run_fusion(**paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "out")
+
+
+def test_no_valid_pixel_raises(tmp_path):
+    paths, _ = _inputs(tmp_path)
+    _write(paths["crown"], np.full((10, 6), NODATA, np.uint8), NODATA)
+    with pytest.raises(ValueError, match="no pixel is valid"):
+        run_fusion(**paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "out")
+
+
+@pytest.mark.parametrize("height_m", [[3.0, 1.0], [1.0], [1.0, 2.0, 3.0]])
+def test_bad_heights_raise_before_writing(tmp_path, height_m):
+    paths, _ = _inputs(tmp_path)
+    with pytest.raises(ValueError):
+        run_fusion(**paths, height_m=height_m, classes=_classes(), out_dir=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_bad_mapping_raises_before_writing(tmp_path):
+    paths, _ = _inputs(tmp_path)
+    classes = _classes()
+    classes[3]["codes"] = [0, 4]
+    with pytest.raises(ValueError, match="missing"):
+        run_fusion(**paths, height_m=[H1, H2], classes=classes, out_dir=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
