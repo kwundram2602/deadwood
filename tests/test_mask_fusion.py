@@ -1,5 +1,6 @@
 import csv
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -8,6 +9,7 @@ import rasterio
 from rasterio.transform import from_origin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from mask_fusion import figures  # noqa: E402
 from mask_fusion.codes import (  # noqa: E402
     COMBO_COLORS,
     COMBO_NAMES,
@@ -19,6 +21,7 @@ from mask_fusion.codes import (  # noqa: E402
     height_class,
     parse_classes,
 )
+from mask_fusion.figures import compile_tex, decision_tree_tex, legend_png  # noqa: E402
 from mask_fusion.run import default_stem, run_fusion  # noqa: E402
 
 H1, H2 = 1.0, 3.0
@@ -255,6 +258,11 @@ def test_run_fusion_end_to_end(tmp_path):
     for r in rows:
         assert float(r["area_m2"]) == pytest.approx(int(r["pixels"]) * 0.05 * 0.05, abs=1e-4)
 
+    assert out["legend"].name == "x_legend.png"
+    assert out["legend"].exists()
+    assert out["tree_tex"].name == "x_decision_tree.tex"
+    assert out["tree_tex"].read_text() == decision_tree_tex(parse_classes(_classes()), H1, H2)
+
 
 def test_chunk_size_does_not_change_result(tmp_path):
     paths, _ = _inputs(tmp_path)
@@ -318,3 +326,71 @@ def test_bad_chunk_rows_raise_before_writing(tmp_path, chunk_rows):
             chunk_rows=chunk_rows,
         )
     assert not (tmp_path / "out").exists()
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def test_decision_tree_tex_names_every_code_and_class():
+    eco = parse_classes(_classes())
+    tex = decision_tree_tex(eco, H1, H2)
+    for name in COMBO_NAMES:
+        assert name.replace("_", r"\_") in tex
+    for e in eco:
+        assert e.name in tex
+        assert rf"\definecolor{{eco{e.value}}}" in tex
+    assert tex.count(r"\definecolor") == len(eco)
+    assert tex.count("[{code ") == N_CODES
+    # "=" must sit inside braces, or forest reads it as a node option and drops it
+    for label in ("crown = 1", "crown = 0", "deadwood = 1", "deadwood = 0"):
+        assert "[{" + label + "}" in tex
+    assert "$h < 1.0$" in tex
+    assert r"$1.0 \leq h < 3.0$" in tex
+    assert r"$h \geq 3.0$" in tex
+
+
+def test_decision_tree_leaf_follows_the_mapping():
+    tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
+    leaves = {
+        int(line.split("code ")[1].split()[0]): line
+        for line in tex.splitlines()
+        if "[{code " in line
+    }
+    assert sorted(leaves) == list(range(N_CODES))
+    assert r"2 \textbf{dead}" in leaves[11] and "fill=eco2" in leaves[11]
+    assert r"1 \textbf{living}" in leaves[9] and "fill=eco1" in leaves[9]
+    assert r"3 \textbf{rest}" in leaves[0] and "fill=eco3" in leaves[0]
+
+
+def test_decision_tree_formats_fractional_thresholds():
+    tex = decision_tree_tex(parse_classes(_classes()), 1.25, 3.0)
+    assert "$h < 1.25$" in tex
+
+
+def test_legend_png_writes_png(tmp_path):
+    rows = [(e, 12.5, 10.0) for e in parse_classes(_classes())]
+    path = legend_png(rows, tmp_path / "legend.png")
+    assert path.read_bytes()[:8] == PNG_SIGNATURE
+
+
+@pytest.mark.skipif(shutil.which("pdflatex") is None, reason="pdflatex not installed")
+def test_compile_tex_writes_pdf(tmp_path):
+    tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
+    pdf = compile_tex(tex, tmp_path / "tree.pdf")
+    assert pdf == tmp_path / "tree.pdf"
+    assert pdf.read_bytes()[:5] == b"%PDF-"
+
+
+def test_compile_tex_without_pdflatex_warns(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(figures.shutil, "which", lambda _: None)
+    assert compile_tex("irrelevant", tmp_path / "tree.pdf") is None
+    assert "pdflatex" in caplog.text
+    assert not (tmp_path / "tree.pdf").exists()
+
+
+def test_compile_tex_failure_warns(tmp_path, caplog):
+    if shutil.which("pdflatex") is None:
+        pytest.skip("pdflatex not installed")
+    bad = r"\documentclass{standalone}\begin{document}\undefinedmacro\end{document}"
+    assert compile_tex(bad, tmp_path / "tree.pdf") is None
+    assert "pdflatex failed" in caplog.text

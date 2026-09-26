@@ -26,6 +26,7 @@ from mask_fusion.codes import (
     hex_to_rgb,
     parse_classes,
 )
+from mask_fusion.figures import compile_tex, decision_tree_tex, legend_png, pdf_to_png
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,14 @@ def _colormap(colors: Mapping[int, tuple[int, int, int]]) -> dict[int, tuple[int
 
 
 def _write_stats(
-    path: Path, combo_counts: np.ndarray, eco: Sequence[EcoClass], pixel_area: float
+    path: Path,
+    combo_counts: np.ndarray,
+    eco_pixels: Sequence[tuple[EcoClass, int]],
+    pixel_area: float,
 ) -> None:
     valid = int(combo_counts[:N_CODES].sum())
     rows = [("combo", code, COMBO_NAMES[code], int(combo_counts[code])) for code in range(N_CODES)]
-    rows += [("eco", e.value, e.name, int(combo_counts[list(e.codes)].sum())) for e in eco]
+    rows += [("eco", e.value, e.name, pixels) for e, pixels in eco_pixels]
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["layer", "value", "name", "pixels", "area_m2", "share_pct"])
@@ -74,7 +78,8 @@ def run_fusion(
     out_stem: str | None = None,
     chunk_rows: int = 512,
 ) -> dict[str, Path]:
-    """Write {stem}_combo.tif, {stem}_eco.tif and {stem}_stats.csv into out_dir."""
+    """Write {stem}_combo.tif, {stem}_eco.tif, {stem}_stats.csv, {stem}_legend.png and
+    {stem}_decision_tree.tex (+ .pdf/.png when pdflatex/pdftoppm exist) into out_dir."""
     if len(height_m) != 2:
         raise ValueError(f"height_m must be [h1, h2], got {list(height_m)}")
     h1, h2 = (float(h) for h in height_m)
@@ -146,14 +151,30 @@ def run_fusion(
             )
             eco_dst.write_colormap(1, _colormap({e.value: e.color for e in eco}))
 
-    if combo_counts[:N_CODES].sum() == 0:
+    valid = int(combo_counts[:N_CODES].sum())
+    if valid == 0:
         raise ValueError("no pixel is valid in all three inputs - disjoint footprints?")
     pixel_area = abs(grid.transform.a * grid.transform.e)
-    _write_stats(paths["stats"], combo_counts, eco, pixel_area)
+    eco_pixels = [(e, int(combo_counts[list(e.codes)].sum())) for e in eco]
+    _write_stats(paths["stats"], combo_counts, eco_pixels, pixel_area)
+
+    paths["legend"] = legend_png(
+        [(e, px * pixel_area, 100 * px / valid) for e, px in eco_pixels],
+        out_dir / f"{stem}_legend.png",
+    )
+    tex = decision_tree_tex(eco, h1, h2)
+    paths["tree_tex"] = out_dir / f"{stem}_decision_tree.tex"
+    paths["tree_tex"].write_text(tex, encoding="utf-8")
+    pdf = compile_tex(tex, out_dir / f"{stem}_decision_tree.pdf")
+    if pdf is not None:
+        paths["tree_pdf"] = pdf
+        png = pdf_to_png(pdf)
+        if png is not None:
+            paths["tree_png"] = png
     logger.info(
         "fused %d valid px (%.1f m2) into %d eco classes",
-        int(combo_counts[:N_CODES].sum()),
-        combo_counts[:N_CODES].sum() * pixel_area,
+        valid,
+        valid * pixel_area,
         len(eco),
     )
     return paths
