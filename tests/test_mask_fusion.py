@@ -349,6 +349,13 @@ def test_decision_tree_tex_names_every_code_and_class():
     assert r"$h \geq 3.0$" in tex
 
 
+def test_decision_tree_starts_at_crown():
+    tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
+    assert "[, phantom" in tex
+    for gone in ("[pixel", "any input nodata", "all inputs valid"):
+        assert gone not in tex
+
+
 def test_decision_tree_leaf_follows_the_mapping():
     tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
     leaves = {

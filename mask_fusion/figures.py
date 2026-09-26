@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 INK = "#1f1f1f"
 MUTED = "#6b6b6b"
-NODATA_FILL = "black!15"
 
 
 def _tex_escape(text: str) -> str:
@@ -104,9 +103,8 @@ def decision_tree_tex(eco: Sequence[EcoClass], h1: float, h2: float) -> str:
         r"  inner sep=3pt, l sep=7mm, s sep=1.2mm, parent anchor=east, child anchor=west,",
         r"  edge={-latex, draw=black!55}, edge path={\noexpand\path[\forestoption{edge}]",
         r"  (!u.parent anchor) -- +(3mm,0) |- (.child anchor)\forestoption{edge label};}}",
-        r"[pixel",
-        rf"  [{{any input nodata\\$\rightarrow$ 255 (nodata)}}, fill={NODATA_FILL}]",
-        r"  [all inputs valid",
+        # invisible root: the two crown branches are the first visible decision
+        r"[, phantom",
     ]
     for crown in (1, 0):
         lines.append(f"    [{{crown = {crown}}}")
@@ -125,7 +123,7 @@ def decision_tree_tex(eco: Sequence[EcoClass], h1: float, h2: float) -> str:
                 lines.append("        ]")
             lines.append("      ]")
         lines.append("    ]")
-    lines += ["  ]", "]", r"\end{forest}", r"\end{document}", ""]
+    lines += ["]", r"\end{forest}", r"\end{document}", ""]
     return "\n".join(lines)
 
 
