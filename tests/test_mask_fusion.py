@@ -10,8 +10,11 @@ from mask_fusion.codes import (  # noqa: E402
     COMBO_NAMES,
     N_CODES,
     NODATA,
+    EcoClass,
+    build_lookup,
     combo_codes,
     height_class,
+    parse_classes,
 )
 
 H1, H2 = 1.0, 3.0
@@ -89,3 +92,74 @@ def test_mask_with_probabilities_raises(which):
     arrays[which] = np.array([0, 128], np.uint8)
     with pytest.raises(ValueError, match="probability raster"):
         combo_codes(arrays["crown"], arrays["deadwood"], np.zeros(2, np.float32), H1, H2)
+
+
+def _classes():
+    return {
+        1: {"name": "living", "color": "#00ff00", "codes": [1, 5, 9]},
+        2: {"name": "dead", "color": "#ff0000", "codes": [2, 3, 6, 7, 10, 11]},
+        3: {"name": "rest", "color": "#808080", "codes": [0, 4, 8]},
+    }
+
+
+def test_parse_classes_sorted_with_rgb():
+    eco = parse_classes(dict(reversed(list(_classes().items()))))
+    assert [e.value for e in eco] == [1, 2, 3]
+    assert eco[1] == EcoClass(2, "dead", (255, 0, 0), (2, 3, 6, 7, 10, 11))
+
+
+def test_parse_classes_accepts_string_keys():
+    eco = parse_classes({str(k): v for k, v in _classes().items()})
+    assert [e.value for e in eco] == [1, 2, 3]
+
+
+def test_missing_code_raises():
+    classes = _classes()
+    classes[3]["codes"] = [0, 4]
+    with pytest.raises(ValueError, match="missing"):
+        parse_classes(classes)
+
+
+def test_duplicate_code_raises():
+    classes = _classes()
+    classes[1]["codes"] = [0, 1, 5, 9]
+    with pytest.raises(ValueError, match="more than once"):
+        parse_classes(classes)
+
+
+def test_unknown_code_raises():
+    classes = _classes()
+    classes[3]["codes"] = [0, 4, 8, 12]
+    with pytest.raises(ValueError, match="unknown"):
+        parse_classes(classes)
+
+
+@pytest.mark.parametrize("value", [0, 255])
+def test_reserved_eco_value_raises(value):
+    classes = _classes()
+    classes[value] = classes.pop(3)
+    with pytest.raises(ValueError, match=r"1\.\.254"):
+        parse_classes(classes)
+
+
+def test_duplicate_name_raises():
+    classes = _classes()
+    classes[3]["name"] = "living"
+    with pytest.raises(ValueError, match="duplicate class name"):
+        parse_classes(classes)
+
+
+def test_bad_color_raises():
+    classes = _classes()
+    classes[1]["color"] = "green"
+    with pytest.raises(ValueError, match="#rrggbb"):
+        parse_classes(classes)
+
+
+def test_build_lookup_maps_every_code_and_keeps_nodata():
+    lut = build_lookup(parse_classes(_classes()))
+    assert lut.dtype == np.uint8
+    assert lut.shape == (256,)
+    np.testing.assert_array_equal(lut[:N_CODES], [3, 1, 2, 2, 3, 1, 2, 2, 3, 1, 2, 2])
+    assert lut[NODATA] == NODATA
+    assert (lut[N_CODES:] == NODATA).all()
