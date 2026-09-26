@@ -160,6 +160,20 @@ def test_bad_color_raises():
         parse_classes(classes)
 
 
+def test_missing_codes_key_raises():
+    classes = _classes()
+    del classes[3]["codes"]
+    with pytest.raises(ValueError, match="codes"):
+        parse_classes(classes)
+
+
+def test_scalar_codes_raises():
+    classes = _classes()
+    classes[3]["codes"] = 9
+    with pytest.raises(ValueError, match="list"):
+        parse_classes(classes)
+
+
 def test_build_lookup_maps_every_code_and_keeps_nodata():
     lut = build_lookup(parse_classes(_classes()))
     assert lut.dtype == np.uint8
@@ -267,6 +281,14 @@ def test_no_valid_pixel_raises(tmp_path):
         run_fusion(**paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "out")
 
 
+def test_deadwood_nodata_mismatch_raises(tmp_path):
+    paths, (crown, dead, ndsm) = _inputs(tmp_path)
+    _write(paths["deadwood"], dead, 0, left=1000.0)
+    with pytest.raises(ValueError, match="nodata"):
+        run_fusion(**paths, height_m=[H1, H2], classes=_classes(), out_dir=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
 @pytest.mark.parametrize("height_m", [[3.0, 1.0], [1.0], [1.0, 2.0, 3.0]])
 def test_bad_heights_raise_before_writing(tmp_path, height_m):
     paths, _ = _inputs(tmp_path)
@@ -281,4 +303,18 @@ def test_bad_mapping_raises_before_writing(tmp_path):
     classes[3]["codes"] = [0, 4]
     with pytest.raises(ValueError, match="missing"):
         run_fusion(**paths, height_m=[H1, H2], classes=classes, out_dir=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("chunk_rows", [0, -1])
+def test_bad_chunk_rows_raise_before_writing(tmp_path, chunk_rows):
+    paths, _ = _inputs(tmp_path)
+    with pytest.raises(ValueError, match="chunk_rows"):
+        run_fusion(
+            **paths,
+            height_m=[H1, H2],
+            classes=_classes(),
+            out_dir=tmp_path / "out",
+            chunk_rows=chunk_rows,
+        )
     assert not (tmp_path / "out").exists()

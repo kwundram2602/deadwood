@@ -109,9 +109,14 @@ def parse_classes(classes: Mapping) -> list[EcoClass]:
         value = int(key)
         if not 1 <= value <= 254:
             raise ValueError(f"eco value {value} must be in 1..254 (255 is nodata)")
+        missing_keys = [k for k in ("name", "color", "codes") if k not in spec]
+        if missing_keys:
+            raise ValueError(f"eco class {value}: missing key(s) {missing_keys}")
         color = str(spec["color"])
         if not _HEX.match(color):
             raise ValueError(f"eco class {value}: color {color!r} is not #rrggbb")
+        if not isinstance(spec["codes"], list | tuple):
+            raise ValueError(f"eco class {value}: codes must be a list")
         codes = tuple(int(c) for c in spec["codes"])
         eco.append(EcoClass(value, str(spec["name"]), hex_to_rgb(color), codes))
 

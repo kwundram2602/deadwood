@@ -79,6 +79,8 @@ def run_fusion(
         raise ValueError(f"height_m must be [h1, h2], got {list(height_m)}")
     h1, h2 = (float(h) for h in height_m)
     check_thresholds(h1, h2)
+    if chunk_rows < 1:
+        raise ValueError(f"chunk_rows must be >= 1, got {chunk_rows}")
     eco = parse_classes(classes)
     lut = build_lookup(eco)
 
@@ -113,13 +115,21 @@ def run_fusion(
     ):
         assert_matches_grid(d_src, grid, "deadwood")
         assert_matches_grid(n_src, grid, "ndsm")
+        for name, src in (("crown", c_src), ("deadwood", d_src)):
+            if src.nodata is not None and src.nodata != NODATA:
+                raise ValueError(f"{name}: declared nodata {src.nodata} != {NODATA}")
         out_dir.mkdir(parents=True, exist_ok=True)
         with (
             rasterio.open(paths["combo"], "w", **profile) as combo_dst,
             rasterio.open(paths["eco"], "w", **profile) as eco_dst,
         ):
             for row in range(0, grid.height, chunk_rows):
-                win = Window(0, row, grid.width, min(chunk_rows, grid.height - row))
+                win = Window(
+                    col_off=0,
+                    row_off=row,
+                    width=grid.width,
+                    height=min(chunk_rows, grid.height - row),
+                )
                 combo = combo_codes(
                     c_src.read(1, window=win),
                     d_src.read(1, window=win),

@@ -24,12 +24,14 @@ def main() -> None:
     cfg = OmegaConf.load(args.config).fuse
     wd = Path(args.working_dir)
 
+    classes = OmegaConf.to_container(cfg.classes)
+    assert isinstance(classes, dict)
     outputs = run_fusion(
         crown=wd / cfg.crown,
         deadwood=wd / cfg.deadwood,
         ndsm=wd / cfg.ndsm,
         height_m=list(cfg.height_m),
-        classes=OmegaConf.to_container(cfg.classes),
+        classes=classes,
         out_dir=wd / cfg.out_dir,
         out_stem=cfg.get("out_stem"),
         chunk_rows=cfg.get("chunk_rows", 512),
