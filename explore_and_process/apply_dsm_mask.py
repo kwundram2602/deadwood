@@ -553,7 +553,7 @@ def detect_ground_gradient(
 
     valid_pos = grad_smooth[grad_smooth > 0]
     p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else float(grad_smooth.max())
-    # normiert auf [0, p95]; 1e-8 verhindert Division durch 0; invertiert: niedriger Gradient → hohe Boden-Confidence
+    # scale to [0, p95] (1e-8 avoids /0), inverted: low gradient → high ground confidence
     confidence = (1.0 - np.clip(grad_smooth / max(p95, 1e-8), 0.0, 1.0)).astype(np.float32)
     confidence[np.isnan(dsm)] = 0.0
 
@@ -627,22 +627,17 @@ def apply_soft_blend(
         )
     result = mask.copy()
 
-    # Alle gültigen Kronenpixel (Konfidenz 0–1, kein noData-Sentinel)
+    # labelled crown pixels (0–1), minus preserved stage-1a crowns
     crown = (mask >= 0.0) & (mask < MASK_UNLABELLED)
-    # Sichere Kronenpixel aus Stufe 1a bleiben unangetastet (result ist eine Kopie)
     crown &= ~preserved_crown(mask, preserve_crown_threshold)
-    # Krone × (1 – Bodenwahrscheinlichkeit): hohe Bodenkonf. → Kronenwert sinkt gegen 0
     result[crown] = mask[crown] * (1.0 - ground_conf[crown])
 
-    # noData-Pixel (Sentinel 255): außerhalb des Bildbereichs oder nicht klassifiziert
+    # unlabelled pixels: confident ground → label 1 - ground_conf
     nodata = mask == MASK_UNLABELLED
-    # Wenn der DSM-Detektor trotzdem sicher Boden erkennt, Pixel auflösen statt 255 zu behalten
     resolve = nodata & (ground_conf >= nodata_resolve_threshold)
-    # Aufgelöste noData-Pixel bekommen Bodenwahrscheinlichkeit als invertierte Kronenkonfidenz
     result[resolve] = 1.0 - ground_conf[resolve]
 
-    # Symmetrische Auflösung Richtung Krone: sicher NICHT Boden (hohe Vegetation
-    # ohne Polygon) wird als Krone gelabelt statt vom Loss ausgeschlossen
+    # confident non-ground (tall vegetation without polygon) → crown label
     if crown_resolve_threshold is not None:
         resolve_crown = nodata & (ground_conf <= crown_resolve_threshold)
         if height_valid is not None:

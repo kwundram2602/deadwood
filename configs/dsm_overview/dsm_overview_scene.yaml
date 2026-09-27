@@ -29,6 +29,6 @@ plot:
   # quadratically in the surface plot and buys little: a 45-million-pixel
   # surface is not readable at any stride.
   max_side: 400
-  # Blickwinkel der 3D-Panels, wie im Kronen-Run.
+  # 3D panel view angle, same as the crown run.
   elev: 45.0
   azim: -60.0

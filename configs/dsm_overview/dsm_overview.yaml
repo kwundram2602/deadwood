@@ -11,9 +11,8 @@ overview:
   crowns:
     - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
   categories: [soff]
-  # Coverage-Klassen, die nicht auswertbar sind. `fc` = fully covered: die
-  # Krone steht unter geschlossenem Kronendach, das DSM zeigt dort den Baum
-  # darueber. Betrifft 4 der 18 soff-Kronen.
+  # Coverage classes that cannot be evaluated. `fc` = fully covered: the crown
+  # is under closed canopy, the DSM shows the tree above. Affects 4 of 18 soff crowns.
   exclude_coverage: [fc]
   # null = every crown in the categories above. A list restricts the run, which
   # is what you want while iterating on the view angle. Written as a plain
@@ -22,9 +21,8 @@ overview:
   tree_ids: null
   out_dir: out/dsm_overview
   local_blocks: 6
-  # Bewusst false, anders als in der Produktion: der Guard würde genau den
-  # Überschuss wegschneiden, den diese Auswertung sichtbar machen soll. Die
-  # Spalte frac_dtm_above_dsm in dem_offsets.csv ist dann aussagekräftig.
+  # Deliberately false, unlike production: the guard would clip exactly the
+  # excess this analysis shows. Keeps frac_dtm_above_dsm in dem_offsets.csv meaningful.
   clamp_to_dsm: false
 
 aoi:
@@ -47,9 +45,8 @@ aoi:
 plot:
   # Longest side of the plotted patch after striding.
   max_side: 200
-  # Blickwinkel der 3D-Panels. elev ist der Winkel ueber der Horizontalen:
-  # hoeher heisst steiler von oben, was den markierten Kronenumriss als Flaeche
-  # lesbar macht; unter ~25 verschwindet er in der Silhouette. azim dreht die
-  # Szene um die z-Achse.
+  # 3D panel view angle. elev = angle above horizontal; higher = steeper
+  # top-down view, keeps the crown outline readable (below ~25 it merges into
+  # the silhouette). azim rotates the scene about the z axis.
   elev: 45.0
   azim: -60.0
