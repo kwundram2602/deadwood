@@ -1,0 +1,34 @@
+# Reduced fusion: one nDSM threshold (low / tall) instead of two -> 8 combo codes.
+# Run from deadwood/ as working directory; all paths are relative to --working_dir.
+#
+# Usage:
+#   uv run python scripts/fuse_masks.py --config configs/fusion/fuse_reduced.yaml --working_dir .
+#
+# Same inputs as fuse.yaml; see there for the grid requirements.
+
+fuse:
+  crown: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice1__1709/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg_stack_5d1a875f_5cm_fp_pred_t0.9.tif
+  deadwood: out/raw_deadwood/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg_deadwood_mask.tif
+  ndsm: datafiles/process_out/ndsm_in_m/20260917_142553/dsm_ndsm_dtm_raw_m.tif
+
+  # [h] in metres: low < h <= tall.
+  height_m: [1.0]
+
+  out_dir: out/fusion/fusion_reduced
+  out_stem: null      # null -> deadwood file stem without "_deadwood_mask"
+  chunk_rows: 512
+
+  # Combo code = C + 2*D + 4*Hc:
+  #   low:  0 ground          1 crown_low   2 dead_low   3 dead_crown_low
+  #   tall: 4 unlabelled_tall 5 crown_tall  6 dead_tall  7 dead_crown_tall
+  # Every code must appear exactly once below. Eco values 1..254 (255 = nodata).
+  # Values follow the decision tree from top to bottom.
+  classes:
+    1: {name: dead_crown_tall, color: "#67001f", codes: [7]}
+    2: {name: dead_crown_low,  color: "#d6604d", codes: [3]}
+    3: {name: living_tall,     color: "#1a9641", codes: [5]}
+    4: {name: living_low,      color: "#a6d96a", codes: [1]}
+    5: {name: standing_dead,   color: "#d7191c", codes: [6]}
+    6: {name: lying_dead,      color: "#fdae61", codes: [2]}
+    7: {name: unlabelled_tall, color: "#542788", codes: [4]}
+    8: {name: ground,          color: "#f0f0f0", codes: [0]}

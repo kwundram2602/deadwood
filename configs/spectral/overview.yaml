@@ -1,22 +1,23 @@
 # Stage B1 — spectral overview. Descriptive only: no model, no threshold, no
 # detections. It answers whether the seasonal signal the project rests on is
 # actually in the data, before anything is trained on it.
+# uv run scripts/spectral/overview.py
 overview:
   # Only the grid geometry (shape/transform/CRS), not the mask's content. This
   # is the training ground truth, not what the model sees.
-  reference: datafiles/process_out/masks/crown_mask.tif
-  stack_dir: datafiles/process_out/timeseries
+  reference: datafiles/process_out/masks/crown_mask_intermediate_erode.tif
+  stack_dir: datafiles/datafiles/ms_timeseries_5cm_aligned
   crowns:
     - datafiles/crown_poly/soff_altered.gpkg
   # The BINARIZED output of the crown model, not the *_prob.tif beside it: the
   # probability raster carries nodata = -1.0, and binarize_crown_mask only knows
   # 255, so a -1 pixel would read as "valid, but below the threshold".
-  crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.2_dice0.8__30082/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_RGB_merged_stack_c9ae7f13_5cm_fp_pred_t0.9.tif
+  crown_prediction: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice1__1709/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg_stack_5d1a875f_5cm_fp_pred_t0.9.tif
   # Optional. The raw nDSM in metres, NaN wherever the DSM has a hole — which
   # is what makes it a photogrammetry check and not just a height table: a
   # leafless soff crown is exactly where SfM finds no correspondences. Leave it
   # out and the run skips the topography table.
-  ndsm: datafiles/process_out/ndsm_in_m/20260830_205316/dsm_ndsm_dtm_raw_m.tif
+  ndsm: datafiles/process_out/ndsm_in_m/20260917_142553/dsm_ndsm_dtm_raw_m.tif
   out_dir: out/spectral/overview
 
 window:
@@ -25,20 +26,13 @@ window:
   # WHEN a tree stopped swinging.
   #
   # Set to restrict the run to the half-open window (label_date - window_months,
-  # label_date], the same convention the model stage uses. The anchor date must
-  # itself have an acquisition; a label_date without one is rejected rather than
-  # snapped to a neighbour.
-  # eg (20250313, 20260313]
+  # label_date]
   label_date: "20260313"
-  window_months: 10
+  window_months: 12
 
 sampling:
   crown_threshold: 0.5
-  erode_m: 0.10
-  # Erode only what is still something afterwards. The soff polygons run from
-  # 0.02 to 13.9 m2; taking 10 cm off 0.02 m2 deletes the tree, and that is
-  # exactly what happened to 4157. Below this area the raw geometry stays,
-  # edge mixed pixels and all.
+  erode_m: 0.0
   erode_min_area_m2: 1.0
   exclude_buffer_m: 1.0
   edge_buffer_m: 0.25

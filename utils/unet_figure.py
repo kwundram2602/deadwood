@@ -25,7 +25,7 @@ _SCALE = 0.2
 # far above its top edge on the canvas.
 _Z_PROJ = 0.385
 _X_GAP = 1.8  # cm between neighbouring blocks
-_LABEL_H = 1.0  # cm reserved for the two-line label above each block
+_LABEL_H = 1.4  # cm reserved for the (up to three-line) label above each block
 _UP_SLAB_W = 1.0  # units, width of the upsampling slab in front of a decoder block
 
 _SUBGRAPH = re.compile(r"^\s*subgraph (cluster_\d+) \{")
@@ -60,6 +60,19 @@ class Stage:
     height: int
     width: int
     skip_from: str | None = None
+    detail: str | None = None  # third label line, e.g. "3x Bottleneck"
+
+
+@dataclass(frozen=True)
+class EncoderInfo:
+    name: str  # e.g. "ResNet-50", or the torchview class name when not a ResNet
+    block: str | None  # residual block class shared by all stages, if any
+    blocks_per_stage: tuple[int, ...]
+
+
+# Layers per residual block (conv layers on the main path) for the torchvision ResNets.
+_RESNET_BLOCK_LAYERS = {"Bottleneck": 3, "BasicBlock": 2}
+_OP_ABBREV = {"Conv2d": "Conv", "BatchNorm2d": "BN"}
 
 
 def parse_gv(path: Path) -> GvGraph:
@@ -105,6 +118,47 @@ def _chw(node: GvNode) -> tuple[int, int, int]:
     return c, h, w
 
 
+def _encoder_nodes(g: GvGraph) -> tuple[tuple[str, str], list[GvNode]]:
+    """The single top-level ``*Encoder`` cluster and its nodes, in graph order."""
+    top_level = {n.clusters[0] for n in g.nodes.values() if n.clusters}
+    encoders = [c for c in top_level if c[1].endswith("Encoder")]
+    if len(encoders) != 1:
+        raise ValueError(f"expected one *Encoder cluster, found {[c[1] for c in encoders]}")
+    nodes = sorted(
+        (n for n in g.nodes.values() if n.clusters and n.clusters[0] == encoders[0]),
+        key=lambda n: n.id,
+    )
+    return encoders[0], nodes
+
+
+def _encoder_stage_blocks(nodes: list[GvNode]) -> dict[str, list[GvNode]]:
+    """Blocks directly inside each encoder sub-cluster (e.g. ResNet ``layer1..4``)."""
+    stages: dict[str, list[GvNode]] = {}
+    for n in nodes:
+        if len(n.clusters) == 2:
+            stages.setdefault(n.clusters[1][0], []).append(n)
+    return stages
+
+
+def describe_encoder(g: GvGraph) -> EncoderInfo:
+    """Name the encoder; torchvision ResNets are recognised by their block class.
+
+    A ResNet's depth is its conv layers on the main path: blocks x layers per block,
+    plus the stem conv and the final fc (which smp drops, but the name keeps).
+    """
+    (_, label), nodes = _encoder_nodes(g)
+    per_stage = list(_encoder_stage_blocks(nodes).values())
+    ops = {n.op for blocks in per_stage for n in blocks}
+    counts = tuple(len(blocks) for blocks in per_stage)
+    if len(ops) != 1:
+        return EncoderInfo(label, None, counts)
+    block = ops.pop()
+    if label == "ResNetEncoder" and block in _RESNET_BLOCK_LAYERS:
+        depth = _RESNET_BLOCK_LAYERS[block] * sum(counts) + 2
+        return EncoderInfo(f"ResNet-{depth}", block, counts)
+    return EncoderInfo(label, block, counts)
+
+
 def extract_stages(g: GvGraph) -> list[Stage]:
     """Collapse the layer graph to input, encoder features, decoder blocks and head.
 
@@ -122,22 +176,34 @@ def extract_stages(g: GvGraph) -> list[Stage]:
     for src, dst in g.edges:
         preds[dst].append(src)
 
-    top_level = {n.clusters[0] for n in g.nodes.values() if n.clusters}
-    encoders = [c for c in top_level if c[1].endswith("Encoder")]
-    if len(encoders) != 1:
-        raise ValueError(f"expected one *Encoder cluster, found {[c[1] for c in encoders]}")
-    enc_ids = {n.id for n in g.nodes.values() if n.clusters and n.clusters[0] == encoders[0]}
-
+    (_, enc_label), enc_nodes = _encoder_nodes(g)
+    enc_ids = {n.id for n in enc_nodes}
     skip_src = {p for cat in by_op["cat"] for p in preds[cat.id] if p in enc_ids}
     if not skip_src:
         raise ValueError("no encoder -> cat edges; is this a U-Net?")
     feature_ids = sorted(skip_src | {max(enc_ids)})
+    stage_blocks = _encoder_stage_blocks(enc_nodes)
+    stage_index = {cid: k for k, cid in enumerate(stage_blocks, start=1)}
+    resnet = enc_label == "ResNetEncoder"
 
     stages = [Stage("Input", "input", *_chw(by_op["input-tensor"][0]))]
     enc_name: dict[int, str] = {}
     for i, nid in enumerate(feature_ids, start=1):
-        enc_name[nid] = f"Enc {i}"
-        stages.append(Stage(enc_name[nid], "enc", *_chw(g.nodes[nid])))
+        node = g.nodes[nid]
+        if len(node.clusters) == 1:  # directly in the encoder: the stem
+            stem_ops = [n.op for n in enc_nodes if len(n.clusters) == 1 and n.id <= nid]
+            detail = "--".join(_OP_ABBREV.get(op, op) for op in stem_ops)
+            name = "Stem" if resnet else f"Enc {i}"
+        else:
+            cid = node.clusters[1][0]
+            detail = f"{len(stage_blocks[cid])}$\\times$ {node.op}"
+            name = f"Layer {stage_index[cid]}" if resnet else f"Enc {i}"
+        # The deepest feature feeds the decoder directly (smp's decoder centre is an
+        # Identity), so it is the U-Net bottleneck rather than one more skip source.
+        if not resnet and nid == feature_ids[-1]:
+            name = "Bottleneck"
+        enc_name[nid] = name
+        stages.append(Stage(name, "enc", *_chw(node), detail=detail))
     heights = [s.height for s in stages[1:]]
     if heights != sorted(heights, reverse=True) or len(set(heights)) != len(heights):
         raise ValueError(f"encoder features do not halve in resolution: {heights}")
@@ -164,9 +230,8 @@ def extract_stages(g: GvGraph) -> list[Stage]:
 
 _PREAMBLE = r"""\documentclass[border=8pt, tikz]{standalone}
 \input{init}
-\usetikzlibrary{3d}
+\usetikzlibrary{3d, calc, fit, decorations.pathreplacing}
 \def\ConvColor{rgb:yellow,5;red,2.5;white,5}
-\def\ConvReluColor{rgb:yellow,5;red,5;white,5}
 \def\PoolColor{rgb:red,1;black,0.3}
 \def\UnpoolColor{rgb:blue,2;green,1;black,0.3}
 \def\SoftmaxColor{rgb:magenta,5;black,7}
@@ -248,9 +313,10 @@ def _label(p: _Placed) -> str:
     s = p.stage
     size = f"{s.height}$^2$" if s.height == s.width else f"{s.height}$\\times${s.width}"
     top = f"({p.x + p.w * _SCALE / 2:.3f},{p.y + p.half_h:.3f},{-p.h * _SCALE / 2:.3f})"
+    detail = f"\\\\{{\\footnotesize\\itshape {s.detail}}}" if s.detail else ""
     return (
         f"\\node[anchor=south, align=center, font=\\small] at {top} "
-        f"{{\\textbf{{{s.name}}}\\\\{s.channels} $\\times$ {size}}};"
+        f"{{\\textbf{{{s.name}}}\\\\{s.channels} $\\times$ {size}{detail}}};"
     )
 
 
@@ -262,23 +328,22 @@ def _pic(p: _Placed, name: str) -> list[str]:
         fill = r"\InputColor" if s.kind == "input" else r"\SoftmaxColor"
         return [f"\\pic at {at} {{Box={{name={name},fill={fill},width={p.w:.2f},{dims}}}}};"]
     if s.kind == "enc":
-        return [
-            f"\\pic at {at} {{RightBandedBox={{name={name},fill=\\ConvColor,"
-            f"bandfill=\\ConvReluColor,width={{{p.w:.2f}}},{dims}}}}};"
-        ]
+        return [f"\\pic at {at} {{Box={{name={name},fill=\\ConvColor,width={p.w:.2f},{dims}}}}};"]
     conv_w = p.w - _UP_SLAB_W
     conv_at = f"({p.x + _UP_SLAB_W * _SCALE:.3f},{p.y:.3f},0)"
     return [
         f"\\pic at {at} {{Box={{name={name}-up,fill=\\UnpoolColor,opacity=0.5,"
         f"width={_UP_SLAB_W},{dims}}}}};",
-        f"\\pic at {conv_at} {{RightBandedBox={{name={name},fill=\\ConvColor,"
-        f"bandfill=\\ConvReluColor,width={{{conv_w:.2f}}},{dims}}}}};",
+        f"\\pic at {conv_at} {{Box={{name={name},fill=\\ConvColor,width={conv_w:.2f},{dims}}}}};",
     ]
 
 
 def _legend(x: float, y: float) -> list[str]:
     rows = [
-        (r"\fill[fill=\ConvColor] (0,0) rectangle ++(0.5,0.3);", "encoder / decoder conv stage"),
+        (
+            r"\fill[fill=\ConvColor, opacity=0.4] (0,0) rectangle ++(0.5,0.3);",
+            "encoder / decoder conv stage",
+        ),
         (
             r"\fill[fill=\UnpoolColor, opacity=0.6] (0,0) rectangle ++(0.5,0.3);",
             "upsample $\\times$2",
@@ -287,7 +352,7 @@ def _legend(x: float, y: float) -> list[str]:
             r"\fill[fill=\SoftmaxColor, opacity=0.6] (0,0) rectangle ++(0.5,0.3);",
             "segmentation head",
         ),
-        (r"\draw[down] (0,0.15) -- ++(0.5,0);", "downsample (stride 2)"),
+        (r"\draw[down] (0,0.15) -- ++(0.5,0);", "downsample $\\times$2"),
         (r"\draw[up] (0,0.15) -- ++(0.5,0);", "decoder path"),
         (r"\draw[skip] (0,0.15) -- ++(0.5,0);", "skip connection (concat)"),
     ]
@@ -300,8 +365,62 @@ def _legend(x: float, y: float) -> list[str]:
     return out
 
 
-def to_tikz(stages: list[Stage]) -> str:
-    """Emit a standalone LaTeX document drawing ``stages`` as a U."""
+def _bottleneck_box(encoder: EncoderInfo, x_mid: float, top: float) -> list[str]:
+    """Inset explaining the ResNet bottleneck residual block, centred on ``x_mid``.
+
+    The middle conv is pinned to the centre and the chain grows outwards from it;
+    ``fit`` then frames whatever extent the text ends up with.
+    """
+    return [
+        r"\begin{scope}[font=\small, >=Stealth]",
+        r"\tikzstyle{op}=[draw, rounded corners=2pt, fill=\ConvColor, fill opacity=0.4,"
+        r" text opacity=1, align=center, minimum height=1.1cm, inner sep=4pt]",
+        f"\\node[anchor=north, font=\\bfseries] (bt) at ({x_mid:.3f},{top:.3f}) "
+        f"{{{encoder.name} {encoder.block.lower() if encoder.block else ''} block}};",
+        r"\node[op, below=0.5cm of bt] (c2) {3$\times$3 Conv, BN, ReLU};",
+        r"\node[op, left=0.6cm of c2] (c1) {1$\times$1 Conv, BN, ReLU};",
+        r"\node[left=0.9cm of c1] (bx) {$x$};",
+        r"\node[op, right=0.6cm of c2] (c3) {1$\times$1 Conv, BN};",
+        r"\node[draw, circle, inner sep=1pt, right=0.6cm of c3] (add) {$+$};",
+        r"\node[op, fill=white, right=0.6cm of add] (relu) {ReLU};",
+        r"\node[right=0.6cm of relu] (by) {$y$};",
+        r"\foreach \a/\b in {bx/c1, c1/c2, c2/c3, c3/add, add/relu, relu/by}"
+        r" \draw[->, thick] (\a) -- (\b);",
+        r"\coordinate (split) at ($(bx.east)!0.45!(c1.west)$);",
+        r"\draw[->, thick, densely dashed] (split) |- ($(c2.south)+(0,-0.5)$) -| (add);",
+        r"\node[below=0.55cm of c2, font=\footnotesize] (sc)"
+        r" {shortcut: identity, or 1$\times$1 Conv + BN in the first block of each layer};",
+        r"\node[draw=black!40, rounded corners=4pt, inner sep=8pt, fit=(bt)(bx)(by)(sc)] {};",
+        r"\end{scope}",
+    ]
+
+
+def _braces(placed: list[_Placed], encoder: EncoderInfo) -> list[str]:
+    enc = [p for p in placed if p.stage.kind == "enc"]
+    dec = [p for p in placed if p.stage.kind == "dec"]
+    # lowest visible point: the front bottom edge sits _Z_PROJ * d/2 below the box
+    y = min(p.y - p.half_h - _Z_PROJ * p.half_h for p in placed) - 0.4
+    enc_text = f"{encoder.name} encoder"
+    if encoder.block and encoder.blocks_per_stage:
+        counts = "/".join(str(c) for c in encoder.blocks_per_stage)
+        enc_text += f" ({counts} {encoder.block.lower()} blocks)"
+    out = []
+    for group, text in ((enc, enc_text), (dec, "U-Net decoder")):
+        x0, x1 = group[0].x, group[-1].x + group[-1].w * _SCALE
+        out.append(
+            f"\\draw[decorate, decoration={{brace, mirror, amplitude=7pt}}, thick] "
+            f"({x0:.3f},{y:.3f}) -- ({x1:.3f},{y:.3f}) "
+            f"node[midway, below=9pt, font=\\small\\bfseries] {{{text}}};"
+        )
+    return out
+
+
+def to_tikz(stages: list[Stage], encoder: EncoderInfo | None = None) -> str:
+    """Emit a standalone LaTeX document drawing ``stages`` as a U.
+
+    With ``encoder`` the figure also names the encoder/decoder halves and, for a
+    ResNet bottleneck encoder, explains the residual block in an inset.
+    """
     placed = _layout(stages)
     names = {p.stage.name: f"s{i}" for i, p in enumerate(placed)}
     by_name = {p.stage.name: p for p in placed}
@@ -327,6 +446,14 @@ def to_tikz(stages: list[Stage]) -> str:
 
     bottom = min(p.y - p.half_h for p in placed)
     body += _legend(0.0, bottom + 2.9)
+
+    if encoder is not None:
+        body += _braces(placed, encoder)
+        if encoder.block == "Bottleneck":
+            # the empty middle of the U, level with the top row of labels
+            top = max(p.y + p.half_h + _Z_PROJ * p.half_h for p in placed) + _LABEL_H
+            x_mid = (placed[0].x + placed[-1].x + placed[-1].w * _SCALE) / 2
+            body += _bottleneck_box(encoder, x_mid, top)
     return _PREAMBLE + "\n".join(body) + "\n" + _END
 
 
@@ -362,7 +489,8 @@ def plot_unet_from_gv(gv_path: Path, out_path: Path | None = None, keep_tex: boo
     """
     gv_path = Path(gv_path)
     out_pdf = Path(out_path) if out_path else gv_path.with_name("model_unet.pdf")
-    tex = to_tikz(extract_stages(parse_gv(gv_path)))
+    g = parse_gv(gv_path)
+    tex = to_tikz(extract_stages(g), describe_encoder(g))
 
     if keep_tex:
         render_tex(tex, out_pdf, out_pdf.with_name(f"{out_pdf.stem}_tex"))

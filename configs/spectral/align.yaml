@@ -1,6 +1,6 @@
 align:
 # grid reference
-  reference: datafiles/process_out/masks/crown_mask.tif
+  reference: datafiles/process_out/masks/crown_mask_intermediate_erode.tif
   src_dir: datafiles/OM_domAligned
-  out_dir: datafiles/process_out/timeseries
+  out_dir: datafiles/datafiles/ms_timeseries_5cm_aligned
   force: false

@@ -10,50 +10,59 @@ from dataclasses import dataclass
 import numpy as np
 
 NODATA = 255
-N_CODES = 12
 MASK_VALUES = (0, 1, NODATA)
 
-# Index = combo code = C + 2*D + 4*Hc.
-COMBO_NAMES: tuple[str, ...] = (
-    "ground",
-    "crown_low",
-    "dead_low",
-    "dead_crown_low",
-    "unlabelled_mid",
-    "crown_mid",
-    "dead_mid",
-    "dead_crown_mid",
-    "unlabelled_tall",
-    "crown_tall",
-    "dead_tall",
-    "dead_crown_tall",
-)
-COMBO_COLORS: tuple[str, ...] = (
-    "#f0f0f0",
-    "#d9f0a3",
-    "#fdae61",
-    "#d6604d",
-    "#998ec3",
-    "#a6d96a",
-    "#f46d43",
-    "#b2182b",
-    "#542788",
-    "#1a9641",
-    "#d7191c",
-    "#67001f",
-)
+# Height levels per number of nDSM thresholds.
+HEIGHT_LEVELS: dict[int, tuple[str, ...]] = {1: ("low", "tall"), 2: ("low", "mid", "tall")}
+# Per level: (neither, crown, dead, dead+crown); the unlabelled low pixel is "ground".
+_LEVEL_COLORS: dict[str, tuple[str, str, str, str]] = {
+    "low": ("#f0f0f0", "#d9f0a3", "#fdae61", "#d6604d"),
+    "mid": ("#998ec3", "#a6d96a", "#f46d43", "#b2182b"),
+    "tall": ("#542788", "#1a9641", "#d7191c", "#67001f"),
+}
 
 
-def check_thresholds(h1: float, h2: float) -> None:
-    if not 0 < h1 < h2:
-        raise ValueError(f"height thresholds must satisfy 0 < h1 < h2, got h1={h1}, h2={h2}")
+def _levels(n_thresholds: int) -> tuple[str, ...]:
+    if n_thresholds not in HEIGHT_LEVELS:
+        raise ValueError(f"need 1 or 2 height thresholds, got {n_thresholds}")
+    return HEIGHT_LEVELS[n_thresholds]
 
 
-def height_class(ndsm: np.ndarray, h1: float, h2: float) -> np.ndarray:
-    """0 below h1, 1 from h1, 2 from h2. NaN compares False and lands in 0;
-    combo_codes masks it out as nodata."""
-    check_thresholds(h1, h2)
-    return (ndsm >= h1).astype(np.uint8) + (ndsm >= h2).astype(np.uint8)
+def combo_names(n_thresholds: int) -> tuple[str, ...]:
+    """Index = combo code = C + 2*D + 4*Hc."""
+    names: list[str] = []
+    for level in _levels(n_thresholds):
+        unlabelled = "ground" if level == "low" else f"unlabelled_{level}"
+        names += [unlabelled, f"crown_{level}", f"dead_{level}", f"dead_crown_{level}"]
+    return tuple(names)
+
+
+def combo_colors(n_thresholds: int) -> tuple[str, ...]:
+    return tuple(c for level in _levels(n_thresholds) for c in _LEVEL_COLORS[level])
+
+
+# The default two-threshold scheme.
+COMBO_NAMES = combo_names(2)
+COMBO_COLORS = combo_colors(2)
+N_CODES = len(COMBO_NAMES)
+
+
+def check_thresholds(thresholds: Sequence[float]) -> None:
+    _levels(len(thresholds))
+    if not (0 < thresholds[0] and all(a < b for a, b in zip(thresholds, thresholds[1:]))):
+        raise ValueError(
+            f"height thresholds must be positive and increasing, got {list(thresholds)}"
+        )
+
+
+def height_class(ndsm: np.ndarray, thresholds: Sequence[float]) -> np.ndarray:
+    """Number of thresholds reached: 0 below the first, len(thresholds) at the last.
+    NaN compares False and lands in 0; combo_codes masks it out as nodata."""
+    check_thresholds(thresholds)
+    hc = np.zeros(ndsm.shape, dtype=np.uint8)
+    for t in thresholds:
+        hc += (ndsm >= t).astype(np.uint8)
+    return hc
 
 
 def _check_mask(values: np.ndarray, name: str) -> None:
@@ -69,8 +78,7 @@ def combo_codes(
     crown: np.ndarray,
     deadwood: np.ndarray,
     ndsm: np.ndarray,
-    h1: float,
-    h2: float,
+    thresholds: Sequence[float],
     ndsm_nodata: float | None = None,
 ) -> np.ndarray:
     """C + 2*D + 4*Hc as uint8, NODATA wherever any input is nodata."""
@@ -82,7 +90,7 @@ def combo_codes(
     code = (
         (crown == 1).astype(np.uint8)
         + 2 * (deadwood == 1).astype(np.uint8)
-        + 4 * height_class(ndsm, h1, h2)
+        + 4 * height_class(ndsm, thresholds)
     )
     return np.where(valid, code, NODATA).astype(np.uint8)
 
@@ -102,8 +110,10 @@ def hex_to_rgb(color: str) -> tuple[int, int, int]:
     return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
 
 
-def parse_classes(classes: Mapping) -> list[EcoClass]:
+def parse_classes(classes: Mapping, n_thresholds: int = 2) -> list[EcoClass]:
     """Validate the YAML mapping: every combo code exactly once, values 1..254."""
+    names_by_code = combo_names(n_thresholds)
+    n_codes = len(names_by_code)
     eco = []
     for key, spec in classes.items():
         value = int(key)
@@ -126,16 +136,17 @@ def parse_classes(classes: Mapping) -> list[EcoClass]:
         raise ValueError(f"duplicate class name(s): {dup_names}")
 
     seen = [c for e in eco for c in e.codes]
-    unknown = sorted({c for c in seen if not 0 <= c < N_CODES})
+    unknown = sorted({c for c in seen if not 0 <= c < n_codes})
     if unknown:
-        raise ValueError(f"unknown combo code(s) {unknown}, valid codes are 0..{N_CODES - 1}")
+        raise ValueError(f"unknown combo code(s) {unknown}, valid codes are 0..{n_codes - 1}")
     dup = sorted({c for c in seen if seen.count(c) > 1})
     if dup:
         raise ValueError(f"combo code(s) {dup} mapped more than once")
-    missing = sorted(set(range(N_CODES)) - set(seen))
+    missing = sorted(set(range(n_codes)) - set(seen))
     if missing:
         raise ValueError(
-            f"combo code(s) {missing} missing from the mapping: {[COMBO_NAMES[c] for c in missing]}"
+            f"combo code(s) {missing} missing from the mapping: "
+            f"{[names_by_code[c] for c in missing]}"
         )
     return sorted(eco, key=lambda e: e.value)
 

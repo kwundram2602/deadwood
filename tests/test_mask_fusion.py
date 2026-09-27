@@ -18,6 +18,8 @@ from mask_fusion.codes import (  # noqa: E402
     EcoClass,
     build_lookup,
     combo_codes,
+    combo_colors,
+    combo_names,
     height_class,
     parse_classes,
 )
@@ -25,6 +27,7 @@ from mask_fusion.figures import compile_tex, decision_tree_tex, legend_png  # no
 from mask_fusion.run import default_stem, run_fusion  # noqa: E402
 
 H1, H2 = 1.0, 3.0
+THRESH = (H1, H2)
 
 
 def test_combo_names_and_colors_cover_every_code():
@@ -36,24 +39,51 @@ def test_combo_names_and_colors_cover_every_code():
     assert COMBO_NAMES[11] == "dead_crown_tall"
 
 
+def test_combo_names_single_threshold():
+    assert combo_names(1) == (
+        "ground",
+        "crown_low",
+        "dead_low",
+        "dead_crown_low",
+        "unlabelled_tall",
+        "crown_tall",
+        "dead_tall",
+        "dead_crown_tall",
+    )
+    assert len(combo_colors(1)) == 8
+
+
 def test_height_class_boundaries():
     # Negative heights are ground noise, not an error: they are low.
     h = np.array([-0.3, 0.0, 0.999, 1.0, 2.999, 3.0, 15.1], dtype=np.float32)
-    np.testing.assert_array_equal(height_class(h, H1, H2), [0, 0, 0, 1, 1, 2, 2])
-    assert height_class(h, H1, H2).dtype == np.uint8
+    np.testing.assert_array_equal(height_class(h, THRESH), [0, 0, 0, 1, 1, 2, 2])
+    assert height_class(h, THRESH).dtype == np.uint8
 
 
-@pytest.mark.parametrize("h1,h2", [(0.0, 3.0), (-1.0, 2.0), (3.0, 3.0), (3.0, 1.0)])
-def test_height_class_rejects_bad_thresholds(h1, h2):
-    with pytest.raises(ValueError, match="0 < h1 < h2"):
-        height_class(np.zeros(1, np.float32), h1, h2)
+def test_height_class_single_threshold():
+    h = np.array([-0.3, 0.999, 1.0, 15.1], dtype=np.float32)
+    np.testing.assert_array_equal(height_class(h, (H1,)), [0, 0, 1, 1])
+
+
+@pytest.mark.parametrize(
+    "thresholds", [(0.0, 3.0), (-1.0, 2.0), (3.0, 3.0), (3.0, 1.0), (0.0,), (-1.0,)]
+)
+def test_height_class_rejects_bad_thresholds(thresholds):
+    with pytest.raises(ValueError, match="positive and increasing"):
+        height_class(np.zeros(1, np.float32), thresholds)
+
+
+@pytest.mark.parametrize("thresholds", [(), (1.0, 2.0, 3.0)])
+def test_height_class_rejects_wrong_threshold_count(thresholds):
+    with pytest.raises(ValueError, match="1 or 2 height thresholds"):
+        height_class(np.zeros(1, np.float32), thresholds)
 
 
 def test_combo_codes_truth_table():
     crown = np.array([0, 1, 0, 1] * 3, np.uint8)
     dead = np.array([0, 0, 1, 1] * 3, np.uint8)
     ndsm = np.repeat(np.array([0.5, 2.0, 5.0], np.float32), 4)
-    out = combo_codes(crown, dead, ndsm, H1, H2)
+    out = combo_codes(crown, dead, ndsm, THRESH)
     np.testing.assert_array_equal(out, np.arange(12))
     assert out.dtype == np.uint8
 
@@ -62,7 +92,7 @@ def test_combo_codes_keeps_2d_shape():
     crown = np.ones((2, 3), np.uint8)
     dead = np.zeros((2, 3), np.uint8)
     ndsm = np.full((2, 3), 5.0, np.float32)
-    out = combo_codes(crown, dead, ndsm, H1, H2)
+    out = combo_codes(crown, dead, ndsm, THRESH)
     assert out.shape == (2, 3)
     assert (out == 9).all()
 
@@ -75,21 +105,21 @@ def test_nodata_from_each_input(which):
         "ndsm": np.array([5.0, 5.0], np.float32),
     }
     arrays[which][0] = np.nan if which == "ndsm" else NODATA
-    out = combo_codes(arrays["crown"], arrays["deadwood"], arrays["ndsm"], H1, H2)
+    out = combo_codes(arrays["crown"], arrays["deadwood"], arrays["ndsm"], THRESH)
     np.testing.assert_array_equal(out, [NODATA, 11])
 
 
 def test_numeric_ndsm_nodata_is_nodata_not_low():
     zeros = np.zeros(2, np.uint8)
     ndsm = np.array([-9999.0, 0.5], np.float32)
-    out = combo_codes(zeros, zeros, ndsm, H1, H2, ndsm_nodata=-9999.0)
+    out = combo_codes(zeros, zeros, ndsm, THRESH, ndsm_nodata=-9999.0)
     np.testing.assert_array_equal(out, [NODATA, 0])
 
 
 def test_nan_ndsm_nodata_value_is_harmless():
     zeros = np.zeros(2, np.uint8)
     ndsm = np.array([np.nan, 0.5], np.float32)
-    out = combo_codes(zeros, zeros, ndsm, H1, H2, ndsm_nodata=float("nan"))
+    out = combo_codes(zeros, zeros, ndsm, THRESH, ndsm_nodata=float("nan"))
     np.testing.assert_array_equal(out, [NODATA, 0])
 
 
@@ -98,7 +128,7 @@ def test_mask_with_probabilities_raises(which):
     arrays = {"crown": np.zeros(2, np.uint8), "deadwood": np.zeros(2, np.uint8)}
     arrays[which] = np.array([0, 128], np.uint8)
     with pytest.raises(ValueError, match="probability raster"):
-        combo_codes(arrays["crown"], arrays["deadwood"], np.zeros(2, np.float32), H1, H2)
+        combo_codes(arrays["crown"], arrays["deadwood"], np.zeros(2, np.float32), THRESH)
 
 
 def _classes():
@@ -236,7 +266,7 @@ def test_run_fusion_end_to_end(tmp_path):
     assert out["combo"].name == "x_combo.tif"
 
     combo, combo_cmap, combo_nodata = _read(out["combo"])
-    np.testing.assert_array_equal(combo, combo_codes(crown, dead, ndsm, H1, H2))
+    np.testing.assert_array_equal(combo, combo_codes(crown, dead, ndsm, THRESH))
     assert combo_nodata == NODATA
     assert combo_cmap[9][:3] == (0x1A, 0x96, 0x41)
     assert combo_cmap[NODATA][3] == 0
@@ -261,7 +291,39 @@ def test_run_fusion_end_to_end(tmp_path):
     assert out["legend"].name == "x_legend.png"
     assert out["legend"].exists()
     assert out["tree_tex"].name == "x_decision_tree.tex"
-    assert out["tree_tex"].read_text() == decision_tree_tex(parse_classes(_classes()), H1, H2)
+    assert out["tree_tex"].read_text() == decision_tree_tex(parse_classes(_classes()), THRESH)
+
+
+def _classes_reduced():
+    return {
+        1: {"name": "living", "color": "#00ff00", "codes": [1, 5]},
+        2: {"name": "dead", "color": "#ff0000", "codes": [2, 3, 6, 7]},
+        3: {"name": "rest", "color": "#808080", "codes": [0, 4]},
+    }
+
+
+def test_parse_classes_single_threshold_has_eight_codes():
+    parse_classes(_classes_reduced(), n_thresholds=1)
+    with pytest.raises(ValueError, match="unknown combo code"):
+        parse_classes(_classes(), n_thresholds=1)
+    with pytest.raises(ValueError, match="missing"):
+        parse_classes(_classes_reduced(), n_thresholds=2)
+
+
+def test_run_fusion_single_threshold(tmp_path):
+    paths, (crown, dead, ndsm) = _inputs(tmp_path)
+    out = run_fusion(
+        **paths, height_m=[H1], classes=_classes_reduced(), out_dir=tmp_path / "out", chunk_rows=4
+    )
+    combo, _, _ = _read(out["combo"])
+    np.testing.assert_array_equal(combo, combo_codes(crown, dead, ndsm, (H1,)))
+    assert set(np.unique(combo)) <= set(range(8)) | {NODATA}
+    with open(out["stats"], newline="") as f:
+        combo_rows = [r for r in csv.DictReader(f) if r["layer"] == "combo"]
+    assert [r["name"] for r in combo_rows] == list(combo_names(1))
+    tex = out["tree_tex"].read_text()
+    assert tex.count("fill=eco") == 8
+    assert "$h < 1.0$" in tex and r"$h \geq 1.0$" in tex and r"\leq h" not in tex
 
 
 def test_chunk_size_does_not_change_result(tmp_path):
@@ -297,7 +359,7 @@ def test_deadwood_nodata_mismatch_raises(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize("height_m", [[3.0, 1.0], [1.0], [1.0, 2.0, 3.0]])
+@pytest.mark.parametrize("height_m", [[3.0, 1.0], [], [1.0, 2.0, 3.0]])
 def test_bad_heights_raise_before_writing(tmp_path, height_m):
     paths, _ = _inputs(tmp_path)
     with pytest.raises(ValueError):
@@ -331,16 +393,21 @@ def test_bad_chunk_rows_raise_before_writing(tmp_path, chunk_rows):
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-def test_decision_tree_tex_names_every_code_and_class():
+def _tree_leaves(tex: str) -> list[str]:
+    return [line for line in tex.splitlines() if "fill=eco" in line]
+
+
+def test_decision_tree_tex_names_every_class_but_no_combo_code():
     eco = parse_classes(_classes())
-    tex = decision_tree_tex(eco, H1, H2)
-    for name in COMBO_NAMES:
-        assert name.replace("_", r"\_") in tex
+    tex = decision_tree_tex(eco, THRESH)
     for e in eco:
         assert e.name in tex
         assert rf"\definecolor{{eco{e.value}}}" in tex
     assert tex.count(r"\definecolor") == len(eco)
-    assert tex.count("[{code ") == N_CODES
+    assert len(_tree_leaves(tex)) == N_CODES
+    assert "code " not in tex and r"\texttt" not in tex
+    for name in COMBO_NAMES:
+        assert name.replace("_", r"\_") not in tex
     # "=" must sit inside braces, or forest reads it as a node option and drops it
     for label in ("crown = 1", "crown = 0", "deadwood = 1", "deadwood = 0"):
         assert "[{" + label + "}" in tex
@@ -350,27 +417,24 @@ def test_decision_tree_tex_names_every_code_and_class():
 
 
 def test_decision_tree_starts_at_crown():
-    tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
+    tex = decision_tree_tex(parse_classes(_classes()), THRESH)
     assert "[, phantom" in tex
     for gone in ("[pixel", "any input nodata", "all inputs valid"):
         assert gone not in tex
 
 
 def test_decision_tree_leaf_follows_the_mapping():
-    tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
-    leaves = {
-        int(line.split("code ")[1].split()[0]): line
-        for line in tex.splitlines()
-        if "[{code " in line
-    }
-    assert sorted(leaves) == list(range(N_CODES))
+    tex = decision_tree_tex(parse_classes(_classes()), THRESH)
+    # leaves are emitted crown (1, 0) x deadwood (1, 0) x height class (2, 1, 0)
+    order = [c + 2 * d + 4 * hc for c in (1, 0) for d in (1, 0) for hc in (2, 1, 0)]
+    leaves = dict(zip(order, _tree_leaves(tex), strict=True))
     assert r"2 \textbf{dead}" in leaves[11] and "fill=eco2" in leaves[11]
     assert r"1 \textbf{living}" in leaves[9] and "fill=eco1" in leaves[9]
     assert r"3 \textbf{rest}" in leaves[0] and "fill=eco3" in leaves[0]
 
 
 def test_decision_tree_formats_fractional_thresholds():
-    tex = decision_tree_tex(parse_classes(_classes()), 1.25, 3.0)
+    tex = decision_tree_tex(parse_classes(_classes()), (1.25, 3.0))
     assert "$h < 1.25$" in tex
 
 
@@ -382,7 +446,7 @@ def test_legend_png_writes_png(tmp_path):
 
 @pytest.mark.skipif(shutil.which("pdflatex") is None, reason="pdflatex not installed")
 def test_compile_tex_writes_pdf(tmp_path):
-    tex = decision_tree_tex(parse_classes(_classes()), H1, H2)
+    tex = decision_tree_tex(parse_classes(_classes()), THRESH)
     pdf = compile_tex(tex, tmp_path / "tree.pdf")
     assert pdf == tmp_path / "tree.pdf"
     assert pdf.read_bytes()[:5] == b"%PDF-"

@@ -15,14 +15,13 @@ from rasterio.windows import Window
 
 from deadwood_spectral.grid import assert_matches_grid, load_reference_grid
 from mask_fusion.codes import (
-    COMBO_COLORS,
-    COMBO_NAMES,
-    N_CODES,
     NODATA,
     EcoClass,
     build_lookup,
     check_thresholds,
     combo_codes,
+    combo_colors,
+    combo_names,
     hex_to_rgb,
     parse_classes,
 )
@@ -45,12 +44,13 @@ def _colormap(colors: Mapping[int, tuple[int, int, int]]) -> dict[int, tuple[int
 
 def _write_stats(
     path: Path,
+    names: Sequence[str],
     combo_counts: np.ndarray,
     eco_pixels: Sequence[tuple[EcoClass, int]],
     pixel_area: float,
 ) -> None:
-    valid = int(combo_counts[:N_CODES].sum())
-    rows = [("combo", code, COMBO_NAMES[code], int(combo_counts[code])) for code in range(N_CODES)]
+    valid = int(combo_counts[: len(names)].sum())
+    rows = [("combo", code, name, int(combo_counts[code])) for code, name in enumerate(names)]
     rows += [("eco", e.value, e.name, pixels) for e, pixels in eco_pixels]
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -79,14 +79,15 @@ def run_fusion(
     chunk_rows: int = 512,
 ) -> dict[str, Path]:
     """Write {stem}_combo.tif, {stem}_eco.tif, {stem}_stats.csv, {stem}_legend.png and
-    {stem}_decision_tree.tex (+ .pdf/.png when pdflatex/pdftoppm exist) into out_dir."""
-    if len(height_m) != 2:
-        raise ValueError(f"height_m must be [h1, h2], got {list(height_m)}")
-    h1, h2 = (float(h) for h in height_m)
-    check_thresholds(h1, h2)
+    {stem}_decision_tree.tex (+ .pdf/.png when pdflatex/pdftoppm exist) into out_dir.
+
+    height_m holds one threshold ([h]: low/tall) or two ([h1, h2]: low/mid/tall)."""
+    thresholds = tuple(float(h) for h in height_m)
+    check_thresholds(thresholds)
     if chunk_rows < 1:
         raise ValueError(f"chunk_rows must be >= 1, got {chunk_rows}")
-    eco = parse_classes(classes)
+    eco = parse_classes(classes, len(thresholds))
+    names = combo_names(len(thresholds))
     lut = build_lookup(eco)
 
     grid = load_reference_grid(crown)
@@ -139,30 +140,35 @@ def run_fusion(
                     c_src.read(1, window=win),
                     d_src.read(1, window=win),
                     n_src.read(1, window=win),
-                    h1,
-                    h2,
+                    thresholds,
                     ndsm_nodata=n_src.nodata,
                 )
                 combo_dst.write(combo, 1, window=win)
                 eco_dst.write(lut[combo], 1, window=win)
                 combo_counts += np.bincount(combo.ravel(), minlength=256)
             combo_dst.write_colormap(
-                1, _colormap({code: hex_to_rgb(col) for code, col in enumerate(COMBO_COLORS)})
+                1,
+                _colormap(
+                    {
+                        code: hex_to_rgb(col)
+                        for code, col in enumerate(combo_colors(len(thresholds)))
+                    }
+                ),
             )
             eco_dst.write_colormap(1, _colormap({e.value: e.color for e in eco}))
 
-    valid = int(combo_counts[:N_CODES].sum())
+    valid = int(combo_counts[: len(names)].sum())
     if valid == 0:
         raise ValueError("no pixel is valid in all three inputs - disjoint footprints?")
     pixel_area = abs(grid.transform.a * grid.transform.e)
     eco_pixels = [(e, int(combo_counts[list(e.codes)].sum())) for e in eco]
-    _write_stats(paths["stats"], combo_counts, eco_pixels, pixel_area)
+    _write_stats(paths["stats"], names, combo_counts, eco_pixels, pixel_area)
 
     paths["legend"] = legend_png(
         [(e, px * pixel_area, 100 * px / valid) for e, px in eco_pixels],
         out_dir / f"{stem}_legend.png",
     )
-    tex = decision_tree_tex(eco, h1, h2)
+    tex = decision_tree_tex(eco, thresholds)
     paths["tree_tex"] = out_dir / f"{stem}_decision_tree.tex"
     paths["tree_tex"].write_text(tex, encoding="utf-8")
     pdf = compile_tex(tex, out_dir / f"{stem}_decision_tree.pdf")

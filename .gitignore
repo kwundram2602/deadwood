@@ -37,3 +37,6 @@ deadwood_notes/
 **/*.aux.xml
 .claude
 datafiles/OM_domAligned
+datafiles/ms_timeseries_5cm_aligned
+datafiles/standing-deadwood-aerial-global-conservative_2026.06.17
+datafiles/tree-cover-aerial-global_2026.06.17

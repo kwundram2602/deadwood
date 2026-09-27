@@ -13,7 +13,8 @@ fuse:
   deadwood: out/raw_deadwood/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg_deadwood_mask.tif
   ndsm: datafiles/process_out/ndsm_in_m/20260917_142553/dsm_ndsm_dtm_raw_m.tif
 
-  # [h1, h2] in metres: low < h1 <= mid < h2 <= tall.
+  # [h1, h2] in metres: low < h1 <= mid < h2 <= tall. One value [h] gives low/tall
+  # only (8 combo codes), see fuse_reduced.yaml.
   height_m: [1.0, 3.0]
 
   out_dir: out/fusion
@@ -26,11 +27,11 @@ fuse:
   #   tall: 8 unlabelled_tall 9 crown_tall 10 dead_tall 11 dead_crown_tall
   # Every code must appear exactly once below. Eco values 1..254 (255 = nodata).
   classes:
-    1:  {name: living_tree,     color: "#1a9641", codes: [9]}
-    2:  {name: living_shrub,    color: "#a6d96a", codes: [1, 5]}
-    3:  {name: dead_crown_tall, color: "#67001f", codes: [11]}
-    4:  {name: dead_crown_mid,  color: "#b2182b", codes: [7]}
-    5:  {name: dead_crown_low,  color: "#d6604d", codes: [3]}
+    1:  {name: dead_crown_tall, color: "#67001f", codes: [11]}
+    2:  {name: dead_crown_mid,  color: "#b2182b", codes: [7]}
+    3:  {name: dead_crown_low,  color: "#d6604d", codes: [3]}
+    4:  {name: living_tree,     color: "#1a9641", codes: [9]}
+    5:  {name: living_shrub,    color: "#a6d96a", codes: [1, 5]}
     6:  {name: standing_dead,   color: "#d7191c", codes: [10]}
     7:  {name: dead_mid,        color: "#f46d43", codes: [6]}
     8:  {name: lying_dead,      color: "#fdae61", codes: [2]}

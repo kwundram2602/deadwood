@@ -18,7 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
-from mask_fusion.codes import COMBO_NAMES, EcoClass, build_lookup  # noqa: E402
+from mask_fusion.codes import EcoClass, build_lookup  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +75,15 @@ def legend_png(rows: Sequence[tuple[EcoClass, float, float]], path: str | Path) 
     return path
 
 
-def decision_tree_tex(eco: Sequence[EcoClass], h1: float, h2: float) -> str:
-    """Standalone forest document: crown -> deadwood -> height class -> combo -> eco."""
+def decision_tree_tex(eco: Sequence[EcoClass], thresholds: Sequence[float]) -> str:
+    """Standalone forest document: crown -> deadwood -> height class -> eco class."""
     lut = build_lookup(eco)
     by_value = {e.value: e for e in eco}
-    a, b = _metres(h1), _metres(h2)
-    height_labels = {
-        2: rf"$h \geq {b}$\,m",
-        1: rf"${a} \leq h < {b}$\,m",
-        0: rf"$h < {a}$\,m",
-    }
+    t = [_metres(h) for h in thresholds]
+    top = len(t)
+    height_labels = {0: rf"$h < {t[0]}$\,m", top: rf"$h \geq {t[-1]}$\,m"}
+    for hc in range(1, top):
+        height_labels[hc] = rf"${t[hc - 1]} \leq h < {t[hc]}$\,m"
 
     lines = [
         r"\documentclass[border=8pt]{standalone}",
@@ -110,14 +109,13 @@ def decision_tree_tex(eco: Sequence[EcoClass], h1: float, h2: float) -> str:
         lines.append(f"    [{{crown = {crown}}}")
         for dead in (1, 0):
             lines.append(f"      [{{deadwood = {dead}}}")
-            for hc in (2, 1, 0):
+            for hc in range(top, -1, -1):
                 code = crown + 2 * dead + 4 * hc
                 e = by_value[int(lut[code])]
                 text = r", text=white" if _is_dark(e.color) else ""
                 lines.append(f"        [{height_labels[hc]}")
                 lines.append(
-                    f"          [{{code {code} \\texttt{{{_tex_escape(COMBO_NAMES[code])}}}\\\\"
-                    f"$\\rightarrow$ {e.value} \\textbf{{{_tex_escape(e.name)}}}}}, "
+                    f"          [{{{e.value} \\textbf{{{_tex_escape(e.name)}}}}}, "
                     f"fill=eco{e.value}{text}]"
                 )
                 lines.append("        ]")
