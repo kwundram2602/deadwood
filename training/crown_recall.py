@@ -33,18 +33,33 @@ def crown_pixel_index(
 
 
 def crown_coverage(
-    mask: np.ndarray, index: dict[int, tuple[np.ndarray, np.ndarray]], min_overlap: float = 0.1
+    mask: np.ndarray,
+    index: dict[int, tuple[np.ndarray, np.ndarray]],
+    min_overlap: float = 0.1,
+    valid: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Fraction of each crown covered by the binary mask, and whether it counts as hit."""
+    """Fraction of each crown covered by the binary mask, and whether it counts as hit.
+
+    `valid` marks pixels the mask has an opinion on. Nodata pixels leave both
+    numerator and denominator — otherwise a nodata value like 255 would read as
+    covered. A crown with pixels but none valid scores NaN: unknown, not missed.
+    """
     rows = []
     for fid, (r, c) in index.items():
         n_px = int(r.size)
-        covered = int(mask[r, c].astype(bool).sum()) if n_px else 0
-        fraction = covered / n_px if n_px else 0.0
+        ok = valid[r, c] if valid is not None else np.ones(n_px, dtype=bool)
+        n_valid = int(ok.sum())
+        covered = int((mask[r, c].astype(bool) & ok).sum()) if n_px else 0
+        if n_valid:
+            fraction = covered / n_valid
+        else:
+            fraction = float("nan") if n_px else 0.0
         rows.append(
             {
                 "fid": fid,
                 "n_px": n_px,
+                "n_valid_px": n_valid,
+                "valid_fraction": n_valid / n_px if n_px else 0.0,
                 "covered_px": covered,
                 "covered_fraction": fraction,
                 "hit": fraction > min_overlap,

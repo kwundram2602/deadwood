@@ -247,14 +247,18 @@ def predict_probs(src, model, device, cfg) -> tuple[np.ndarray, np.ndarray]:
 
     for images, valid, rows, cols in tqdm(loader, desc="inference"):
         images = images.to(device=device, memory_format=torch.channels_last)
+        # The model predicts the full tile (tile_size x tile_size), padding included.
         with torch.inference_mode():
             probs = torch.sigmoid(model(images)).cpu().numpy()[:, 0]
 
         for i in range(probs.shape[0]):
             row, col = int(rows[i]), int(cols[i])
+            # Crop to the step x step core; the padding predictions lack context and
+            # are dropped. The neighbouring tile predicts that area as its core.
             core = probs[i, padding : padding + step, padding : padding + step]
             core_valid = valid[i].numpy()[padding : padding + step, padding : padding + step]
 
+            # Cores tile the scene without overlap; clip the last ones at the scene edge.
             h = min(step, dataset.height - row)
             w = min(step, dataset.width - col)
             probs_out[row : row + h, col : col + w] = core[:h, :w]
@@ -295,20 +299,36 @@ def mask_to_polygons(mask: np.ndarray, transform, crs, min_area: float) -> gpd.G
 # ── entry point ─────────────────────────────────────────────────────────────
 
 
-def run(cfg, root: Path) -> Path:
-    def resolve(value):
-        return (root / str(value)).resolve()
-
-    out_dir = resolve(cfg.get("out_dir", "out/raw_deadwood"))
-    out_dir.mkdir(parents=True, exist_ok=True)
+def output_paths(cfg, root: Path) -> dict[str, Path]:
+    """The files a run writes for cfg.source.path, keyed by kind."""
+    out_dir = (root / str(cfg.get("out_dir", "out/raw_deadwood"))).resolve()
     stem = Path(str(cfg.source.path)).stem
+    return {
+        "rgb8": out_dir / f"{stem}_rgb8.tif",
+        "mask": out_dir / f"{stem}_deadwood_mask.tif",
+        "polygons": out_dir / f"{stem}_deadwood.gpkg",
+    }
 
+
+def prepare_input(cfg, root: Path) -> Path:
+    """Write the uint8 model input for cfg.source.path and return its path."""
     print("Preparing model input")
-    rgb8_path = prepare_rgb8(cfg, out_dir / f"{stem}_rgb8.tif")
+    return prepare_rgb8(cfg, output_paths(cfg, root)["rgb8"])
+
+
+def run(cfg, root: Path) -> Path:
+    rgb8_path = prepare_input(cfg, root)
 
     device = get_device()
     print(f"Loading weights: {cfg.weights}")
-    model = load_model(resolve(cfg.weights), device)
+    model = load_model((root / str(cfg.weights)).resolve(), device)
+
+    return predict_scene(cfg, root, rgb8_path, model, device)
+
+
+def predict_scene(cfg, root: Path, rgb8_path: Path, model, device) -> Path:
+    """Predict on a prepared uint8 input and write mask and polygons."""
+    paths = output_paths(cfg, root)
 
     with rasterio.open(rgb8_path) as src:
         mask = predict_mask(src, model, device, cfg)
@@ -319,7 +339,7 @@ def run(cfg, root: Path) -> Path:
     gdf = mask_to_polygons(mask, transform, crs, float(cfg.get("min_polygon_area", 0.1)))
 
     if cfg.get("save_mask", True):
-        mask_path = out_dir / f"{stem}_deadwood_mask.tif"
+        mask_path = paths["mask"]
         profile.update(count=1, dtype="uint8", nodata=_NODATA_MASK)
         with rasterio.open(mask_path, "w", **profile) as dst:
             dst.write(mask, 1)
@@ -328,7 +348,7 @@ def run(cfg, root: Path) -> Path:
     if not cfg.get("save_input", True):
         rgb8_path.unlink()
 
-    poly_path = out_dir / f"{stem}_deadwood.gpkg"
+    poly_path = paths["polygons"]
     if gdf.empty:
         print("No deadwood polygons found — nothing written")
         return poly_path

@@ -49,6 +49,8 @@ def _make_experiment_id(cfg) -> str:
     if weights:
         w = str(weights)
         parts.append(Path(w).stem if ("/" in w or "\\" in w) else w)
+    else:
+        parts.append("scratch")
 
     loss = cfg.loss
     loss_parts = [
@@ -76,6 +78,13 @@ def main() -> None:
 
     cfg = OmegaConf.load(args.config)
     root = Path(args.working_dir).resolve()
+
+    no_weights = cfg.model.get("weights_name") is None and cfg.model.get("weights_path") is None
+    if no_weights and cfg.model.get("frozen_pretrained_channels"):
+        raise ValueError(
+            "frozen_pretrained_channels is set but no pretrained weights are loaded "
+            "(weights_name and weights_path are null) — it would freeze random init"
+        )
 
     data_root = root / cfg.dataset.path
 
@@ -126,12 +135,17 @@ def main() -> None:
         init_wandb(cfg, model)
 
     # ------------------------------------------------------------------
-    # Phase 1: Transfer Learning — encoder frozen, decoder + head only
+    # Phase 1: Transfer Learning — encoder frozen, decoder + head only.
+    # transfer.freeze_encoder: false → whole net trainable (from scratch)
     # ------------------------------------------------------------------
+    freeze_encoder = bool(cfg.transfer.get("freeze_encoder", True))
     print("\n" + "=" * 60)
-    print("Phase 1: Transfer Learning")
+    print("Phase 1: " + ("Transfer Learning" if freeze_encoder else "Full training (from scratch)"))
     print("=" * 60)
-    lc.prepare_model_for_transfer_learning(model)
+    if freeze_encoder:
+        lc.prepare_model_for_transfer_learning(model)
+    else:
+        lc.prepare_model_for_full_training(model)
     plot_trainable(model, out_dir, "tl", spec)
     tl_result = train(
         model,

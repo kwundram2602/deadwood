@@ -40,6 +40,14 @@ class LearningConfigurator:
         self._print_trainable_table(model)
         return model
 
+    def prepare_model_for_full_training(self, model: nn.Module) -> nn.Module:
+        print("Full training: all parameters trainable (from scratch)")
+        m = model.module if hasattr(model, "module") else model
+        for p in m.parameters():
+            p.requires_grad = True
+        self._print_trainable_table(model)
+        return model
+
     def prepare_model_for_head_only(self, model: nn.Module) -> nn.Module:
         print("Head only: freezing encoder and decoder, training segmentation head")
         self._freeze_encoder(model)
@@ -64,9 +72,7 @@ class LearningConfigurator:
         """First conv (channel-frozen via gradient mask) + its BN train in every phase.
 
         Only ResNet-style encoders name these conv1/bn1. Transformer encoders
-        such as mit_b5 call theirs patch_embed1.proj, so nothing matches — say
-        so rather than returning silently, which reads as "first conv trained"
-        when it was not.
+        such as mit_b5 call theirs patch_embed1.proj.
         """
         m = model.module if hasattr(model, "module") else model
         if not hasattr(m, "encoder"):

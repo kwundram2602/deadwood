@@ -1,10 +1,12 @@
-"""Paper-style U-Net figure (PlotNeuralNet 3D blocks) from a torchview ``model_graph.gv``.
+"""Paper-style model figure (PlotNeuralNet 3D blocks) from a torchview ``model_graph.gv``.
 
 ``save_model_graph`` writes a layer-by-layer torchview graph that is far too long for a
-paper. This module reads that ``.gv`` back, collapses it to U-Net stages (encoder
-features, decoder blocks, head, skip connections) and emits a TikZ figure in the U
-layout using the PlotNeuralNet layer macros vendored in ``plotneuralnet_layers/``.
-Compiling needs ``pdflatex`` on PATH; ``pdftoppm`` (poppler) adds an optional PNG.
+paper. This module reads that ``.gv`` back, collapses it to encoder-decoder stages
+(encoder features, decoder blocks, head, skip connections) and emits a TikZ figure in
+the U layout using the PlotNeuralNet layer macros vendored in ``plotneuralnet_layers/``.
+Any smp U-Net works; ResNet and MiT (SegFormer) encoders additionally get named stages
+and an inset explaining their block. Compiling needs ``pdflatex`` on PATH; ``pdftoppm``
+(poppler) adds an optional PNG.
 """
 
 import math
@@ -13,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -65,13 +68,29 @@ class Stage:
 
 @dataclass(frozen=True)
 class EncoderInfo:
-    name: str  # e.g. "ResNet-50", or the torchview class name when not a ResNet
+    name: str  # e.g. "ResNet-50", "MiT-B5", or the torchview class name when unknown
     block: str | None  # residual block class shared by all stages, if any
     blocks_per_stage: tuple[int, ...]
 
 
 # Layers per residual block (conv layers on the main path) for the torchvision ResNets.
 _RESNET_BLOCK_LAYERS = {"Bottleneck": 3, "BasicBlock": 2}
+# MiT variants share the stage layout and differ in (blocks per stage, stage-1 channels).
+_MIT_VARIANTS = {
+    ((2, 2, 2, 2), 32): "B0",
+    ((2, 2, 2, 2), 64): "B1",
+    ((3, 4, 6, 3), 64): "B2",
+    ((3, 4, 18, 3), 64): "B3",
+    ((3, 8, 27, 3), 64): "B4",
+    ((3, 6, 40, 3), 64): "B5",
+}
+# Known encoder classes: (stage name prefix, stage detail prefix). Stages of other
+# encoders are numbered "Enc i" and the deepest one is called the bottleneck.
+_FAMILIES = {
+    "ResNetEncoder": ("Layer", ""),
+    "MixVisionTransformerEncoder": ("Stage", "PatchEmbed + "),
+}
+_BLOCK_DISPLAY = {"Block": "Transformer"}  # MiT's block class is just "Block"
 _OP_ABBREV = {"Conv2d": "Conv", "BatchNorm2d": "BN"}
 
 
@@ -132,19 +151,36 @@ def _encoder_nodes(g: GvGraph) -> tuple[tuple[str, str], list[GvNode]]:
 
 
 def _encoder_stage_blocks(nodes: list[GvNode]) -> dict[str, list[GvNode]]:
-    """Blocks directly inside each encoder sub-cluster (e.g. ResNet ``layer1..4``)."""
+    """Blocks directly inside each encoder stage, in graph order.
+
+    Stages are the ``Sequential`` sub-clusters (ResNet ``layer1..4``, MiT
+    ``block1..4``); other sub-clusters such as MiT's ``OverlapPatchEmbed`` are not.
+    """
     stages: dict[str, list[GvNode]] = {}
     for n in nodes:
-        if len(n.clusters) == 2:
+        if len(n.clusters) == 2 and n.clusters[1][1] == "Sequential":
             stages.setdefault(n.clusters[1][0], []).append(n)
     return stages
+
+
+def _stage_of(node: GvNode, stage_blocks: dict[str, list[GvNode]]) -> str | None:
+    """The stage cluster an encoder feature closes, or None for the stem.
+
+    A feature inside a stage belongs to it; one directly in the encoder (e.g. MiT's
+    norm + ``contiguous`` after each stage) to the last stage that ended before it.
+    """
+    if len(node.clusters) == 2 and node.clusters[1][0] in stage_blocks:
+        return node.clusters[1][0]
+    before = [cid for cid, blocks in stage_blocks.items() if blocks[-1].id < node.id]
+    return before[-1] if before else None
 
 
 def describe_encoder(g: GvGraph) -> EncoderInfo:
     """Name the encoder; torchvision ResNets are recognised by their block class.
 
     A ResNet's depth is its conv layers on the main path: blocks x layers per block,
-    plus the stem conv and the final fc (which smp drops, but the name keeps).
+    plus the stem conv and the final fc (which smp drops, but the name keeps). MiT
+    (the SegFormer encoder) variants are told apart by blocks per stage and width.
     """
     (_, label), nodes = _encoder_nodes(g)
     per_stage = list(_encoder_stage_blocks(nodes).values())
@@ -156,6 +192,10 @@ def describe_encoder(g: GvGraph) -> EncoderInfo:
     if label == "ResNetEncoder" and block in _RESNET_BLOCK_LAYERS:
         depth = _RESNET_BLOCK_LAYERS[block] * sum(counts) + 2
         return EncoderInfo(f"ResNet-{depth}", block, counts)
+    if label == "MixVisionTransformerEncoder":
+        variant = _MIT_VARIANTS.get((counts, _chw(per_stage[0][0])[0]))
+        if variant is not None:
+            return EncoderInfo(f"MiT-{variant}", block, counts)
     return EncoderInfo(label, block, counts)
 
 
@@ -184,23 +224,25 @@ def extract_stages(g: GvGraph) -> list[Stage]:
     feature_ids = sorted(skip_src | {max(enc_ids)})
     stage_blocks = _encoder_stage_blocks(enc_nodes)
     stage_index = {cid: k for k, cid in enumerate(stage_blocks, start=1)}
-    resnet = enc_label == "ResNetEncoder"
+    family = _FAMILIES.get(enc_label)
 
     stages = [Stage("Input", "input", *_chw(by_op["input-tensor"][0]))]
     enc_name: dict[int, str] = {}
     for i, nid in enumerate(feature_ids, start=1):
         node = g.nodes[nid]
-        if len(node.clusters) == 1:  # directly in the encoder: the stem
+        cid = _stage_of(node, stage_blocks)
+        if cid is None:  # before the first stage: the stem
             stem_ops = [n.op for n in enc_nodes if len(n.clusters) == 1 and n.id <= nid]
             detail = "--".join(_OP_ABBREV.get(op, op) for op in stem_ops)
-            name = "Stem" if resnet else f"Enc {i}"
+            name = "Stem" if family else f"Enc {i}"
         else:
-            cid = node.clusters[1][0]
-            detail = f"{len(stage_blocks[cid])}$\\times$ {node.op}"
-            name = f"Layer {stage_index[cid]}" if resnet else f"Enc {i}"
+            blocks = stage_blocks[cid]
+            block = _BLOCK_DISPLAY.get(blocks[0].op, blocks[0].op)
+            detail = f"{family[1] if family else ''}{len(blocks)}$\\times$ {block}"
+            name = f"{family[0]} {stage_index[cid]}" if family else f"Enc {i}"
         # The deepest feature feeds the decoder directly (smp's decoder centre is an
         # Identity), so it is the U-Net bottleneck rather than one more skip source.
-        if not resnet and nid == feature_ids[-1]:
+        if not family and nid == feature_ids[-1]:
             name = "Bottleneck"
         enc_name[nid] = name
         stages.append(Stage(name, "enc", *_chw(node), detail=detail))
@@ -342,7 +384,7 @@ def _legend(x: float, y: float) -> list[str]:
     rows = [
         (
             r"\fill[fill=\ConvColor, opacity=0.4] (0,0) rectangle ++(0.5,0.3);",
-            "encoder / decoder conv stage",
+            "encoder stage / decoder conv block",
         ),
         (
             r"\fill[fill=\UnpoolColor, opacity=0.6] (0,0) rectangle ++(0.5,0.3);",
@@ -395,6 +437,42 @@ def _bottleneck_box(encoder: EncoderInfo, x_mid: float, top: float) -> list[str]
     ]
 
 
+def _mit_block_box(encoder: EncoderInfo, x_mid: float, top: float) -> list[str]:
+    """Inset explaining the MiT (SegFormer) transformer block, centred on ``x_mid``.
+
+    Pre-norm block: efficient self-attention, then Mix-FFN, each with a residual. The
+    point between the two halves is pinned to the centre; ``fit`` frames the rest.
+    """
+    return [
+        r"\begin{scope}[font=\small, >=Stealth]",
+        r"\tikzstyle{op}=[draw, rounded corners=2pt, fill=\ConvColor, fill opacity=0.4,"
+        r" text opacity=1, align=center, minimum height=1.1cm, inner sep=4pt]",
+        f"\\node[anchor=north, font=\\bfseries] (bt) at ({x_mid:.3f},{top:.3f}) "
+        f"{{{encoder.name} transformer block}};",
+        r"\coordinate (mid) at ($(bt.south)+(0,-1.05)$);",
+        r"\node[draw, circle, inner sep=1pt, left=0.3cm of mid] (add1) {$+$};",
+        r"\node[op, left=0.6cm of add1] (attn) {Efficient\\Self-Attn};",
+        r"\node[op, fill=white, left=0.6cm of attn] (ln1) {LN};",
+        r"\node[left=0.9cm of ln1] (bx) {$x$};",
+        r"\node[op, fill=white, right=0.9cm of add1] (ln2) {LN};",
+        r"\node[op, right=0.6cm of ln2] (ffn) {Mix-FFN: Linear,\\3$\times$3 DWConv, GELU, Linear};",
+        r"\node[draw, circle, inner sep=1pt, right=0.6cm of ffn] (add2) {$+$};",
+        r"\node[right=0.6cm of add2] (by) {$y$};",
+        r"\foreach \a/\b in {bx/ln1, ln1/attn, attn/add1, add1/ln2, ln2/ffn, ffn/add2, add2/by}"
+        r" \draw[->, thick] (\a) -- (\b);",
+        r"\coordinate (split1) at ($(bx.east)!0.45!(ln1.west)$);",
+        r"\coordinate (split2) at ($(add1.east)!0.45!(ln2.west)$);",
+        r"\draw[->, thick, densely dashed] (split1) |- ($(attn.south)+(0,-0.4)$) -| (add1);",
+        r"\draw[->, thick, densely dashed] (split2) |- ($(ffn.south)+(0,-0.4)$) -| (add2);",
+        r"\node[below=1.3cm of mid, align=center, font=\footnotesize] (sc)"
+        r" {attention keys/values spatially reduced by $R$ = 8/4/2/1 in stages 1--4\\"
+        r" each stage starts with an overlapping patch embedding: 7$\times$7 Conv, stride 4"
+        r" (stage 1) or 3$\times$3 Conv, stride 2, + LN};",
+        r"\node[draw=black!40, rounded corners=4pt, inner sep=8pt, fit=(bt)(bx)(by)(sc)] {};",
+        r"\end{scope}",
+    ]
+
+
 def _braces(placed: list[_Placed], encoder: EncoderInfo) -> list[str]:
     enc = [p for p in placed if p.stage.kind == "enc"]
     dec = [p for p in placed if p.stage.kind == "dec"]
@@ -403,7 +481,8 @@ def _braces(placed: list[_Placed], encoder: EncoderInfo) -> list[str]:
     enc_text = f"{encoder.name} encoder"
     if encoder.block and encoder.blocks_per_stage:
         counts = "/".join(str(c) for c in encoder.blocks_per_stage)
-        enc_text += f" ({counts} {encoder.block.lower()} blocks)"
+        block = _BLOCK_DISPLAY.get(encoder.block, encoder.block).lower()
+        enc_text += f" ({counts} {block} blocks)"
     out = []
     for group, text in ((enc, enc_text), (dec, "U-Net decoder")):
         x0, x1 = group[0].x, group[-1].x + group[-1].w * _SCALE
@@ -415,11 +494,19 @@ def _braces(placed: list[_Placed], encoder: EncoderInfo) -> list[str]:
     return out
 
 
+def _inset_for(encoder: EncoderInfo) -> Callable[[EncoderInfo, float, float], list[str]] | None:
+    if encoder.name.startswith("ResNet") and encoder.block == "Bottleneck":
+        return _bottleneck_box
+    if encoder.name.startswith("MiT-"):
+        return _mit_block_box
+    return None
+
+
 def to_tikz(stages: list[Stage], encoder: EncoderInfo | None = None) -> str:
     """Emit a standalone LaTeX document drawing ``stages`` as a U.
 
     With ``encoder`` the figure also names the encoder/decoder halves and, for a
-    ResNet bottleneck encoder, explains the residual block in an inset.
+    ResNet bottleneck or MiT encoder, explains its block in an inset.
     """
     placed = _layout(stages)
     names = {p.stage.name: f"s{i}" for i, p in enumerate(placed)}
@@ -449,11 +536,12 @@ def to_tikz(stages: list[Stage], encoder: EncoderInfo | None = None) -> str:
 
     if encoder is not None:
         body += _braces(placed, encoder)
-        if encoder.block == "Bottleneck":
+        inset = _inset_for(encoder)
+        if inset is not None:
             # the empty middle of the U, level with the top row of labels
             top = max(p.y + p.half_h + _Z_PROJ * p.half_h for p in placed) + _LABEL_H
             x_mid = (placed[0].x + placed[-1].x + placed[-1].w * _SCALE) / 2
-            body += _bottleneck_box(encoder, x_mid, top)
+            body += inset(encoder, x_mid, top)
     return _PREAMBLE + "\n".join(body) + "\n" + _END
 
 
@@ -480,23 +568,27 @@ def render_tex(tex: str, out_pdf: Path, build_dir: Path) -> Path:
     return out_pdf
 
 
-def plot_unet_from_gv(gv_path: Path, out_path: Path | None = None, keep_tex: bool = False) -> Path:
-    """Write a PlotNeuralNet-style U-Net figure for ``gv_path``; returns the PDF path.
+def plot_model_from_gv(gv_path: Path, out_path: Path | None = None, keep_tex: bool = False) -> Path:
+    """Write a PlotNeuralNet-style model figure for ``gv_path``; returns the PDF path.
 
-    Default output is ``model_unet.pdf`` next to the ``.gv``. A 300 dpi PNG is added
-    when ``pdftoppm`` is available. With ``keep_tex`` the self-contained LaTeX
-    sources stay in ``<stem>_tex/`` for hand-editing.
+    Default output is ``model_figure.pdf`` next to the ``.gv``. A 300 dpi PNG is added
+    when ``pdftoppm`` is available. With ``keep_tex`` the LaTeX source is kept as
+    ``<out>.tex`` for hand-editing; it finds the layer macros via ``TEXINPUTS``.
     """
     gv_path = Path(gv_path)
-    out_pdf = Path(out_path) if out_path else gv_path.with_name("model_unet.pdf")
+    out_pdf = Path(out_path) if out_path else gv_path.with_name("model_figure.pdf")
     g = parse_gv(gv_path)
     tex = to_tikz(extract_stages(g), describe_encoder(g))
 
+    with tempfile.TemporaryDirectory() as tmp:
+        render_tex(tex, out_pdf, Path(tmp))
     if keep_tex:
-        render_tex(tex, out_pdf, out_pdf.with_name(f"{out_pdf.stem}_tex"))
-    else:
-        with tempfile.TemporaryDirectory() as tmp:
-            render_tex(tex, out_pdf, Path(tmp))
+        header = (
+            f"% Generated by utils/model_figure.py from {gv_path}.\n"
+            "% Compile from the repo root:\n"
+            f"%   TEXINPUTS=utils/plotneuralnet_layers//: pdflatex {out_pdf.with_suffix('.tex')}\n"
+        )
+        out_pdf.with_suffix(".tex").write_text(header + tex, encoding="utf-8")
 
     if shutil.which("pdftoppm"):
         subprocess.run(

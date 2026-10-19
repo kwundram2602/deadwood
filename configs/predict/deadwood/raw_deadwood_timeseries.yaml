@@ -1,0 +1,40 @@
+# Raw deadwood prediction over a whole time series (pretrained deadtrees.earth model).
+# Run from deadwood/ as working directory; all paths are relative to --working_dir.
+#
+# The model block below must stay in step with raw_deadwood.yaml — the input
+# contract (uint8 RGB, ImageNet normalisation, 0.05 m, 1024 px tiles) belongs to
+# the architecture. Only `source` differs: a folder instead of a single scene.
+#
+# Usage:
+#   uv run python scripts/predict_deadwood_timeseries.py \
+#       --config configs/predict/deadwood/raw_deadwood_timeseries.yaml --working_dir .
+
+deadwood_timeseries:
+  weights: datafiles/deadtress_weights/segformer_b5_full_epoch_100.safetensors
+
+  # Every file under dir matching pattern is one scene. Scenes are sorted by
+  # path, so the date-prefixed names come out chronologically.
+  source:
+    dir: datafiles/ms_timeseries_5cm_aligned
+    pattern: "*_stack.tif"
+    max_items: 5          # N -> only the N most recent scenes; null -> all
+    bands: [1, 2, 3]      # OM_coreg: R, G, B, then Green, Red, RedEdge, NIR
+
+  target_gsd: 0.05
+
+  scale:
+    mode: percentile          # linear | percentile
+    source_max: 65535     # linear: value range mapped onto 255. null -> scene max
+    percentiles: [2, 98]  # percentile: computed over all bands jointly
+
+  tile_size: 1024
+  padding: 256
+  batch_size: 3           # fits the 4 GB laptop GPU
+
+  threshold: 0.7
+  min_polygon_area: 0.1   # m2
+  # Outputs go to out_dir/<scene parent folder>/. Scenes already predicted there
+  # are skipped unless --overwrite.
+  out_dir: out/raw_deadwood
+  save_input: true
+  save_mask: true

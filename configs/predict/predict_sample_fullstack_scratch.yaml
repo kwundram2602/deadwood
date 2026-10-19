@@ -1,0 +1,64 @@
+# Full-scene prediction config.
+# Run from deadwood/ as working directory; all paths are relative to --working_dir.
+#
+# Usage:
+#   uv run python scripts/predict.py --config configs/predict/predict.yaml --working_dir .
+#
+# CLI flags override config values when provided:
+#   --image --dsm --dtm --weights --threshold --out
+
+# Trained checkpoint (.pt). Architecture is inferred from the checkpoint.
+weights: experiments/crown_fullstack_fromscratch__scratch__bce0.3_dice1__3009/tl_best.pt
+
+# Model input channels manifest. null → <weights_dir>/channels.json
+# (written by scripts/train.py next to the checkpoint).
+channels: null
+
+# Per-channel normalisation stats the model was trained with
+# (the train config's dataset.path + /train_stats.json). Must contain a
+# "names" field. null → no normalisation.
+stats: sample_exp/sample_train_stats.json
+#stats: out/crown_ms_1407/train_stats.json
+
+# Raw absolute-elevation DSM. Only required when the model's channels
+# include 'ndsm'.
+dsm: datafiles/DSM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_coreg.tif
+
+# Optional external DTM. When set, the nDSM is DSM - DTM (apply_dsm_mask
+# `method: dtm`) instead of DSM minus a minimum filter.
+dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
+#dtm : null
+# Pre-stacked scene image ([0,1] float32 with band descriptions, as written
+# by rasterize_crowns.py).
+# ! Only used when preprocess.enabled is false !
+# eg a 7 band stack of RGB + MS4
+image: null
+
+# Preprocessing of raw inputs — sources MUST match the preprocess config the
+# training data was built with (bands, names, target_gsd).
+preprocess:
+  enabled: true
+  target_gsd: 0.05
+  sources:
+    - path: datafiles/OM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg.tif
+      bands: [1, 2, 3, 4, 5, 6, 7]
+      names: [red, green, blue, green_ms, red_ms, rededge, nir]  # native M3M order
+  windows: [500]     # dsm_mask.windows — minimum-filter sizes for nDSM (ignored when dtm: is set)
+  max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
+  # Must match the training run, otherwise the nDSM differs:
+  dtm_stage: aligned        # dsm_mask.dtm_stage — plane | aligned
+  dtm_local_blocks: 12      # dsm_mask.dtm_local_blocks
+  dtm_clamp_to_dsm: true    # dsm_mask.dtm_clamp_to_dsm — DTM never above DSM
+  dir: null               # prep cache; null → datafiles/process_out/predict_prep
+
+# Binarization threshold for the crown probability [0,1] → {0,1}
+threshold: 0.9
+
+# Sliding-window tiling
+tile_size: 512
+overlap: 0.5
+batch_size: 8
+
+# Outputs
+out: null             # output dir; null → <weights_dir>/predict
+quicklook: true       # write Pseudo-RGB | probability | binary preview PNG

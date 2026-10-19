@@ -1,5 +1,9 @@
 \documentclass[border=8pt, tikz]{standalone}
 \usetikzlibrary{positioning, fit, backgrounds, arrows.meta, patterns, calc}
+\usepackage{enumitem}
+\setlist[itemize]{nosep, leftmargin=0.9em, label=\textbullet}
+% \stagebox{title}{items}
+\newcommand{\stagebox}[2]{{\centering\textbf{#1}\par}\begin{itemize}#2\end{itemize}}
 % colours shared with utils/unet_figure.py (_PREAMBLE)
 \def\ConvColor{rgb:yellow,5;red,2.5;white,5}
 \def\InputColor{rgb:white,5;black,1}
@@ -34,8 +38,8 @@
   >={Stealth[length=2.2mm]},
   flow/.style={->, line width=0.5mm, draw=\SkipColor, opacity=0.85},
   box/.style={draw, rounded corners=2pt, align=center, inner sep=4pt},
-  stage/.style={box, fill=\ConvColor, fill opacity=0.45, text opacity=1,
-               text width=3.05cm, minimum height=2.3cm},
+  stage/.style={box, align=left, fill=\ConvColor, fill opacity=0.45, text opacity=1,
+               text width=3.05cm, minimum height=2.9cm},
 ]
 
 % ── data ─────────────────────────────────────────────────────────────────────
@@ -44,12 +48,12 @@
   {\textbf{Crown patch dataset} (shared by all runs)\\
    8-channel stack: R, G, B, G$_\mathrm{ms}$, R$_\mathrm{ms}$, RE, NIR, nDSM};
 \node[font=\scriptsize\itshape, below=0.05cm of data] (sel)
-  {input channel selection (\texttt{dataset.input\_channels})};
+  {input channel selection};
 
 % ── three variants ───────────────────────────────────────────────────────────
 % lane centres x = 0, 5, 10; rows: title 0, channels -0.9, conv1 -2.0, mask -3.1
-\foreach \c/\n/\k in {0/crown\_rgb/3, 5/crown\_rgb\_ms/7, 10/crown\_fullstack/8}{
-  \node[font=\small] at (\c,0.05) {\textbf{\texttt{\n}} \,(\k\ ch)};
+\foreach \c/\n/\k in {0/RGB/3, 5/RGB + MS/7, 10/RGB + MS + nDSM/8}{
+  \node[font=\small] at (\c,0.05) {\textbf{\n} \,(\k\ ch)};
 }
 
 % input channels
@@ -96,18 +100,26 @@
 \draw[flow] (sel.south) -- ++(0,-0.25) -| (10,0.4);
 
 % ── shared pipeline ──────────────────────────────────────────────────────────
-\node[stage] (net) at (-0.55,-6.4)
-  {\textbf{U-Net} (TorchGeo)\\ ResNet-50 encoder\\ weights \texttt{OAM\_RGB\_}\\\texttt{RESNET50\_TCD}\\
-   all params frozen};
+\node[stage] (net) at (-0.55,-6.7)
+  {\stagebox{U-Net (TorchGeo)}{
+    \item ResNet-50 encoder
+    \item OAM-TCD pretrained weights
+    \item all params frozen}};
 \node[stage, right=0.35cm of net] (tl)
-  {\textbf{Phase 1: transfer}\\ train \texttt{conv1}, \texttt{bn1},\\ decoder, head\\
-   80 ep, AdamW, lr $10^{-3}$,\\ cosine $\to$ \texttt{tl\_best}};
+  {\stagebox{Phase 1: transfer}{
+    \item train \texttt{conv1}, \texttt{bn1}, decoder, head
+    \item 80 epochs, AdamW
+    \item lr $10^{-3}$, cosine}};
 \node[stage, right=0.35cm of tl] (ft)
-  {\textbf{Phase 2: fine-tune}\\ + \texttt{layer1}, \texttt{layer4.2}\\ (encoder lr $\times0.1$)\\
-   30 ep, lr $5{\cdot}10^{-5}$,\\ step $\to$ \texttt{ft\_best}};
+  {\stagebox{Phase 2: fine-tune}{
+    \item + \texttt{layer1}, \texttt{layer4.2}
+    \item encoder lr $\times0.1$
+    \item 30 epochs, lr $5{\cdot}10^{-5}$, step}};
 \node[stage, right=0.35cm of ft] (ev)
-  {\textbf{Evaluate \& predict}\\ \texttt{ft\_best} on val/test\\ IoU, F1, prec., rec.,\\ AUC-PR\\
-   thr.\ 0.6 / 0.8 / 0.9};
+  {\stagebox{Evaluate \& predict}{
+    \item best checkpoint on val/test
+    \item IoU, F1, prec., rec., AUC-PR
+    \item thr.\ 0.6 / 0.8 / 0.9}};
 \draw[flow] (net) -- (tl);
 \draw[flow] (tl)  -- (ft);
 \draw[flow] (ft)  -- (ev);

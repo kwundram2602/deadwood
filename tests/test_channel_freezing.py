@@ -190,3 +190,37 @@ def test_plot_labels_conv_columns_with_channel_names(tmp_path):
     for name in INPUTS:
         assert name in svg, f"channel {name} missing from the figure"
     assert "encoder.conv1" in svg
+
+
+def test_no_weights_builds_resnet50_not_smp_default():
+    model = build_model(_make_cfg([]), torch.device("cpu"), _make_spec())
+    # resnet50 uses Bottleneck blocks (conv3); smp's default resnet34 does not
+    assert hasattr(model.encoder.layer4[0], "conv3")
+    assert _first_conv(model).in_channels == len(INPUTS)
+
+
+def test_no_weights_honours_explicit_encoder():
+    cfg = _make_cfg([])
+    cfg.model.encoder = "resnet34"
+    model = build_model(cfg, torch.device("cpu"), _make_spec())
+    assert not hasattr(model.encoder.layer4[0], "conv3")
+
+
+def test_full_training_makes_every_param_trainable():
+    model = build_model(_make_cfg([]), torch.device("cpu"), _make_spec())
+    model = LearningConfigurator().prepare_model_for_full_training(model)
+    assert all(p.requires_grad for p in model.parameters())
+
+
+def test_experiment_id_marks_scratch_runs():
+    from scripts.train import _make_experiment_id
+
+    cfg = OmegaConf.create(
+        {
+            "model_name": "crown_fullstack",
+            "run_tag": "30_09",
+            "model": {"weights_name": None, "weights_path": None},
+            "loss": {"bce": 0.3, "dice": 1.0},
+        }
+    )
+    assert _make_experiment_id(cfg) == "crown_fullstack__scratch__bce0.3_dice1__30_09"

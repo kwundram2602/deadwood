@@ -335,11 +335,11 @@ def save_model_graph(
         print(f"Saved model graph source -> {gv_path}")
 
         try:
-            from utils.unet_figure import plot_unet_from_gv
+            from utils.model_figure import plot_model_from_gv
 
-            print(f"Saved U-Net figure -> {plot_unet_from_gv(gv_path)}")
+            print(f"Saved model figure -> {plot_model_from_gv(gv_path)}")
         except Exception as fig_exc:
-            print(f"[WARNING] U-Net figure skipped: {fig_exc}")
+            print(f"[WARNING] model figure skipped: {fig_exc}")
 
         try:
             graph.visual_graph.render(str(stem), format="png", cleanup=True)

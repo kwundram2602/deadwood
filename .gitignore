@@ -37,6 +37,17 @@ deadwood_notes/
 **/*.aux.xml
 .claude
 datafiles/OM_domAligned
+datafiles/crown_poly/old/*
 datafiles/ms_timeseries_5cm_aligned
 datafiles/standing-deadwood-aerial-global-conservative_2026.06.17
 datafiles/tree-cover-aerial-global_2026.06.17
+**/field_eval*/**
+assets/presentation
+# sample experiment results (copied from sample_exp)
+assets/crown_fullstack/
+assets/crown_rgb/
+assets/crown_rgb_ms/
+assets/results_crown
+assets/*
+**/*.pptx
+tests/data

@@ -3,17 +3,17 @@
 # uv run python scripts/dsm_overview.py --config configs/dsm_overview/dsm_overview.yaml --working_dir .
 overview:
   # Grid only. The same reference the spectral stage and apply_dsm_mask use.
-  reference: datafiles/process_out/masks/crown_mask.tif
-  dsm: datafiles/raster_merged/20260313/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_merged.tif
+  reference: datafiles/process_out/masks/crown_mask_intermediate_erode.tif
+  dsm: datafiles/DSM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_coreg.tif
   # 0.5 m, flown 2025-07-27 — a different survey eight months before the DSM.
   # That gap is exactly what align_dtm_to_dsm has to absorb.
   dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
   crowns:
-    - datafiles/crown_poly/2_crown_main_20260409_editLP.gpkg
+    - datafiles/crown_poly/soff_altered_coreg.gpkg
   categories: [soff]
   # Coverage classes that cannot be evaluated. `fc` = fully covered: the crown
   # is under closed canopy, the DSM shows the tree above. Affects 4 of 18 soff crowns.
-  exclude_coverage: [fc]
+  exclude_coverage: [fc,pc]  # fully/partially covered
   # null = every crown in the categories above. A list restricts the run, which
   # is what you want while iterating on the view angle. Written as a plain
   # list here, so a bare number like `4144` parses as YAML int; run_dsm_overview

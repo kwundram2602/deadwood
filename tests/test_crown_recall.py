@@ -64,3 +64,25 @@ def test_sweep_recall_falls_as_the_threshold_rises():
     assert list(df["threshold"]) == [0.2, 0.5, 0.9]
     assert list(df["n_hit"]) == [2, 1, 0]
     assert (df["n_crowns"] == 2).all()
+
+
+def test_nodata_pixels_leave_numerator_and_denominator():
+    mask = np.zeros(SHAPE, dtype=np.uint8)
+    mask[2, 2] = 1
+    mask[2, 3] = 255  # nodata inside crown 21 must not count as covered
+    valid = mask != 255
+    df = crown_coverage(mask, crown_pixel_index(_crowns(), TRANSFORM, SHAPE), valid=valid)
+    assert df.loc[21, "n_px"] == 4
+    assert df.loc[21, "n_valid_px"] == 3
+    assert df.loc[21, "covered_px"] == 1
+    assert np.isclose(df.loc[21, "covered_fraction"], 1 / 3)
+    assert np.isclose(df.loc[21, "valid_fraction"], 0.75)
+
+
+def test_crown_without_valid_pixels_scores_nan():
+    mask = np.zeros(SHAPE, dtype=np.uint8)
+    mask[7, 6] = 255  # crown 58 is a single nodata pixel
+    df = crown_coverage(mask, crown_pixel_index(_crowns(), TRANSFORM, SHAPE), valid=mask != 255)
+    assert df.loc[58, "n_valid_px"] == 0
+    assert np.isnan(df.loc[58, "covered_fraction"])
+    assert not bool(df.loc[58, "hit"])

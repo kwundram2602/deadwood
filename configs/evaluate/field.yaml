@@ -1,0 +1,22 @@
+# Recall-side scoring of the binary masks against field polygons.
+# Run from deadwood/ as working directory; all paths are relative to --working_dir.
+#
+# Usage:
+#   uv run python scripts/evaluate_field.py --config configs/evaluate/field.yaml --working_dir .
+#
+# Per polygon: share of its area covered by the mask (nodata pixels excluded).
+# A polygon counts as detected once that share reaches a threshold.
+
+field_eval:
+  thresholds: [0.5]
+  out_dir: out/field_eval
+
+  # name -> mask (binary, nodata-aware) and the field polygons it is scored against.
+  # Optional `layer:` selects a layer in multi-layer GeoPackages.
+  targets:
+    crown:
+      mask: sample_exp/crown_fullstack__OAM_RGB_RESNET50_TCD__bce0.3_dice1__1709/predict/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg_stack_5d1a875f_5cm_fp_pred_t0.9.tif
+      polygons: datafiles/crown_poly/crowns_altered.gpkg
+    deadwood:
+      mask: out/raw_deadwood/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg_deadwood_mask.tif
+      polygons: datafiles/crown_poly/soff_altered_coreg.gpkg

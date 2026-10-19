@@ -14,8 +14,11 @@ def build_model(cfg: DictConfig, device: torch.device, spec: ChannelSpec) -> nn.
     if cfg.model.weights_name is not None:
         weights = getattr(Unet_Weights, cfg.model.weights_name)
 
-    # Build with pretrained 3-channel encoder, then adapt to the channel spec
-    model = unet(weights=weights, classes=cfg.model.num_classes)
+    # Build with 3-channel encoder, then adapt to the channel spec. Without
+    # pretrained weights the encoder must be explicit — smp would otherwise
+    # default to resnet34 (the pretrained enums pick their own encoder).
+    extra = {} if weights is not None else {"encoder_name": cfg.model.get("encoder") or "resnet50"}
+    model = unet(weights=weights, classes=cfg.model.num_classes, **extra)
 
     if spec.in_channels != 3 or spec.pretrained_assignment != _IDENTITY_RGB:
         _adapt_first_conv(model.encoder, spec.in_channels, spec.pretrained_assignment)
@@ -74,6 +77,10 @@ def _freeze_input_channels(
     name, conv = _find_first_conv(encoder)
     # for every input channel set to 0 if it is supposed to be frozen
     mask = torch.ones_like(conv.weight)
+    # conv.weight is (out_channels, in_channels, kH, kW): ":" keeps every
+    # filter, "channels" picks the input-channel columns (dim 1). channels are
+    # input-tensor positions (spec.frozen_indices), which equal the weight's
+    # dim-1 indices because the first conv has groups=1.
     mask[:, channels] = 0.0
     # non-persistent buffer: moves with .to(device), stays out of the state_dict
     conv.register_buffer("frozen_channel_mask", mask, persistent=False)

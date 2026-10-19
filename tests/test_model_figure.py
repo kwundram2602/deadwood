@@ -8,16 +8,18 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from utils.unet_figure import (
+from utils.model_figure import (
     EncoderInfo,
     describe_encoder,
     extract_stages,
     parse_gv,
-    plot_unet_from_gv,
+    plot_model_from_gv,
     to_tikz,
 )
 
 GV = Path(__file__).parent / "data" / "model_graph_resnet50_unet.gv"
+# smp.Unet("mit_b5"), the deadtrees.earth checkpoint architecture
+MIT_GV = Path(__file__).parent / "data" / "model_graph_mit_b5_unet.gv"
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +91,37 @@ def test_to_tikz_with_encoder_adds_braces_and_block_inset(stages):
 
 
 @pytest.mark.skipif(shutil.which("pdflatex") is None, reason="pdflatex not installed")
-def test_plot_unet_from_gv_writes_pdf(tmp_path):
-    pdf = plot_unet_from_gv(GV, tmp_path / "unet.pdf")
+def test_plot_model_from_gv_writes_pdf_and_tex(tmp_path):
+    pdf = plot_model_from_gv(MIT_GV, tmp_path / "mit.pdf", keep_tex=True)
     assert pdf.read_bytes().startswith(b"%PDF")
+    assert "TEXINPUTS=utils/plotneuralnet_layers" in pdf.with_suffix(".tex").read_text()
+
+
+@pytest.fixture(scope="module")
+def mit_stages():
+    return extract_stages(parse_gv(MIT_GV))
+
+
+def test_describe_encoder_recognises_mit_b5():
+    assert describe_encoder(parse_gv(MIT_GV)) == EncoderInfo("MiT-B5", "Block", (3, 6, 40, 3))
+
+
+def test_mit_encoder_stages(mit_stages):
+    enc = [(s.name, s.channels, s.height, s.detail) for s in mit_stages if s.kind == "enc"]
+    assert enc == [
+        (f"Stage {k}", c, h, f"PatchEmbed + {n}$\\times$ Transformer")
+        for k, c, h, n in ((1, 64, 128, 3), (2, 128, 64, 6), (3, 320, 32, 40), (4, 512, 16, 3))
+    ]
+
+
+def test_mit_decoder_skips(mit_stages):
+    # smp feeds a 0-channel dummy at stride 2, so Dec 4 has no skip
+    skips = [s.skip_from for s in mit_stages if s.kind == "dec"]
+    assert skips == ["Stage 3", "Stage 2", "Stage 1", None, None]
+
+
+def test_to_tikz_mit_braces_and_block_inset(mit_stages):
+    tex = to_tikz(mit_stages, describe_encoder(parse_gv(MIT_GV)))
+    assert "MiT-B5 encoder (3/6/40/3 transformer blocks)" in tex
+    assert "MiT-B5 transformer block" in tex
+    assert "bottleneck block" not in tex

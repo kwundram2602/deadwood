@@ -1,0 +1,85 @@
+model_name: crown_fullstack_fromscratch
+run_tag: 30_09       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
+output_dir: experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
+debug: false        # true → print full model key tree (all submodule keys + param counts) before training
+
+dataset:
+  path: out/crown_patches_fullstack_hr2.5_ht_0.7    # path relative to --working_dir (deadwood/)
+  # Model input channels by name, in order. Spectral names come from the
+  # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
+  # Examples:
+  #   RGB only:        [red, green, blue]
+  #   RGB + nDSM:      [red, green, blue, ndsm]
+  #   MS4 + nDSM:      [green_ms, red_ms, rededge, nir, ndsm]
+  #   Full merge:      [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
+  input_channels: [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
+  batch_size: 4
+  num_workers: 4
+
+model:
+  type: unet
+  num_classes: 1          # binary crown segmentation → BCEWithLogitsLoss
+  weights_name: null      # from scratch: no pretrained weights
+  weights_path: null      # path to a local .pt checkpoint (overrides weights_name)
+  encoder: resnet50       # smp encoder when weights_name is null (smp default would be resnet34)
+  # Channels kept frozen at the first conv (must have pretrained weights);
+  # [] = fully trainable. Names, not indices.
+  frozen_pretrained_channels: []   # nothing pretrained → nothing to freeze
+  # Optional override of the exact/prefix name convention for pretrained
+  # R/G/B slots, e.g. {red: red_ms, green: green_ms} or {blue: null}
+  pretrained_channel_map: null
+
+# Phase 1 — here full training from scratch (freeze_encoder: false)
+transfer:
+  freeze_encoder: false   # false → whole net trainable; true = classic TL (encoder frozen)
+  epochs: 150             # scratch needs more epochs than TL (80)
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw        # adam | adamw | sgd
+  scheduler: cos          # cos | step | multistep | anneal
+  step_gamma: 0.3         # only used when scheduler: step (gamma per step_size epochs)
+  warmup_epochs: 5        # linear LR warmup before main scheduler kicks in (0 = disabled)
+  patience: 20            # noisier early curve than TL
+
+# Fine-tuning phase — partial encoder unfreeze (disabled: no pretrained encoder to fine-tune)
+fine_tune:
+  enabled: false
+  epochs: 30
+  lr: 0.00005
+  weight_decay: 0.001     # stronger regularisation for small dataset (was 0.0001)
+  unfreeze_keys: ["layer1","layer4.2"]   # encoder submodule paths, e.g. ["layer4.2"] for just the last bottleneck (~4.5M params); ["layer4"] = old unfreeze_blocks: 1
+  encoder_lr_scale: 0.1   # encoder LR = lr * encoder_lr_scale (differential learning rates)
+  optimizer: adamw
+  scheduler: step         # stable decay; cos restarts spike LR mid-finetuning
+  step_gamma: 0.5         # halve every 7 epochs
+  warmup_epochs: 3        # linear LR warmup after encoder unfreeze (0 = disabled)
+  patience: 10
+
+# W&B experiment tracking (set use_wandb: true to enable)
+logging:
+  use_wandb: false
+  project: deadwood
+  run_name: null
+  log_every_n_steps: 50
+
+# Loss function — weighted sum of active terms (weight 0.0 = term disabled)
+loss:
+  bce: 0.3
+  dice: 1.0
+  dice_squared: false   # true -> squared denominator variant (p^2+t^2)
+  iou: 0.0
+  mae: 0.0
+
+# Evaluation metrics -  binary metrics using thresholds
+# t_bin = tgts_v > target_threshold
+# preds = probs_v >= threshold
+# sigmoid thresholds for binary metrics (precision/recall/F1/IoU)
+# GT binarisation thresholds — pixels above this count as crown
+metrics:
+  thresholds: [0.6,0.8,0.9]     #preds   
+  target_thresholds: [0.6, 0.8, 0.9] #targets
+
+# Standalone evaluation (scripts/evaluate.py)
+evaluate:
+  weights: null         # path to .pt checkpoint, e.g. out/experiments/my_run/ft_best.pt
+  n_samples: 6          # number of sample tiles to visualise per split
