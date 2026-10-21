@@ -887,3 +887,115 @@ def test_recompare_ndsm_needs_both_raw_ndsms(tmp_path):
     (tmp_path / "ndsm_in_m" / "20260101_000000" / "dsm_ndsm_da_raw_m.tif").touch()
     with pytest.raises(FileNotFoundError, match="both raw nDSMs"):
         recompare_ndsm(str(tmp_path), 16.0)
+
+
+def _wall_and_tree_scene():
+    """60 x 60 m at 0.1 m: flat ground, a 3 m wall with 1:1 flanks (too steep for
+    max_slope 0.5) running north-south, and a rough 8 m tree crown."""
+    from explore_and_process.apply_dsm_mask import DtmApproxParams
+
+    n, gsd = 600, 0.1
+    rows, cols = np.meshgrid(np.arange(n) * gsd, np.arange(n) * gsd, indexing="ij")
+    ground = np.full((n, n), 100.0, dtype=np.float32)
+    # trapezoid: 2 m crest at x = 15 m, flanks of slope 1 down to 0 at +-3.5 m
+    wall_h = np.clip(3.0 - np.maximum(np.abs(cols - 15.0) - 1.0, 0.0), 0.0, 3.0).astype(np.float32)
+    wall_h[(rows < 5.0) | (rows > 55.0)] = 0.0
+    tree = (rows - 30.0) ** 2 + (cols - 42.0) ** 2 <= 3.0**2
+    rough = np.random.default_rng(0).uniform(-0.8, 0.8, (n, n)).astype(np.float32)
+    dsm = ground + wall_h + np.where(tree, 8.0 + rough, 0.0).astype(np.float32)
+    wall = wall_h > 1.0
+    return dsm, gsd, wall, tree, DtmApproxParams(cell=0.5, max_window=12.0, smooth_sigma=0.5)
+
+
+def test_steep_wall_is_removed_without_the_filter():
+    from explore_and_process.apply_dsm_mask import approximate_dtm
+
+    dsm, gsd, wall, tree, params = _wall_and_tree_scene()
+    ndsm = dsm - approximate_dtm(dsm, gsd, params)
+    assert np.median(ndsm[wall]) > 1.0  # the wall shows up as an object
+    assert np.median(ndsm[tree]) > 6.0
+
+
+def test_filter_keeps_the_smooth_elongated_wall_but_not_the_tree():
+    from dataclasses import replace
+
+    from explore_and_process.apply_dsm_mask import approximate_dtm
+
+    dsm, gsd, wall, tree, params = _wall_and_tree_scene()
+    params = replace(params, keep_min_elongation=4.0, keep_max_roughness=0.3)
+    ndsm = dsm - approximate_dtm(dsm, gsd, params)
+    assert np.median(ndsm[wall]) < 0.3  # wall is terrain again
+    assert np.median(ndsm[tree]) > 6.0  # compact, rough crown is still removed
+
+
+def test_keep_smooth_elongated_needs_both_shape_and_smoothness():
+    from explore_and_process.apply_dsm_mask import keep_smooth_elongated
+
+    obj = np.zeros((40, 40), dtype=bool)
+    obj[5:35, 10:12] = True  # line: 30 x 2 cells
+    obj[20:26, 25:31] = True  # blob: 6 x 6 cells
+    smooth = np.full(obj.shape, 0.1, dtype=np.float32)
+    out, n = keep_smooth_elongated(obj, smooth, 4.0, 0.3)
+    assert n == 1 and not out[5:35, 10:12].any() and out[20:26, 25:31].all()
+    out, n = keep_smooth_elongated(obj, np.full(obj.shape, 0.6, np.float32), 4.0, 0.3)
+    assert n == 0 and np.array_equal(out, obj)  # rough line (hedge) stays object
+
+
+def test_keep_params_are_validated():
+    from explore_and_process.apply_dsm_mask import DtmApproxParams
+
+    with pytest.raises(ValueError, match="keep_min_elongation"):
+        DtmApproxParams.from_cfg({"keep_min_elongation": -1})
+    assert DtmApproxParams.from_cfg({}).keep_min_elongation == 0.0  # off by default
+
+
+def test_wall_merged_with_rough_vegetation_is_still_kept():
+    """Object regions are split by roughness first: a smooth wall touching a rough hedge is kept."""
+    from explore_and_process.apply_dsm_mask import keep_smooth_elongated
+
+    obj = np.zeros((40, 40), dtype=bool)
+    obj[5:35, 10:12] = True  # smooth wall, 30 x 2 cells
+    obj[15:25, 12:22] = True  # rough vegetation attached to it
+    rough = np.full(obj.shape, 0.1, dtype=np.float32)
+    rough[15:25, 12:22] = 0.6
+    out, n = keep_smooth_elongated(obj, rough, 4.0, 0.3)
+    assert n == 1 and not out[5:35, 10:12].any() and out[15:25, 12:22].all()
+
+
+def test_group_roughness_joins_a_vegetated_wall_but_keeps_its_growth_as_object():
+    """Smooth wall stretches alternate with slightly rougher growth every 3 cells."""
+    from explore_and_process.apply_dsm_mask import keep_smooth_elongated
+
+    obj = np.zeros((40, 40), dtype=bool)
+    obj[4:36, 10:12] = True  # wall, 32 x 2 cells
+    rough = np.full(obj.shape, 0.05, dtype=np.float32)
+    growth = np.zeros(obj.shape, dtype=bool)
+    for r0 in range(7, 36, 6):
+        growth[r0 : r0 + 3, 10:12] = True
+    rough[growth] = 0.12
+    # one threshold: the smooth stretches are 3 x 2 cells, too small to count
+    out, n = keep_smooth_elongated(obj, rough, 4.0, 0.1)
+    assert n == 0 and np.array_equal(out, obj)
+    # grouped up to 0.15: one elongated region; only its smooth cells become terrain
+    out, n = keep_smooth_elongated(obj, rough, 4.0, 0.1, group_roughness=0.15)
+    assert n == 1
+    assert not out[obj & ~growth].any() and out[growth].all()
+
+
+def test_group_roughness_region_needs_a_smooth_median():
+    from explore_and_process.apply_dsm_mask import keep_smooth_elongated
+
+    obj = np.zeros((40, 40), dtype=bool)
+    obj[4:36, 10:12] = True
+    rough = np.full(obj.shape, 0.13, dtype=np.float32)  # mostly growth
+    rough[4:8, 10:12] = 0.05
+    out, n = keep_smooth_elongated(obj, rough, 4.0, 0.1, group_roughness=0.15)
+    assert n == 0 and np.array_equal(out, obj)
+
+
+def test_group_roughness_below_max_is_rejected():
+    from explore_and_process.apply_dsm_mask import DtmApproxParams
+
+    with pytest.raises(ValueError, match="keep_group_roughness"):
+        DtmApproxParams.from_cfg({"keep_max_roughness": 0.2, "keep_group_roughness": 0.1})
+    assert DtmApproxParams.from_cfg({"keep_max_roughness": 0.1, "keep_group_roughness": 0.15}).keep_group_roughness == 0.15

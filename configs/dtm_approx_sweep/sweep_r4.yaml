@@ -1,0 +1,26 @@
+# dtm_approx sweep, round 4 on 20260313: group a vegetated wall with a looser
+# roughness (keep_group_roughness), give back only its smooth cells.
+# Baseline = best of round 3 (out/dtm_approx_sweep/20260313/20261021-183913/,
+# keep_max_roughness 0.1: rmse_m 0.249, wall 0.67, rest 0.216).
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep_r4.yaml
+sweep:
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20260313
+  reference_run: null
+  out_dir: out/dtm_approx_sweep
+  metric: rmse_m
+  zones:
+    wall: datafiles/dtm_approx_zones/20260313_wall.gpkg
+  baseline:
+    smooth_sigma: 2.0
+    percentile: 1
+    dh0: 0.1
+    keep_min_elongation: 5.0
+    keep_max_roughness: 0.1
+    keep_group_roughness: 0.0   # 0 = same as keep_max_roughness (round-3 behaviour)
+  # Baseline + 8 runs, about 40 s each.
+  values:
+    keep_group_roughness: [0.12, 0.15, 0.2, 0.3]
+    keep_max_roughness: [0.08, 0.12]
+    keep_min_elongation: [4.0, 7.0]

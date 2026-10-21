@@ -1,0 +1,34 @@
+# dtm_approx parameter sweep on one scene: how close does the DSM-only terrain
+# approximation get to the external-DTM nDSM, and which parameter moves it?
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep.yaml
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep.yaml sweep.date=20260210
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep.yaml --smoke
+#
+# Needs a finished stage 1b (scripts/preprocess.py) for the scene with method or
+# ndsm_channel 'dtm': its <process_out>/ndsm_in_m/<run>/*_dtm_raw_m.tif is the
+# reference, and its grid the scene grid. Nothing of stage 1a/1b/2 is rerun.
+sweep:
+  # Scene source. Its dsm_mask.dtm_approx block is the baseline, its
+  # max_ndsm_height scales the [0,1] metrics, and (time series) timeseries.dsm_dir
+  # / work_dir locate the DSM and the stage-1b outputs of `date`.
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20260313
+  # ndsm_in_m run id holding the reference nDSM; null = latest run that has one.
+  reference_run: null
+  # Run folders: <out_dir>/<date>/<YYYYMMDD-HHMMSS>/
+  out_dir: out/dtm_approx_sweep
+  # Ranks the runs and picks best_params.yaml. rmse_m = height error in metres,
+  # not hidden by the per-nDSM ceiling of the [0,1] scaling.
+  metric: rmse_m
+  # One parameter at a time around the baseline: every value below is one run
+  # with only that parameter changed (values equal to the baseline are skipped).
+  # Baseline + 19 runs, about 0.5-1 min each on the full 6459 x 6962 scene.
+  values:
+    cell: [0.25, 1.0]            # m, coarse grid the morphology runs on
+    percentile: [1, 10, 20]      # per-cell DSM percentile (robust minimum)
+    max_window: [15, 20, 40]     # m, widest object removed
+    window_step: [0.5, 2.0]      # m, window growth per opening
+    max_slope: [0.3, 0.8, 1.2]   # tan of the steepest flank still terrain
+    dh0: [0.1, 0.3, 0.5]         # m, height tolerance per step
+    smooth_sigma: [0.0, 2.0, 4.0]  # m, Gaussian smoothing of the terrain

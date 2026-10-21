@@ -1,0 +1,29 @@
+# dtm_approx sweep, round 3 on 20260313: keep the wall as terrain without raising
+# the error elsewhere. Baseline = round 2's low-bias setting plus the
+# keep_smooth_elongated filter; the wall zone separates its error from the rest.
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep_r3.yaml
+sweep:
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20260313
+  reference_run: null
+  out_dir: out/dtm_approx_sweep
+  metric: rmse_m
+  # Wall segments where round 1's best run was >0.2 m too low, +3 m buffer
+  # (built from out/dtm_approx_sweep/20260313/20261021-174522/maps/best_err_da_minus_dtm_m.tif).
+  zones:
+    wall: datafiles/dtm_approx_zones/20260313_wall.gpkg
+  # Round 2: dh0 0.1 has the lowest |bias| at moderate rmse_m; the wall was the
+  # main source of its large errors. Roughness per 0.5 m cell on this scene:
+  # wall median 0.11 m, low vegetation 0.20 m, crowns 0.29 m.
+  baseline:
+    smooth_sigma: 2.0
+    percentile: 1
+    dh0: 0.1
+    keep_min_elongation: 5.0
+    keep_max_roughness: 0.15
+  # Baseline + 11 runs, about 40 s each. keep_min_elongation 0 = filter off.
+  values:
+    keep_min_elongation: [0.0, 3.0, 4.0, 7.0, 10.0]
+    keep_max_roughness: [0.1, 0.2, 0.3]
+    dh0: [0.05, 0.15, 0.2]

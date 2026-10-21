@@ -62,6 +62,7 @@ import rasterio
 from omegaconf import OmegaConf
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
+from scipy import ndimage
 from scipy.interpolate import griddata
 from scipy.ndimage import (
     distance_transform_edt,
@@ -361,6 +362,14 @@ class DtmApproxParams:
     max_slope:    tan of the steepest flank still counted as terrain
     dh0:          height tolerance per step (m) for DSM noise
     smooth_sigma: Gaussian sigma (m) of the final terrain surface
+    keep_min_elongation: object regions at least this elongated (and smooth,
+                  see keep_max_roughness) go back to terrain — walls, dams,
+                  embankments; 0 = off
+    keep_max_roughness: highest DSM roughness (m, std within a cell) of a
+                  cell given back, and of a region's median
+    keep_group_roughness: looser roughness (m) up to which cells are grouped
+                  into regions, so a vegetated wall stays one elongated
+                  region; 0 = same as keep_max_roughness
     """
 
     cell: float = 0.5
@@ -370,6 +379,9 @@ class DtmApproxParams:
     max_slope: float = 0.5
     dh0: float = 0.2
     smooth_sigma: float = 1.0
+    keep_min_elongation: float = 0.0
+    keep_max_roughness: float = 0.4
+    keep_group_roughness: float = 0.0
 
     @classmethod
     def from_cfg(cls, cfg) -> "DtmApproxParams":
@@ -385,6 +397,10 @@ class DtmApproxParams:
         for name in ("cell", "max_window", "window_step", "max_slope"):
             if getattr(params, name) <= 0.0:
                 raise ValueError(f"dtm_approx.{name} must be > 0")
+        if params.keep_min_elongation < 0.0 or params.keep_max_roughness < 0.0:
+            raise ValueError("dtm_approx.keep_min_elongation and keep_max_roughness must be >= 0")
+        if 0.0 < params.keep_group_roughness < params.keep_max_roughness or params.keep_group_roughness < 0.0:
+            raise ValueError("dtm_approx.keep_group_roughness must be 0 (off) or >= keep_max_roughness")
         if params.dh0 < 0.0 or params.smooth_sigma < 0.0:
             raise ValueError("dtm_approx.dh0 and smooth_sigma must be >= 0")
         return params
@@ -454,6 +470,73 @@ def _block_percentile(dsm: np.ndarray, f: int, q: float) -> np.ndarray:
         return np.nanpercentile(blocks, q, axis=2).astype(np.float32)
 
 
+def _block_std(dsm: np.ndarray, f: int) -> np.ndarray:
+    """Standard deviation of the finite pixels in every f×f block; NaN for empty blocks."""
+    h, w = dsm.shape
+    hc, wc = -(-h // f), -(-w // f)
+    padded = np.full((hc * f, wc * f), np.nan, dtype=np.float32)
+    padded[:h, :w] = dsm
+    blocks = padded.reshape(hc, f, wc, f).transpose(0, 2, 1, 3).reshape(hc, wc, f * f)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN blocks
+        return np.nanstd(blocks, axis=2).astype(np.float32)
+
+
+MIN_KEEP_CELLS = 10  # smaller object regions have no meaningful shape
+
+
+def keep_smooth_elongated(
+    is_object: np.ndarray,
+    roughness: np.ndarray,
+    min_elongation: float,
+    max_roughness: float,
+    group_roughness: float | None = None,
+) -> tuple[np.ndarray, int]:
+    """Give the smooth cells of elongated object regions back to the terrain.
+
+    A wall or dam steeper than the slope tolerance is marked as object like a
+    crown, but differs in surface and shape. Object cells with a DSM standard
+    deviation within the cell <= group_roughness (default: max_roughness) are
+    grouped into 8-connected regions — grouping all object cells would merge a
+    wall with the vegetation along it. The looser group threshold keeps a wall
+    with patches of growth on it one region. Per region
+
+        elongation = sqrt(λ_1 / λ_2)
+
+    with λ_1 ≥ λ_2 the eigenvalues of the covariance of its cell coordinates
+    (λ_2 floored at 1/12, the variance of a single cell, so one-cell-wide lines
+    stay finite). A region qualifies with at least MIN_KEEP_CELLS cells,
+    elongation ≥ min_elongation and median roughness ≤ max_roughness; only its
+    cells with roughness ≤ max_roughness are unmarked. The rougher cells (the
+    growth on the wall) stay object and are interpolated from the wall cells
+    around them, so the terrain follows the wall body, not its vegetation.
+
+    Returns the new object mask and the number of regions that qualified.
+    """
+    group = max_roughness if not group_roughness else group_roughness
+    rough = np.nan_to_num(roughness, nan=np.inf)
+    candidates = is_object & (rough <= group)
+    labels, n = ndimage.label(candidates, structure=np.ones((3, 3), dtype=bool))
+    if n == 0:
+        return is_object, 0
+    idx = np.arange(1, n + 1)
+    rows, cols = np.indices(is_object.shape, dtype=np.float64)
+    count = ndimage.sum_labels(np.ones(is_object.shape), labels, idx)
+    mr, mc = ndimage.mean(rows, labels, idx), ndimage.mean(cols, labels, idx)
+    srr = ndimage.mean(rows**2, labels, idx) - mr**2
+    scc = ndimage.mean(cols**2, labels, idx) - mc**2
+    src = ndimage.mean(rows * cols, labels, idx) - mr * mc
+    half_trace = (srr + scc) / 2.0
+    root = np.sqrt(np.maximum(half_trace**2 - (srr * scc - src**2), 0.0))
+    elongation = np.sqrt((half_trace + root) / np.maximum(half_trace - root, 1.0 / 12.0))
+    median_rough = ndimage.median(rough, labels, idx)
+    keep = (count >= MIN_KEEP_CELLS) & (elongation >= min_elongation) & (median_rough <= max_roughness)
+    if not keep.any():
+        return is_object, 0
+    give_back = np.isin(labels, idx[keep]) & (rough <= max_roughness)
+    return is_object & ~give_back, int(keep.sum())
+
+
 def _masked_opening(surface: np.ndarray, valid: np.ndarray, size: int) -> np.ndarray:
     """Grey opening with a size×size square that ignores cells outside *valid*.
 
@@ -509,6 +592,9 @@ def approximate_dtm(dsm: np.ndarray, gsd: float, params: DtmApproxParams) -> np.
        however narrow; a crown or hedge with a steep flank drops by more than
        dh once the window outgrows it, and every cell above that flank is
        marked. Marks are permanent.
+       Optional (keep_min_elongation > 0): marked regions that are elongated
+       and smooth go back to terrain, see keep_smooth_elongated — walls and
+       dams steeper than the slope tolerance.
     3. Marked cells are re-interpolated (linear, nearest outside the hull)
        from the unmarked cells, which keep their z_0 value.
     4. Gaussian smoothing (smooth_sigma), bilinear upsampling to the DSM grid,
@@ -537,12 +623,25 @@ def approximate_dtm(dsm: np.ndarray, gsd: float, params: DtmApproxParams) -> np.
         is_object |= valid & (surface - opened > dh)
         surface = opened
 
-    ground = valid & ~is_object
     print(
         f"  dtm_approx: {cell:g} m cells, {n_steps} openings up to "
         f"{(2 * n_steps * r_step + 1) * cell:g} m, dh={dh:.2f} m — "
         f"{int(is_object.sum()):,} / {int(valid.sum()):,} cells marked as object"
     )
+    if params.keep_min_elongation > 0.0:
+        before = int(is_object.sum())
+        is_object, n_kept = keep_smooth_elongated(
+            is_object,
+            _block_std(dsm, f),
+            params.keep_min_elongation,
+            params.keep_max_roughness,
+            params.keep_group_roughness,
+        )
+        print(
+            f"  dtm_approx: {n_kept} elongated smooth region(s) kept as terrain "
+            f"({before - int(is_object.sum()):,} cells)"
+        )
+    ground = valid & ~is_object
 
     terrain = np.where(ground, z0, np.nan).astype(np.float32)
     fill = valid & ~ground

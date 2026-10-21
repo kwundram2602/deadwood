@@ -1,0 +1,25 @@
+# dtm_approx sweep, round 2 on 20260313: one parameter at a time around the
+# best values of round 1 (out/dtm_approx_sweep/20260313/20261021-174522/).
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep_r2.yaml
+sweep:
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20260313
+  reference_run: null
+  out_dir: out/dtm_approx_sweep
+  metric: rmse_m
+  # Overrides of the preprocess config's dtm_approx block (the rest stays as there).
+  # Round 1: smooth_sigma 2 (rmse_m 0.288), percentile 1 (0.293), dh0 0.1 (bias_m -0.098).
+  baseline:
+    smooth_sigma: 2.0
+    percentile: 1
+    dh0: 0.1
+  # max_slope is left out: at a fixed window_step it only enters
+  # dh = dh0 + max_slope * window_step / 2, so it acts exactly like dh0 (round 1).
+  # Baseline + 11 runs, about 40 s each.
+  values:
+    smooth_sigma: [1.0, 3.0]
+    percentile: [0, 2, 3]       # 0 = per-cell minimum
+    dh0: [0.0, 0.05, 0.15, 0.2]
+    cell: [1.0]
+    window_step: [2.0]
