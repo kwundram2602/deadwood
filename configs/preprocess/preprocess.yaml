@@ -49,31 +49,48 @@ dsm_mask:
   dsm: datafiles/DSM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_coreg.tif
   # out / out_dsm: auto-derived from mask path + params + timestamp.
   # Set explicitly here only to override the default locations.
-  dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
-  #dtm: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif             # optional external DTM; if set, method: dtm or both is used
-  # --- DSM/DTM coregistration (only with method: dtm/both) -------------------
-  # Coregistration stage fed into nDSM and mask. Both stages are always
-  # written to process_out/dtm_coreg/<run_id>/ for comparison.
-  #   plane   — global plane only (constant datum offset + tilt)
-  #   aligned — plane + blockwise correction of local residual warp (±1 m)
-  dtm_stage: aligned
-  # Blocks per axis for the residual-warp correction. Fewer, larger blocks
-  # hold more open ground each → cleaner ground anchor in half-forested terrain.
-  # 12 ≈ 29 m on the 5 cm grid. 24 (≈14 m) lifted the DTM too far: ring offsets
-  # in out/dsm_overview/dem_offsets.csv went from +0.17 m (plane) to -0.12 m.
-  dtm_local_blocks: 6
-  # Guard: coregistered DTM never above DSM (nDSM >= 0). The number of clamped
-  # pixels is logged first — it measures the remaining block-fit error.
-  dtm_clamp_to_dsm: true
-  method: dtm          # ground detection: local_min (height), dtm (external DTM), gradient (slope), both
-  combine: and          # or = ground if either agrees, and = ground only if both agree
-  windows: [500]    # minimum-filter sizes (px) for DTM approximation; larger = coarser terrain
+  # External DTM and its co-registration onto the DSM. Read only when
+  # method or ndsm_channel is dtm; ignored for dtm_approx.
+  dtm_real:
+    path: datafiles/dtm/20250727_Airport_M350L2_dem.tif
+    #path: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif
+    # --- co-registration ---------------------------------------------------
+    # Coregistration stage fed into nDSM and mask. Both stages are always
+    # written to process_out/dtm_coreg/<run_id>/ for comparison.
+    #   plane   — global plane only (constant datum offset + tilt)
+    #   aligned — plane + blockwise correction of local residual warp (±1 m)
+    stage: aligned
+    # Blocks per axis for the residual-warp correction. Fewer, larger blocks
+    # hold more open ground each → cleaner ground anchor in half-forested terrain.
+    # 12 ≈ 29 m on the 5 cm grid. 24 (≈14 m) lifted the DTM too far: ring offsets
+    # in out/dsm_overview/dem_offsets.csv went from +0.17 m (plane) to -0.12 m.
+    local_blocks: 6
+    # Guard: coregistered DTM never above DSM (nDSM >= 0). The number of clamped
+    # pixels is logged first — it measures the remaining block-fit error.
+    clamp_to_dsm: true
+  # method builds the mask (ground truth); ndsm_channel builds the nDSM the
+  # model gets as input. Both: dtm_approx (DSM only) | dtm (external DTM).
+  # ndsm_channel null -> same as method. Mask from dtm + channel from
+  # dtm_approx: best labels, and a channel that also exists where prediction
+  # has no DTM (predict config: preprocess.ndsm_channel must match).
+  method: dtm
+  ndsm_channel: dtm_approx
+  # DSM-only terrain approximation (method: dtm_approx): progressive
+  # morphological filter on a coarse grid, see apply_dsm_mask.approximate_dtm.
+  # A feature counts as terrain when its flanks are no steeper than about
+  # max_slope + 2*dh0/window_step (embankments stay ground, crowns are removed).
+  dtm_approx:
+    cell: 0.5           # m, coarse-grid cell size the morphology runs on
+    percentile: 5       # per-cell DSM percentile = robust minimum (ignores pits)
+    max_window: 30.0    # m, widest object (canopy patch) to remove
+    window_step: 1.0    # m, growth of the opening window per step
+    max_slope: 0.5      # tan of the steepest flank still counted as terrain (~27 deg)
+    dh0: 0.2            # m, height tolerance per step for DSM noise
+    smooth_sigma: 1.0   # m, Gaussian smoothing of the terrain surface
   height_threshold: 0.7 # nDSM below this (m) counts as ground
   # Smoothstep ramp width (m) above height_threshold: ground_conf goes 1 → 0 over [ht, ht + height_ramp].
   # Narrower = more bimodal labels. null → ramp = height_threshold (legacy, 0 at 2*ht)
   height_ramp: 2.5
-  gradient_sigma: 2.0   # Gaussian smoothing (px) before gradient threshold; higher = less noise, softer edges (method: gradient/both)
-  gradient_threshold: null   # Sobel gradient threshold; null → Otsu (method: gradient/both)
   # nDSM ceiling (m) for [0,1] scaling of the 5th input channel: ground → 0, above ceiling → 1.
   max_ndsm_height: 16.0
   # resolve 255 values ? :

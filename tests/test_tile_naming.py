@@ -89,3 +89,27 @@ def test_split_copies_manifest(tmp_path):
     split_root = tmp_path / "split"
     split_patches(out, split_root, train_ratio=0.5, val_ratio=0.25, seed=1, mode="copy")
     assert (split_root / "channels.json").exists()
+
+
+def test_prefix_is_prepended_to_stems(tmp_path):
+    _make_inputs(tmp_path)
+    out = tmp_path / "patches" / "20260313"
+    cfg = OmegaConf.create(
+        {
+            "image": str(tmp_path / "scene_stack.tif"),
+            "mask": str(tmp_path / "mask.tif"),
+            "dsm": str(tmp_path / "dsm.tif"),
+            "out": str(out),
+            "size": 4,
+            "nodata_thresh": 0.9,
+            "img_nodata_thresh": 0.9,
+            "prefix": "20260313",
+        }
+    )
+    kept = tile_main(cfg)
+    tifs = sorted(p.name for p in out.glob("*.tif"))
+    assert kept == 4
+    assert "20260313_0_0.tif" in tifs
+    assert "20260313_1_1_mask.tif" in tifs
+    assert "20260313_0_1_dsm.tif" in tifs
+    assert all(n.startswith("20260313_") for n in tifs)

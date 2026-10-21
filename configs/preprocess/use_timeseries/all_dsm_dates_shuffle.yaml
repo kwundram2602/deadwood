@@ -1,0 +1,162 @@
+# Crown preprocessing over a time series.
+# Runs rasterize -> apply_dsm_mask -> tile once per selected date, then splits.
+# Run from deadwood/ as working directory; all paths are relative to deadwood/.
+#
+#   uv run python scripts/preprocess.py --config configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml --working_dir .
+#
+# Every date with a DSM in datafiles/DSM_domAligned, no polygons, dates
+# shuffled into splits with split.seed.
+#
+# Per date (paths set automatically, values below are overwritten):
+#   rasterize.reference / sources[0].path = the date's OM
+#   dsm_mask.dsm                          = the date's DSM (same YYYYMMDD prefix)
+#   intermediate rasters                  -> <timeseries.work_dir>/<date>/
+#   tiles                                 -> <tiling.out>/<date>/<date>_<rr>_<cc>{,_mask,_dsm}.tif
+# The DTM is static and shared by all dates.
+#
+timeseries:
+  om_dir: datafiles/OM_domAligned
+  om_pattern: "*_OM_coreg.tif"
+  dsm_dir: datafiles/DSM_domAligned
+  dsm_pattern: "*_DSM_coreg.tif"
+  # Dates to use (YYYYMMDD). null -> every date with both OM and DSM, sorted.
+  dates: [20260126, 20260210, 20260226, 20260313]
+  # Keep only the first N of the dates above. null -> no cap.
+  max_dates: null
+  work_dir: datafiles/process_out/timeseries
+
+rasterize:
+  # false: no crown polygons are burnt in; stage 1a writes an all-unlabelled
+  # mask (255 inside the footprint) and every label comes from DSM + DTM via
+  # nodata_resolve_threshold / crown_resolve_threshold. Field data only
+  # exists for 20260313, so the time series runs without polygons.
+  use_polygons: false
+# crowns: field datasets to rasterize (vector → raster mask); ignored with use_polygons: false
+  crowns:
+    - datafiles/crown_poly/crowns_altered.gpkg
+  # reference / sources[0].path: set per date to the date's OM
+  reference: null
+  # sources: exactly one entry in time-series mode (the OM); bands/names apply
+  # to every date. The train config selects model inputs from names + 'ndsm'.
+  sources:
+    - path: null
+      bands: [1, 2, 3, 4, 5, 6, 7]
+      names: [red, green, blue, green_ms, red_ms, rededge, nir]
+  # out_mask / out_image_dir: set per date under timeseries.work_dir
+  out_mask: null
+  out_image_dir: null
+  raster_dir: null   # unused in time-series mode
+  target_gsd: 0.05
+  # Polygon shape correction BEFORE rasterizing (metres, UTM CRS).
+  # Both 0.0 → polygons are rasterized as digitised.
+  erode: 0.1          # shrink crowns by this amount (negative buffer)
+  # Corner rounding: opening + closing with round joins (buffer -r, +2r, -r).
+  # Removes spikes thinner than 2r and fills notches; larger = rounder crowns.
+  # Polygons that vanish are dropped with a warning — their pixels become 255, not 0.
+  round_radius: 0.1
+  # Gaussian smoothing (px) applied to the reference raster before rasterizing the crowns. Higher = more smoothing, less detail in the mask.
+  sigma: 3.0
+  nodata_threshold: 0.05
+  # Lowest value the Gaussian falloff may drop to.
+  soft_floor: 0.5
+
+# DSM/DTM-based mask generation (nDSM = DSM - DTM)
+# also corregistration of DSm, DTM
+dsm_mask:
+  # mask / dsm: set per date
+  mask: null
+  dsm: null
+  # out / out_dsm: auto-derived from mask path + params + timestamp.
+  # Set explicitly here only to override the default locations.
+  # External DTM and its co-registration onto the DSM. Read only when
+  # method or ndsm_channel is dtm; ignored for dtm_approx.
+  dtm_real:
+    path: datafiles/dtm/20250727_Airport_M350L2_dem.tif
+    #path: datafiles/dtms/KNP_dtm_025m_UTM36S_2431DC_clipped_aligned_same_nodata_mask.tif
+    # --- co-registration ---------------------------------------------------
+    # Coregistration stage fed into nDSM and mask. Both stages are always
+    # written to process_out/dtm_coreg/<run_id>/ for comparison.
+    #   plane   — global plane only (constant datum offset + tilt)
+    #   aligned — plane + blockwise correction of local residual warp (±1 m)
+    stage: aligned
+    # Blocks per axis for the residual-warp correction.
+    local_blocks: 6
+    # Guard: coregistered DTM never above DSM (nDSM >= 0). The number of clamped
+    # pixels is logged first — it measures the remaining block-fit error.
+    clamp_to_dsm: true
+  # method builds the mask (ground truth); ndsm_channel builds the nDSM the
+  # model gets as input. Both: dtm_approx (DSM only) | dtm (external DTM).
+  # ndsm_channel null -> same as method. Mask from dtm + channel from
+  # dtm_approx: best labels, and a channel that also exists where prediction
+  # has no DTM (predict config: preprocess.ndsm_channel must match).
+  method: dtm
+  ndsm_channel: dtm_approx
+  # DSM-only terrain approximation (method: dtm_approx): progressive
+  # morphological filter on a coarse grid, see apply_dsm_mask.approximate_dtm.
+  # A feature counts as terrain when its flanks are no steeper than about
+  # max_slope + 2*dh0/window_step (embankments stay ground, crowns are removed).
+  dtm_approx:
+    cell: 0.5           # m, coarse-grid cell size the morphology runs on
+    percentile: 5       # per-cell DSM percentile = robust minimum (ignores pits)
+    max_window: 30.0    # m, widest object (canopy patch) to remove
+    window_step: 1.0    # m, growth of the opening window per step
+    max_slope: 0.5      # tan of the steepest flank still counted as terrain (~27 deg)
+    dh0: 0.2            # m, height tolerance per step for DSM noise
+    smooth_sigma: 1.0   # m, Gaussian smoothing of the terrain surface
+  height_threshold: 0.7 # nDSM below this (m) counts as ground
+  # Smoothstep ramp width (m) above height_threshold: ground_conf goes 1 → 0 over [ht, ht + height_ramp].
+  # Narrower = more bimodal labels. null → ramp = height_threshold (legacy, 0 at 2*ht)
+  height_ramp: 2.5
+  # nDSM ceiling (m) for [0,1] scaling of the 5th input channel: ground → 0, above ceiling → 1.
+  max_ndsm_height: 16.0
+  # resolve 255 values ? :
+  # noData pixels (255, i.e. no crown polygon) with ground_conf >= this threshold are relabelled .
+  # the label becomes the continuous value 1 - ground_conf
+  # (e.g. conf 0.9 -> label 0.1, conf 1.0 -> label 0.0), so it is a soft "almost surely not crown" target, not a hard 0.
+  nodata_resolve_threshold: 0.5
+
+  # Symmetric resolve towards crown: noData pixels with ground_conf <= this
+  # (surely not ground, i.e. tall vegetation without polygon) get label
+  # 1 - ground_conf instead of being excluded from the loss. 255 remains only
+  # for the gray zone in between and DSM gaps. Must be < nodata_resolve_threshold.
+  # null → disabled (legacy). Required with use_polygons: false.
+  crown_resolve_threshold: 0.3
+
+  # Protects digitised stage-1a crowns (crown_mask_intermediate.tif): pixels
+  # with a 1a label >= this keep their value and are NOT damped by
+  # (1 - ground_conf) — the polygon outranks the height model.
+  #   1.0  → only fully labelled crown pixels (all polygon pixels at sigma: 0.0)
+  #   <1.0 → also the soft edge from this value up
+  #   null → disabled, DSM damps every crown pixel (legacy)
+  preserve_crown_threshold: 1.0
+
+tiling:
+  # image / mask / dsm / prefix: set per date
+  image: null
+  # tiles root; one subfolder per date
+  out: out/crown_patches_ts_alldsm
+  size: 512
+  # skip patches with > this fraction of noData pixels in the mask (== 255)
+  nodata_thresh: 0.8
+  # skip patches with > this fraction of all-zero pixels across all MS bands (sensor gaps / edge padding)
+  img_nodata_thresh: 0.8
+
+split:
+  input: out/crown_patches_ts_alldsm   # must equal tiling.out
+  output: out/crown_patches_ts_alldsm_split  # train/val/test + split.json + train_stats.json
+  # random  — shuffle all tiles (dates mixed across splits)
+  # by_date — all tiles of one date land in one split. The same trees appear
+  #           on every date, so this measures generalisation to unseen dates,
+  #           not to unseen places.
+  strategy: random # random | by_date
+  # by_date only: explicit date -> split assignment; every selected date
+  # exactly once, test may be empty. Remove (or null) to shuffle the dates
+  # with `seed` instead (train/val get >= 1 date each).
+  # dates: no explicit mapping -> seeded shuffle of the dates.
+  # With 4 dates and 0.7/0.2: train 3, val 1, test 0
+  # (n_test = round(4 * 0.1) = 0; train and val always get >= 1 date).
+  dates: null
+  train_ratio: 0.7   # random: fraction of tiles; by_date shuffle: fraction of dates
+  val_ratio: 0.2
+  seed: 42
+  mode: copy                    # "copy" or "symlink"

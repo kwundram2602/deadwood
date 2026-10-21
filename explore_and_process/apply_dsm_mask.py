@@ -3,23 +3,26 @@ apply_dsm_mask.py
 
 Refine the soft crown mask by labelling confirmed ground pixels using the DSM.
 
-Ground detection supports three methods:
+Ground detection supports two methods (dsm_mask.method):
 
-  local_min  — DTM approximation via multi-scale minimum filter:
-                 nDSM_approx = DSM - minimum_filter(DSM, window)
-                 pixels where nDSM_approx < height_threshold  =>  ground = 0.0
+  dtm_approx — terrain approximated from the DSM alone by a progressive
+               morphological filter (see approximate_dtm; written to
+               process_out/dtm_approx/<run_id>/):
+                 nDSM = DSM - approximate_dtm(DSM)
+                 pixels where nDSM < height_threshold  =>  ground = 0.0
 
   dtm        — External DTM raster (resampled to DSM grid, then vertically
                co-registered onto the DSM in two stages — see
-               align_dtm_stages; `dtm_stage` picks the one used, both are
+               align_dtm_stages; `dtm_real.stage` picks the one used, both are
                written to process_out/dtm_coreg/<run_id>/):
                  nDSM = DSM - DTM
                  pixels where nDSM < height_threshold  =>  ground = 0.0
 
-  gradient   — Slope/edge filter: flat DSM regions are classified as ground.
-
-  both       — Combines local_min (or dtm when --dtm is supplied) with gradient
-               via OR or AND logic (see --combine).
+`method` only decides the ground truth (the mask). The nDSM written as the
+model's input channel comes from `ndsm_channel` (dtm_approx | dtm, default:
+same as `method`). Masks from the external DTM with an input channel from
+dtm_approx is the setup for scenes where prediction has no DTM: the labels
+use the best terrain available, the channel uses what inference will have.
 
 Ground pixels soft-blend into the crown mask: crown pixels (0–1) are
 multiplied by (1 − ground_conf); noData pixels are resolved to ground
@@ -38,21 +41,30 @@ Usage:
       --dsm   data/raster/DSM.tif \\
       --out   explore_and_process/out/crown_mask_final.tif \\
       [--method dtm --dtm data/raster/DTM.tif] \\
-      [--window 200] [--height_threshold 2.0]
+      [--height_threshold 2.0]
 """
 
 import argparse
+import hashlib
 import logging
 import os
+import warnings
+from dataclasses import dataclass
 from datetime import datetime
 
-import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from omegaconf import OmegaConf
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
-from scipy.ndimage import gaussian_filter, minimum_filter, sobel, uniform_filter1d
+from scipy.interpolate import griddata
+from scipy.ndimage import (
+    distance_transform_edt,
+    gaussian_filter,
+    map_coordinates,
+    maximum_filter,
+    minimum_filter,
+)
 
 from utils.nodata import MASK_OUTSIDE, MASK_RASTER_NODATA, MASK_UNLABELLED
 
@@ -60,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 # The two stages of the DSM/DTM co-registration, in the order they are built:
 # "plane" removes the global offset and tilt, "aligned" adds the blockwise
-# residual warp on top. Both are written to disk; `dtm_stage` picks the one the
+# residual warp on top. Both are written to disk; `dtm_real.stage` picks the one the
 # nDSM and the mask are built on.
 DTM_STAGES: tuple[str, ...] = ("plane", "aligned")
 
@@ -85,34 +97,6 @@ def resample_raster(path, h, w, transform, crs):
 def _embed_params(path: str, suffix: str) -> str:
     base, ext = os.path.splitext(path)
     return f"{base}{suffix}{ext}"
-
-
-def _find_valley_threshold(ndsm: np.ndarray, lo: float = 0.3, hi: float = 8.0, bins: int = 300) -> float:
-    """Return the histogram valley between the ground and vegetation peaks."""
-    valid = ndsm[(ndsm >= lo) & (ndsm <= hi) & ~np.isnan(ndsm)]
-    if valid.size == 0:
-        return lo
-    counts, edges = np.histogram(valid, bins=bins, range=(lo, hi))
-    smoothed = uniform_filter1d(counts.astype(float), size=10)
-    valley_idx = int(np.argmin(smoothed))
-    return float(edges[valley_idx] + (edges[1] - edges[0]) / 2)
-
-
-def _otsu_threshold(arr: np.ndarray, bins: int = 256) -> float:
-    """Return Otsu's threshold for a 1-D float array."""
-    valid = arr[np.isfinite(arr)]
-    if valid.size == 0:
-        raise ValueError("_otsu_threshold: no finite values in input array")
-    counts, edges = np.histogram(valid, bins=bins)
-    centers = (edges[:-1] + edges[1:]) / 2
-    total = counts.sum()
-    w0 = np.cumsum(counts) / total
-    w1 = 1.0 - w0
-    mu0 = np.cumsum(counts * centers) / np.maximum(np.cumsum(counts), 1)
-    mu_total = float((counts * centers).sum() / total)
-    mu1 = (mu_total - w0 * mu0) / np.maximum(w1, 1e-8)
-    sigma_b = w0 * w1 * (mu0 - mu1) ** 2
-    return float(centers[int(np.argmax(sigma_b))])
 
 
 def _smoothstep_confidence(
@@ -162,29 +146,255 @@ def height_data_valid(ndsm: np.ndarray | None, dsm: np.ndarray) -> np.ndarray:
     return valid
 
 
-def detect_ground_local_min(
+@dataclass(frozen=True)
+class DtmApproxParams:
+    """Parameters of the DSM-only terrain approximation (dsm_mask.dtm_approx).
+
+    cell:         coarse-grid cell size (m) the morphology runs on
+    percentile:   per-cell percentile of the DSM — a robust minimum
+    max_window:   widest object (m) the opening removes
+    window_step:  growth of the opening window per step (m)
+    max_slope:    tan of the steepest flank still counted as terrain
+    dh0:          height tolerance per step (m) for DSM noise
+    smooth_sigma: Gaussian sigma (m) of the final terrain surface
+    """
+
+    cell: float = 0.5
+    percentile: float = 5.0
+    max_window: float = 30.0
+    window_step: float = 1.0
+    max_slope: float = 0.5
+    dh0: float = 0.2
+    smooth_sigma: float = 1.0
+
+    @classmethod
+    def from_cfg(cls, cfg) -> "DtmApproxParams":
+        if cfg is None:
+            raise ValueError("method: dtm_approx needs a dsm_mask.dtm_approx block")
+        known = set(cls.__dataclass_fields__)
+        unknown = sorted(set(cfg) - known)
+        if unknown:
+            raise ValueError(f"dtm_approx: unknown keys {unknown}; expected {sorted(known)}")
+        params = cls(**{k: float(v) for k, v in dict(cfg).items()})
+        if not 0.0 <= params.percentile <= 100.0:
+            raise ValueError(f"dtm_approx.percentile must be in [0, 100], got {params.percentile}")
+        for name in ("cell", "max_window", "window_step", "max_slope"):
+            if getattr(params, name) <= 0.0:
+                raise ValueError(f"dtm_approx.{name} must be > 0")
+        if params.dh0 < 0.0 or params.smooth_sigma < 0.0:
+            raise ValueError("dtm_approx.dh0 and smooth_sigma must be >= 0")
+        return params
+
+    def tag(self) -> str:
+        """Short filename tag; the full set goes into the cache hash."""
+        return f"_da_w{self.max_window:g}_s{self.max_slope:g}"
+
+    def digest(self) -> str:
+        return hashlib.md5(repr(self).encode()).hexdigest()[:8]
+
+
+@dataclass(frozen=True)
+class DtmRealParams:
+    """The external DTM and its co-registration onto the DSM (dsm_mask.dtm_real).
+
+    path:         the external DTM raster (not needed by predict, whose
+                  scene inputs carry it)
+    stage:        co-registration stage the nDSM is built on (DTM_STAGES):
+                  plane = global offset + tilt, aligned = plus blockwise warp
+    local_blocks: blocks per axis of the residual-warp correction
+    clamp_to_dsm: keep the co-registered DTM from rising above the DSM
+    """
+
+    path: str | None = None
+    stage: str = "aligned"
+    local_blocks: int = 12
+    clamp_to_dsm: bool = True
+
+    @classmethod
+    def from_cfg(cls, cfg, need_path: bool = True) -> "DtmRealParams":
+        if cfg is None:
+            raise ValueError("the external DTM needs a dtm_real block")
+        known = set(cls.__dataclass_fields__)
+        unknown = sorted(set(cfg) - known)
+        if unknown:
+            raise ValueError(f"dtm_real: unknown keys {unknown}; expected {sorted(known)}")
+        raw = dict(cfg)
+        params = cls(
+            path=str(raw["path"]) if raw.get("path") else None,
+            stage=str(raw.get("stage", cls.stage)),
+            local_blocks=int(raw.get("local_blocks", cls.local_blocks)),
+            clamp_to_dsm=bool(raw.get("clamp_to_dsm", cls.clamp_to_dsm)),
+        )
+        if need_path and not params.path:
+            raise ValueError("dtm_real.path is not set")
+        if params.stage not in DTM_STAGES:
+            raise ValueError(f"dtm_real.stage is {params.stage!r}; expected one of {DTM_STAGES}")
+        if params.local_blocks < 1:
+            raise ValueError("dtm_real.local_blocks must be >= 1")
+        return params
+
+    def tag(self) -> str:
+        """Filename tag: runs that differ in co-registration must not share names."""
+        return f"_{self.stage}_b{self.local_blocks}{'' if self.clamp_to_dsm else '_noclamp'}"
+
+
+def _block_percentile(dsm: np.ndarray, f: int, q: float) -> np.ndarray:
+    """q-th percentile of the finite pixels in every f×f block; NaN for empty blocks."""
+    h, w = dsm.shape
+    hc, wc = -(-h // f), -(-w // f)
+    padded = np.full((hc * f, wc * f), np.nan, dtype=np.float32)
+    padded[:h, :w] = dsm
+    blocks = padded.reshape(hc, f, wc, f).transpose(0, 2, 1, 3).reshape(hc, wc, f * f)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN blocks
+        return np.nanpercentile(blocks, q, axis=2).astype(np.float32)
+
+
+def _masked_opening(surface: np.ndarray, valid: np.ndarray, size: int) -> np.ndarray:
+    """Grey opening with a size×size square that ignores cells outside *valid*.
+
+    Outside cells count as +inf for the erosion and −inf for the dilation, so
+    "no data" never acts as ground: a tree at the footprint edge is still
+    opened away by the ground on its inner side, and the edge is not pulled
+    down by a fill value.
+    """
+    eroded = minimum_filter(np.where(valid, surface, np.inf), size=size, mode="nearest")
+    eroded[~valid] = -np.inf
+    opened = maximum_filter(eroded, size=size, mode="nearest")
+    opened[~valid] = np.nan
+    return opened
+
+
+def _fill_nearest(arr: np.ndarray) -> np.ndarray:
+    """Replace NaN with the value of the nearest finite cell."""
+    missing = ~np.isfinite(arr)
+    if not missing.any() or missing.all():
+        return arr
+    idx = distance_transform_edt(missing, return_distances=False, return_indices=True)
+    return arr[tuple(idx)]
+
+
+def _nan_gaussian(arr: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian smoothing that ignores NaN cells and keeps them NaN."""
+    if sigma <= 0.0:
+        return arr
+    valid = np.isfinite(arr)
+    num = gaussian_filter(np.where(valid, arr, 0.0), sigma=sigma, mode="nearest")
+    den = gaussian_filter(valid.astype(np.float32), sigma=sigma, mode="nearest")
+    out = num / np.maximum(den, 1e-6)
+    out[~valid] = np.nan
+    return out.astype(np.float32)
+
+
+def approximate_dtm(dsm: np.ndarray, gsd: float, params: DtmApproxParams) -> np.ndarray:
+    """Terrain surface from the DSM alone: a progressive morphological filter.
+
+    After Zhang et al. (2003, PMF) and Pingel et al. (2013, SMRF), on a coarse
+    grid of `cell` m:
+
+    1. z_0 = per-cell `percentile` of the DSM (robust minimum: single pits and
+       holes do not pull the cell down).
+    2. For k = 1..K, window w_k = 2·k·r + 1 cells (r = window_step / 2 / cell,
+       up to max_window):
+           z_k = opening(z_{k-1}, w_k)
+           object  if  z_{k-1} − z_k > dh,   dh = dh0 + max_slope · window_step / 2
+       The opening keeps everything wider than w_k and lowers a narrower
+       feature to a plateau whose edge moves by window_step/2 per step. Cells
+       on that plateau therefore drop by (flank slope) · window_step/2 per step:
+       an embankment with gentle flanks never exceeds dh and stays terrain,
+       however narrow; a crown or hedge with a steep flank drops by more than
+       dh once the window outgrows it, and every cell above that flank is
+       marked. Marks are permanent.
+    3. Marked cells are re-interpolated (linear, nearest outside the hull)
+       from the unmarked cells, which keep their z_0 value.
+    4. Gaussian smoothing (smooth_sigma), bilinear upsampling to the DSM grid,
+       terrain ≤ DSM, NaN where the DSM has no data.
+
+    Limits: under closed canopy wider than max_window the DSM shows no
+    ground, and the result there is the canopy. A feature counts as terrain
+    when its flanks are no steeper than about
+    max_slope + 2·dh0 / window_step — not by its width.
+    """
+    f = max(1, int(round(params.cell / gsd)))
+    cell = f * gsd
+    r_step = max(1, int(round(params.window_step / 2.0 / cell)))
+    n_steps = max(1, int(round(params.max_window / (2.0 * r_step * cell))))
+    dh = params.dh0 + params.max_slope * r_step * cell
+
+    z0 = _block_percentile(dsm, f, params.percentile)
+    valid = np.isfinite(z0)
+    if not valid.any():
+        return np.full(dsm.shape, np.nan, dtype=np.float32)
+
+    surface = z0.copy()
+    is_object = np.zeros(z0.shape, dtype=bool)
+    for k in range(1, n_steps + 1):
+        opened = _masked_opening(surface, valid, 2 * k * r_step + 1)
+        is_object |= valid & (surface - opened > dh)
+        surface = opened
+
+    ground = valid & ~is_object
+    print(
+        f"  dtm_approx: {cell:g} m cells, {n_steps} openings up to "
+        f"{(2 * n_steps * r_step + 1) * cell:g} m, dh={dh:.2f} m — "
+        f"{int(is_object.sum()):,} / {int(valid.sum()):,} cells marked as object"
+    )
+
+    terrain = np.where(ground, z0, np.nan).astype(np.float32)
+    fill = valid & ~ground
+    if fill.any() and ground.sum() >= 3:
+        pts = np.argwhere(ground)
+        vals = z0[ground]
+        targets = np.argwhere(fill)
+        lin = griddata(pts, vals, targets, method="linear")
+        hull_miss = ~np.isfinite(lin)
+        if hull_miss.any():
+            lin[hull_miss] = griddata(pts, vals, targets[hull_miss], method="nearest")
+        terrain[fill] = lin
+    elif fill.any():
+        terrain[fill] = z0[fill]
+
+    terrain = _nan_gaussian(terrain, params.smooth_sigma / cell)
+
+    # Back to the DSM grid: coarse cell i covers fine rows i·f .. i·f+f−1,
+    # its centre sits at fine coordinate i·f + (f−1)/2.
+    h, w = dsm.shape
+    rows = (np.arange(h, dtype=np.float32) - (f - 1) / 2.0) / f
+    cols = (np.arange(w, dtype=np.float32) - (f - 1) / 2.0) / f
+    rr, cc = np.meshgrid(rows, cols, indexing="ij")
+    dtm = map_coordinates(_fill_nearest(terrain), [rr, cc], order=1, mode="nearest")
+    dtm = dtm.astype(np.float32)
+    finite = np.isfinite(dsm)
+    dtm[finite] = np.minimum(dtm[finite], dsm[finite])
+    dtm[~finite] = np.nan
+    return dtm
+
+
+def detect_ground_dtm_approx(
     dsm: np.ndarray,
-    windows: list[int],
+    gsd: float,
+    params: DtmApproxParams,
     height_threshold: float,
     height_ramp: float | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """DTM approximation via multi-scale minimum filter.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Ground detection against the DSM-only terrain approximation.
+
+    nDSM = DSM − approximate_dtm(DSM); confidence as for method 'dtm'.
 
     Returns:
         binary:     bool array, True where pixel is ground
         confidence: float32 [0,1], higher = more likely ground
         ndsm:       raw nDSM (m) for diagnostics and nDSM output
+        dtm:        the approximated terrain surface (m)
     """
-    dsm_filled = np.where(np.isnan(dsm), np.nanmax(dsm), dsm)
-    local_mins = [minimum_filter(dsm_filled, size=w) for w in windows]
-    local_min = np.mean(local_mins, axis=0) if len(local_mins) > 1 else local_mins[0]
-    ndsm = dsm - local_min
+    dtm = approximate_dtm(dsm, gsd, params)
+    ndsm = dsm - dtm
 
     confidence = _smoothstep_confidence(ndsm, height_threshold, height_ramp)
-    confidence[np.isnan(dsm)] = 0.0
+    confidence[np.isnan(ndsm)] = 0.0
 
-    binary = (ndsm < height_threshold) & ~np.isnan(dsm)
-    return binary, confidence, ndsm
+    binary = (ndsm < height_threshold) & ~np.isnan(ndsm)
+    return binary, confidence, ndsm, dtm
 
 
 def _block_ground_candidates(
@@ -529,53 +739,6 @@ def detect_ground_dtm(
     return binary, confidence, ndsm, stages
 
 
-def detect_ground_gradient(
-    dsm: np.ndarray, gradient_sigma: float, gradient_threshold: float | None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Slope/edge filter: flat DSM regions are classified as ground.
-
-    Computes Sobel gradient magnitude, smooths with Gaussian, then classifies
-    flat pixels (low gradient) as ground.
-
-    Returns:
-        binary:      bool array, True where pixel is ground
-        confidence:  float32 [0,1], higher = more likely ground
-        grad_smooth: smoothed gradient magnitude (for diagnostics)
-    """
-    dsm_filled = np.where(np.isnan(dsm), 0.0, dsm)
-    gx = sobel(dsm_filled, axis=1)
-    gy = sobel(dsm_filled, axis=0)
-    grad_mag = np.sqrt(gx ** 2 + gy ** 2).astype(np.float32)
-    grad_smooth = gaussian_filter(grad_mag, sigma=gradient_sigma)
-
-    threshold = gradient_threshold if gradient_threshold is not None else _otsu_threshold(grad_smooth)
-    print(f"  Gradient threshold: {threshold:.4f}  ({'manual' if gradient_threshold is not None else 'Otsu'})")
-
-    valid_pos = grad_smooth[grad_smooth > 0]
-    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else float(grad_smooth.max())
-    # scale to [0, p95] (1e-8 avoids /0), inverted: low gradient → high ground confidence
-    confidence = (1.0 - np.clip(grad_smooth / max(p95, 1e-8), 0.0, 1.0)).astype(np.float32)
-    confidence[np.isnan(dsm)] = 0.0
-
-    binary = (grad_smooth < threshold) & ~np.isnan(dsm)
-    return binary, confidence, grad_smooth
-
-
-def combine(
-    a_bin: np.ndarray, a_conf: np.ndarray,
-    b_bin: np.ndarray, b_conf: np.ndarray,
-    mode: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Merge two (binary, confidence) ground-detection results.
-
-    mode='or':  ground if EITHER method agrees; confidence = max
-    mode='and': ground if BOTH methods agree;   confidence = min
-    """
-    if mode == "or":
-        return a_bin | b_bin, np.maximum(a_conf, b_conf)
-    return a_bin & b_bin, np.minimum(a_conf, b_conf)
-
-
 def preserved_crown(
     mask: np.ndarray, preserve_crown_threshold: float | None
 ) -> np.ndarray:
@@ -646,41 +809,6 @@ def apply_soft_blend(
     return result
 
 
-def _save_diagnostic(
-    values: np.ndarray,
-    process_out_dir: str,
-    run_id: str,
-    mask_stem: str,
-    label: str,
-    used_threshold: float,
-    suggested_threshold: float | None = None,
-    xlabel: str = "value",
-    title: str = "distribution",
-) -> None:
-    """Save a histogram diagnostic PNG to diag_graphs/<run_id>/ under process_out_dir."""
-    diag_dir = os.path.join(process_out_dir, "diag_graphs", run_id)
-    os.makedirs(diag_dir, exist_ok=True)
-
-    diag_path = os.path.join(diag_dir, f"{mask_stem}_{label}_diag.png")
-
-    valid = values[np.isfinite(values) & (values >= 0)]
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.hist(valid.ravel(), bins=300, color="steelblue", alpha=0.7, log=True)
-    ax.axvline(used_threshold, color="red", linestyle="--", linewidth=1.5,
-               label=f"used  {used_threshold:.3f}")
-    if suggested_threshold is not None:
-        ax.axvline(suggested_threshold, color="orange", linestyle=":", linewidth=1.5,
-                   label=f"suggested  {suggested_threshold:.3f}")
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("pixel count (log)")
-    ax.set_title(title)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(diag_path, dpi=120)
-    plt.close(fig)
-    print(f"  Diagnostic plot: {diag_path}")
-
-
 def _save_float_tif(
     arr: np.ndarray, path: str, profile: dict, label: str, nodata=None
 ) -> None:
@@ -696,6 +824,57 @@ def _save_float_tif(
 def _save_conf_tif(arr: np.ndarray, path: str, profile: dict) -> None:
     """Write a float32 confidence raster [0,1] to disk."""
     _save_float_tif(arr, path, profile, label="confidence")
+
+
+# Keys of removed methods, with the hint shown when a config still has them
+REMOVED_KEYS = {
+    "combine": "removed together with the gradient method — delete it",
+    "gradient_sigma": "removed together with the gradient method — delete it",
+    "gradient_threshold": "removed together with the gradient method — delete it",
+    "windows": "local_min was replaced by dtm_approx — use the dtm_approx block",
+    "dtm": "moved to dtm_real.path",
+    "dtm_stage": "moved to dtm_real.stage",
+    "dtm_local_blocks": "moved to dtm_real.local_blocks",
+    "dtm_clamp_to_dsm": "moved to dtm_real.clamp_to_dsm",
+    "dtm_local_refine": "was replaced by dtm_real.stage (aligned = old true, plane = old false)",
+}
+METHODS = ("dtm_approx", "dtm")
+
+
+def validate_method(args) -> tuple[str, str]:
+    """Check dsm_mask.method / ndsm_channel and their keys.
+
+    Returns (method, ndsm_channel): `method` builds the mask (ground truth),
+    `ndsm_channel` the nDSM written as model input. The external DTM and its
+    co-registration settings (dtm_real) are read only where one of them is
+    'dtm', never because a path happens to be set.
+    """
+    stale = [k for k in REMOVED_KEYS if k in args]
+    if stale:
+        raise ValueError(
+            "dsm_mask: " + "; ".join(f"'{k}' {REMOVED_KEYS[k]}" for k in stale)
+        )
+    method = str(args.method)
+    if method == "local_min":
+        raise ValueError("dsm_mask.method: local_min was renamed to dtm_approx")
+    if method not in METHODS:
+        raise ValueError(f"dsm_mask.method is {method!r}; expected one of {METHODS}")
+    channel = str(args.get("ndsm_channel", None) or method)
+    if channel not in METHODS:
+        raise ValueError(
+            f"dsm_mask.ndsm_channel is {channel!r}; expected one of {METHODS} or null"
+        )
+    used = {method, channel}
+    if "dtm" in used:
+        try:
+            DtmRealParams.from_cfg(args.get("dtm_real", None))
+        except ValueError as e:
+            raise ValueError(f"dsm_mask.method / ndsm_channel 'dtm': {e}") from e
+    elif args.get("dtm_real", None) is not None:
+        print("[dtm_approx] dsm_mask.dtm_real is ignored (no 'dtm' in method / ndsm_channel)")
+    if "dtm_approx" in used:
+        DtmApproxParams.from_cfg(args.get("dtm_approx", None))
+    return method, channel
 
 
 def main(args):
@@ -715,38 +894,22 @@ def main(args):
     if not getattr(args, "out_dsm", None):
         args.out_dsm = os.path.join(process_out_dir, "ndsm", "dsm_ndsm.tif")
 
+    # --- Method (mask) and nDSM channel --------------------------------------
+    method, channel = validate_method(args)
+    used = {method, channel}
+    real = DtmRealParams.from_cfg(args.dtm_real) if "dtm" in used else None
+    approx = DtmApproxParams.from_cfg(args.dtm_approx) if "dtm_approx" in used else None
+    if channel != method:
+        print(f"Mask from '{method}', nDSM input channel from '{channel}'")
+
     # --- Build output filename suffix ----------------------------------------
-    w_tag = "-".join(str(w) for w in args.windows)
-    lm_tag = f"_lm_w{w_tag}_ht{args.height_threshold}"
-    dt_tag = f"_dtm_ht{args.height_threshold}"
-    gr_tag = f"_gr_s{args.gradient_sigma}"
-
-    # Determine which height-based tag to use (local_min or external dtm)
-    use_external_dtm = bool(getattr(args, "dtm", None))
-    ht_tag = dt_tag if use_external_dtm else lm_tag
-
-    if args.method == "local_min":
-        mask_suffix = lm_tag
-    elif args.method == "dtm":
-        mask_suffix = dt_tag
-    elif args.method == "gradient":
-        mask_suffix = gr_tag
-    else:  # both
-        mask_suffix = f"{ht_tag}{gr_tag}_{args.combine}"
+    if method == "dtm":
+        mask_suffix = f"_dtm_ht{args.height_threshold}"
+    else:
+        assert approx is not None
+        mask_suffix = f"{approx.tag()}_ht{args.height_threshold}"
 
     height_ramp = args.get("height_ramp", None)
-    if args.get("dtm_local_refine", None) is not None:
-        raise ValueError(
-            "dsm_mask.dtm_local_refine was replaced by dtm_stage: use "
-            "'dtm_stage: aligned' for the old true, 'dtm_stage: plane' for false"
-        )
-    dtm_stage = str(args.get("dtm_stage", "aligned"))
-    if dtm_stage not in DTM_STAGES:
-        raise ValueError(
-            f"dsm_mask.dtm_stage is {dtm_stage!r}; expected one of {DTM_STAGES}"
-        )
-    dtm_local_blocks = int(args.get("dtm_local_blocks", 12))
-    dtm_clamp_to_dsm = bool(args.get("dtm_clamp_to_dsm", True))
     crown_resolve_threshold = args.get("crown_resolve_threshold", None)
     preserve_crown_threshold = args.get("preserve_crown_threshold", None)
     if preserve_crown_threshold is not None:
@@ -756,9 +919,10 @@ def main(args):
                 "dsm_mask.preserve_crown_threshold must be in (0, 1] or null; "
                 f"got {preserve_crown_threshold}"
             )
-    if use_external_dtm and args.method in ("dtm", "both"):
-        # Two runs that differ only in the stage must not overwrite each other
-        mask_suffix += f"_{dtm_stage}_b{dtm_local_blocks}"
+    if method == "dtm":
+        # Two runs that differ only in the co-registration must not share names
+        assert real is not None
+        mask_suffix += real.tag()
     if height_ramp is not None:
         mask_suffix += f"_hr{height_ramp}"
     if crown_resolve_threshold is not None:
@@ -770,9 +934,11 @@ def main(args):
     mask_dir, mask_file = os.path.dirname(args.out), os.path.basename(args.out)
     args.out = os.path.join(mask_dir, run_id, mask_file)
 
+    ndsm_tags = {"dtm": "_dtm", "dtm_approx": "_da"}
+    ndsm_base = os.path.splitext(os.path.basename(args.out_dsm or "dsm_ndsm.tif"))[0]
     if args.out_dsm:
-        ndsm_suffix = "_dtm" if use_external_dtm else f"_w{w_tag}"
-        args.out_dsm = _embed_params(args.out_dsm, ndsm_suffix)
+        channel_tag = ndsm_tags[channel] + (real.tag() if channel == "dtm" and real else "")
+        args.out_dsm = _embed_params(args.out_dsm, channel_tag)
         dsm_dir, dsm_file = os.path.dirname(args.out_dsm), os.path.basename(args.out_dsm)
         args.out_dsm = os.path.join(dsm_dir, run_id, dsm_file)
 
@@ -793,73 +959,60 @@ def main(args):
     print("Resampling DSM to mask grid...")
     dsm = resample_raster(args.dsm, h, w, transform, crs)
 
-    dtm = None
-    if use_external_dtm:
-        print("Resampling external DTM to mask grid...")
-        dtm = resample_raster(args.dtm, h, w, transform, crs)
-
-    # --- Run detection method(s) ---------------------------------------------
-    lm_bin = lm_conf = ndsm = None
-    gr_bin = gr_conf = grad_smooth = None
+    # --- Ground detection ------------------------------------------------------
     dtm_stages: dict[str, np.ndarray] = {}
 
     mask_stem = os.path.splitext(os.path.basename(args.out))[0]
 
-    if args.method in ("dtm", "both") and use_external_dtm and dtm is not None:
+    # Every nDSM this run needs: the mask's, and the channel's if it differs.
+    # name -> (ground_conf, ndsm)
+    results: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    if real is not None:
+        print("Resampling external DTM to mask grid...")
+        dtm = resample_raster(real.path, h, w, transform, crs)
         print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        lm_bin, lm_conf, ndsm, dtm_stages = detect_ground_dtm(
+        _, conf, nd, dtm_stages = detect_ground_dtm(
             dsm,
             dtm,
             args.height_threshold,
             height_ramp,
-            stage=dtm_stage,
-            clamp_to_dsm=dtm_clamp_to_dsm,
-            local_blocks=dtm_local_blocks,
+            stage=real.stage,
+            clamp_to_dsm=real.clamp_to_dsm,
+            local_blocks=real.local_blocks,
+        )
+        results["dtm"] = (conf, nd)
+    if "dtm_approx" in used:
+        assert approx is not None
+        print(f"\n[dtm_approx] {approx}  height_threshold={args.height_threshold} m  ramp={height_ramp}")
+        _, conf, nd, approx_dtm = detect_ground_dtm_approx(
+            dsm, abs(transform.a), approx, args.height_threshold, height_ramp
+        )
+        results["dtm_approx"] = (conf, nd)
+        _save_float_tif(
+            approx_dtm,
+            os.path.join(process_out_dir, "dtm_approx", run_id, f"{mask_stem}_dtm_approx.tif"),
+            profile,
+            label="approximated DTM",
+            nodata=float("nan"),
         )
 
-    if args.method in ("local_min", "both") and not use_external_dtm:
-        print(f"\n[local_min] windows={args.windows} px  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        lm_bin, lm_conf, ndsm = detect_ground_local_min(dsm, args.windows, args.height_threshold, height_ramp)
+    ground_conf, ndsm = results[method]
+    channel_ndsm = results[channel][1]
 
-    if args.method in ("local_min", "dtm", "both") and ndsm is not None:
-        valid_ndsm = ndsm[~np.isnan(ndsm)]
-        suggested_ht = _find_valley_threshold(ndsm)
-        print(f"  nDSM  min={np.min(valid_ndsm):.2f} m  "
+    for name, (_, nd) in results.items():
+        valid_ndsm = nd[~np.isnan(nd)]
+        if not valid_ndsm.size:
+            continue
+        print(f"  nDSM [{name}]  min={np.min(valid_ndsm):.2f} m  "
               f"p5={np.percentile(valid_ndsm, 5):.2f} m  "
               f"p25={np.percentile(valid_ndsm, 25):.2f} m  "
               f"median={np.median(valid_ndsm):.2f} m  "
               f"p75={np.percentile(valid_ndsm, 75):.2f} m  "
               f"p95={np.percentile(valid_ndsm, 95):.2f} m  "
               f"max={np.max(valid_ndsm):.2f} m")
-        print(f"  Suggested threshold (valley): {suggested_ht:.2f} m  (used: {args.height_threshold} m)")
-        ndsm_diag_label = "dtm" if use_external_dtm else "lm"
-        ndsm_diag_title = ("dtm — nDSM distribution" if use_external_dtm
-                           else "local_min — nDSM distribution")
-        _save_diagnostic(
-            ndsm, process_out_dir, run_id, mask_stem, label=ndsm_diag_label,
-            used_threshold=args.height_threshold,
-            suggested_threshold=suggested_ht,
-            xlabel="nDSM [m]",
-            title=ndsm_diag_title,
-        )
-
-    if args.method in ("gradient", "both"):
-        print(f"\n[gradient] sigma={args.gradient_sigma} px")
-        gr_bin, gr_conf, grad_smooth = detect_ground_gradient(
-            dsm, args.gradient_sigma, args.gradient_threshold
-        )
-        # NOTE: _otsu_threshold is also called inside detect_ground_gradient when gradient_threshold is None
-        used_gr_threshold = (args.gradient_threshold if args.gradient_threshold is not None
-                             else _otsu_threshold(grad_smooth))
-        _save_diagnostic(
-            grad_smooth, process_out_dir, run_id, mask_stem, label="gr",
-            used_threshold=used_gr_threshold,
-            xlabel="gradient magnitude",
-            title="gradient — slope distribution",
-        )
 
     # --- Save both co-registered DTM stages ----------------------------------
-    # Both are written whatever `dtm_stage` selects: comparing them is how the
+    # Both are written whatever `dtm_real.stage` selects: comparing them is how the
     # co-registration is judged (see dsm_overview), and the one not used here
     # is exactly the comparison partner.
     if dtm_stages:
@@ -869,25 +1022,9 @@ def main(args):
                 stage_dtm,
                 os.path.join(coreg_dir, f"{mask_stem}_dtm_{name}.tif"),
                 profile,
-                label=f"co-registered DTM ({name}{', used' if name == dtm_stage else ''})",
+                label=f"co-registered DTM ({name}{', used' if real and name == real.stage else ''})",
                 nodata=float("nan"),
             )
-
-    # --- Save individual confidences -----------------------------------------
-    if lm_conf is not None:
-        lm_conf_label = "dtm" if use_external_dtm else "lm"
-        _save_conf_tif(lm_conf, os.path.join(conf_dir, f"{mask_stem}_{lm_conf_label}_conf.tif"), profile)
-    if gr_conf is not None:
-        _save_conf_tif(gr_conf, os.path.join(conf_dir, f"{mask_stem}_gr_conf.tif"), profile)
-
-    # --- Combine -------------------------------------------------------------
-    if args.method in ("local_min", "dtm"):
-        ground_bin, ground_conf = lm_bin, lm_conf
-    elif args.method == "gradient":
-        ground_bin, ground_conf = gr_bin, gr_conf
-    else:
-        print(f"\n[combine] mode={args.combine}")
-        ground_bin, ground_conf = combine(lm_bin, lm_conf, gr_bin, gr_conf, mode=args.combine)
 
     # --- Apply soft ground blend to crown mask --------------------------------
     preserved = preserved_crown(mask, preserve_crown_threshold)
@@ -935,32 +1072,31 @@ def main(args):
         dst.write(mask[np.newaxis])
     print(f"Saved mask: {args.out}")
 
-    # --- Write combined confidence raster ------------------------------------
+    # --- Write ground confidence raster --------------------------------------
     _save_conf_tif(ground_conf, conf_path, profile)
 
-    # --- Write normalised nDSM (local_min method only) -----------------------
-    if args.out_dsm and ndsm is not None:
-        ndsm_norm = normalize_ndsm(ndsm, dsm, args.max_ndsm_height)
+    # --- Write normalised nDSM (the model's input channel) --------------------
+    if args.out_dsm:
+        ndsm_norm = normalize_ndsm(channel_ndsm, dsm, args.max_ndsm_height)
         dsm_profile = profile.copy()
         dsm_profile.update(dtype="float32", count=1, nodata=None)
         os.makedirs(os.path.dirname(os.path.abspath(args.out_dsm)), exist_ok=True)
         with rasterio.open(args.out_dsm, "w", **dsm_profile) as dst:
             dst.write(ndsm_norm[np.newaxis].astype(np.float32))
-        print(f"Saved nDSM: {args.out_dsm}  (range [0,1])")
+        print(f"Saved nDSM ({channel}): {args.out_dsm}  (range [0,1])")
 
-    # --- Write raw nDSM in metres ---------------------------------------------
-    if ndsm is not None:
-        ndsm_m_dir = os.path.join(process_out_dir, "ndsm_in_m", run_id)
-        os.makedirs(ndsm_m_dir, exist_ok=True)
-        ndsm_stem = os.path.splitext(os.path.basename(args.out_dsm))[0] if args.out_dsm else os.path.splitext(os.path.basename(args.out))[0]
-        ndsm_m_path = os.path.join(ndsm_m_dir, f"{ndsm_stem}_raw_m.tif")
-        dsm_profile_m = profile.copy()
-        dsm_profile_m.update(dtype="float32", count=1, nodata=float("nan"))
-        ndsm_out = ndsm.astype(np.float32)
+    # --- Write raw nDSM in metres, one per computed nDSM ----------------------
+    ndsm_m_dir = os.path.join(process_out_dir, "ndsm_in_m", run_id)
+    os.makedirs(ndsm_m_dir, exist_ok=True)
+    dsm_profile_m = profile.copy()
+    dsm_profile_m.update(dtype="float32", count=1, nodata=float("nan"))
+    for name, (_, nd) in results.items():
+        ndsm_m_path = os.path.join(ndsm_m_dir, f"{ndsm_base}{ndsm_tags[name]}_raw_m.tif")
+        ndsm_out = nd.astype(np.float32)
         ndsm_out[np.isnan(dsm)] = float("nan")
         with rasterio.open(ndsm_m_path, "w", **dsm_profile_m) as dst:
             dst.write(ndsm_out[np.newaxis])
-        print(f"Saved raw nDSM (m): {ndsm_m_path}")
+        print(f"Saved raw nDSM {name} (m): {ndsm_m_path}")
 
 
 if __name__ == "__main__":

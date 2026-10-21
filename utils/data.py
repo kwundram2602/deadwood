@@ -1,16 +1,22 @@
+import json
 import os
 import random
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
 import rasterio
 
+from deadwood_spectral.align import parse_date
 from utils.nodata import footprint_from_stack
 
 _IMAGE_SUFFIX = ".tif"
 _MASK_ID = "_mask"
 _DSM_ID = "_dsm"
+
+SPLIT_NAMES = ("train", "val", "test")
+SPLIT_STRATEGIES = ("random", "by_date")
 
 
 def find_triples(input_root: Path) -> list[tuple[Path, Path, Path]]:
@@ -56,6 +62,75 @@ def _transfer(src: Path, dst: Path, mode: str) -> None:
         raise ValueError(f"mode must be 'copy' or 'symlink', got {mode!r}")
 
 
+def _explicit_date_splits(mapping: Mapping, dates: list[str]) -> dict[str, str]:
+    """Validate an explicit {split: [dates]} mapping; return date -> split."""
+    as_dict = {str(k): list(v or []) for k, v in dict(mapping).items()}
+    unknown = set(as_dict) - set(SPLIT_NAMES)
+    if unknown:
+        raise ValueError(f"split.dates has unknown splits {sorted(unknown)}")
+    assigned: dict[str, str] = {}
+    for split in SPLIT_NAMES:
+        for d in as_dict.get(split, []):
+            d = str(d)
+            if d in assigned:
+                raise ValueError(f"date {d} is assigned to both {assigned[d]} and {split}")
+            assigned[d] = split
+    if set(assigned) != set(dates):
+        raise ValueError(
+            "split.dates must assign exactly the selected dates: "
+            f"missing {sorted(set(dates) - set(assigned))}, "
+            f"not selected {sorted(set(assigned) - set(dates))}"
+        )
+    return assigned
+
+
+def assign_dates(
+    dates: list[str],
+    explicit: Mapping | None = None,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> dict[str, str]:
+    """Assign whole acquisition dates to splits; return date -> split.
+
+    explicit: {train: [...], val: [...], test: [...]} used as given; every
+      date must appear exactly once.
+    otherwise: seeded shuffle of the sorted dates, with
+      n_test = min(round(n * (1 - train - val)), n - 2),
+      n_val  = max(1, min(round(n * val), n - 1 - n_test)),
+      n_train = the rest — so train and val always get at least one date.
+
+    Only test may stay empty: val drives model selection.
+
+    All tiles of one date land in one split, but the same trees appear on
+    every date. This split measures generalisation to unseen dates, not to
+    unseen places.
+    """
+    dates = sorted(str(d) for d in dates)
+    if explicit is not None:
+        assigned = _explicit_date_splits(explicit, dates)
+    else:
+        n = len(dates)
+        if n < 2:
+            raise ValueError(f"split.strategy by_date needs >= 2 dates, got {dates}")
+        n_test = min(round(n * (1.0 - train_ratio - val_ratio)), n - 2)
+        n_test = max(n_test, 0)
+        n_val = max(1, min(round(n * val_ratio), n - 1 - n_test))
+        n_train = n - n_val - n_test
+        order = list(np.random.default_rng(seed).permutation(dates))
+        assigned = {}
+        for d in order[:n_train]:
+            assigned[str(d)] = "train"
+        for d in order[n_train : n_train + n_val]:
+            assigned[str(d)] = "val"
+        for d in order[n_train + n_val :]:
+            assigned[str(d)] = "test"
+    for split in ("train", "val"):
+        if split not in assigned.values():
+            raise ValueError(f"no date assigned to '{split}'; only test may be empty")
+    return assigned
+
+
 def split_patches(
     input_root: Path,
     output_root: Path,
@@ -63,12 +138,23 @@ def split_patches(
     val_ratio: float = 0.2,
     seed: int = 42,
     mode: str = "copy",
+    strategy: str = "random",
+    date_splits: Mapping[str, str] | None = None,
 ) -> dict[str, list[tuple[Path, Path, Path]]]:
     """Split image/mask/dsm patches into train/val/test directories.
 
-    Returns a dict mapping split name to the list of (image, mask, dsm) triples
-    written for that split — useful for downstream stats computation.
+    strategy:
+      random  — seeded shuffle over all tiles, sliced by the ratios.
+      by_date — every tile goes to date_splits[<YYYYMMDD stem prefix>], so
+                tiles of one date never end up in different splits.
+
+    Writes split.json (strategy, seed, date -> split, tile stems per split)
+    next to the split directories. Returns a dict mapping split name to the
+    list of (image, mask, dsm) triples written for that split — useful for
+    downstream stats computation.
     """
+    if strategy not in SPLIT_STRATEGIES:
+        raise ValueError(f"strategy must be one of {SPLIT_STRATEGIES}, got {strategy!r}")
     triples = find_triples(input_root)
     if not triples:
         raise RuntimeError(
@@ -76,20 +162,30 @@ def split_patches(
             "Run tile_patches.py first."
         )
 
-    random.seed(seed)
-    random.shuffle(triples)
+    if strategy == "random":
+        random.seed(seed)
+        random.shuffle(triples)
 
-    n = len(triples)
-    n_train = int(n * train_ratio)
-    n_val = int(n * val_ratio)
-    splits = {
-        "train": triples[:n_train],
-        "val": triples[n_train : n_train + n_val],
-        "test": triples[n_train + n_val :],
-    }
+        n = len(triples)
+        n_train = int(n * train_ratio)
+        n_val = int(n * val_ratio)
+        splits = {
+            "train": triples[:n_train],
+            "val": triples[n_train : n_train + n_val],
+            "test": triples[n_train + n_val :],
+        }
+    else:
+        if date_splits is None:
+            raise ValueError("strategy 'by_date' needs date_splits (date -> split)")
+        splits = {name: [] for name in SPLIT_NAMES}
+        for triple in triples:
+            date = parse_date(triple[0])
+            if date not in date_splits:
+                raise ValueError(f"{triple[0].name}: date {date} has no split assigned")
+            splits[date_splits[date]].append(triple)
 
     print(
-        f"[INFO] Found {n} triples → "
+        f"[INFO] Found {len(triples)} triples ({strategy}) → "
         f"train {len(splits['train'])} | val {len(splits['val'])} | test {len(splits['test'])}"
     )
 
@@ -114,6 +210,17 @@ def split_patches(
             _transfer(dsm, dst_dsm, mode)
             out_imgs.append((dst_img, dst_mask, dst_dsm))
         written[split_name] = out_imgs
+
+    split_record = {
+        "strategy": strategy,
+        "seed": seed,
+        "input": str(input_root),
+        "date_splits": dict(sorted(date_splits.items())) if date_splits else None,
+        "tiles": {name: sorted(t[0].stem for t in ts) for name, ts in splits.items()},
+    }
+    if strategy == "random":
+        split_record.update(train_ratio=train_ratio, val_ratio=val_ratio)
+    (output_root / "split.json").write_text(json.dumps(split_record, indent=2))
 
     print(f"[DONE] Split written to: {output_root}")
     return written

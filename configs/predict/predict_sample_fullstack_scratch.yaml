@@ -25,7 +25,7 @@ stats: sample_exp/sample_train_stats.json
 dsm: datafiles/DSM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_DSM_coreg.tif
 
 # Optional external DTM. When set, the nDSM is DSM - DTM (apply_dsm_mask
-# `method: dtm`) instead of DSM minus a minimum filter.
+# `method: dtm`) instead of DSM minus the DSM-only approximation (dtm_approx).
 dtm: datafiles/dtm/20250727_Airport_M350L2_dem.tif
 #dtm : null
 # Pre-stacked scene image ([0,1] float32 with band descriptions, as written
@@ -43,12 +43,31 @@ preprocess:
     - path: datafiles/OM_domAligned/20260313_Airport_Main_MAVICM3MFIXEDM3M_OM_coreg.tif
       bands: [1, 2, 3, 4, 5, 6, 7]
       names: [red, green, blue, green_ms, red_ms, rededge, nir]  # native M3M order
-  windows: [500]     # dsm_mask.windows — minimum-filter sizes for nDSM (ignored when dtm: is set)
+  # Source of the nDSM input channel — must equal dsm_mask.ndsm_channel of the
+  # model's training data: dtm (needs dtm:) | dtm_approx (dtm: is ignored).
+  # The sample models were trained on the external-DTM nDSM.
+  ndsm_channel: dtm
+  # DSM-only terrain approximation (used when ndsm_channel is dtm_approx);
+  # must match dsm_mask.dtm_approx of the training preprocessing: progressive
+  # morphological filter on a coarse grid, see apply_dsm_mask.approximate_dtm.
+  # A feature counts as terrain when its flanks are no steeper than about
+  # max_slope + 2*dh0/window_step (embankments stay ground, crowns are removed).
+  dtm_approx:
+    cell: 0.5           # m, coarse-grid cell size the morphology runs on
+    percentile: 5       # per-cell DSM percentile = robust minimum (ignores pits)
+    max_window: 30.0    # m, widest object (canopy patch) to remove
+    window_step: 1.0    # m, growth of the opening window per step
+    max_slope: 0.5      # tan of the steepest flank still counted as terrain (~27 deg)
+    dh0: 0.2            # m, height tolerance per step for DSM noise
+    smooth_sigma: 1.0   # m, Gaussian smoothing of the terrain surface
   max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
   # Must match the training run, otherwise the nDSM differs:
-  dtm_stage: aligned        # dsm_mask.dtm_stage — plane | aligned
-  dtm_local_blocks: 12      # dsm_mask.dtm_local_blocks
-  dtm_clamp_to_dsm: true    # dsm_mask.dtm_clamp_to_dsm — DTM never above DSM
+  # co-registration of dtm: (used when ndsm_channel is dtm) = dsm_mask.dtm_real
+  # of the training run, without path
+  dtm_real:
+    stage: aligned          # plane | aligned
+    local_blocks: 12
+    clamp_to_dsm: true      # DTM never above DSM
   dir: null               # prep cache; null → datafiles/process_out/predict_prep
 
 # Binarization threshold for the crown probability [0,1] → {0,1}

@@ -1,7 +1,7 @@
 # tests/test_predict_dtm.py
 """prepare_inputs must build the nDSM from an external DTM when one is given,
-mirroring apply_dsm_mask.py's `method: dtm`, and fall back to the multi-scale
-minimum filter otherwise.
+mirroring apply_dsm_mask.py's `method: dtm`, and fall back to the DSM-only
+terrain approximation (`method: dtm_approx`) otherwise.
 """
 
 import sys
@@ -52,14 +52,22 @@ def scene(tmp_path):
         descriptions=["red", "green", "blue"],
     )
 
-    ground = np.tile(np.linspace(100.0, 140.0, W, dtype=np.float32), (H, 1))
+    # 1 m rise over the 3.2 m scene: a 31 % slope, gentle enough to be terrain
+    ground = np.tile(np.linspace(100.0, 101.0, W, dtype=np.float32), (H, 1))
     dsm_arr = ground.copy()
     dsm_arr[20:40, 20:40] += 10.0  # a 10 m tall object
     dsm = _write(tmp_path / "dsm.tif", dsm_arr)
     dtm = _write(tmp_path / "dtm.tif", ground)
 
     sources = [(str(rgb), [1, 2, 3], ["red", "green", "blue"])]
-    cfg = OmegaConf.create({"target_gsd": GSD, "windows": [15], "max_ndsm_height": 16.0})
+    # dtm_approx scaled to the 3.2 m test scene (the real defaults work in metres
+    # of canopy, far larger than this scene)
+    approx = {"cell": 0.1, "percentile": 5, "max_window": 2.0, "window_step": 0.2,
+              "max_slope": 0.7, "dh0": 0.3, "smooth_sigma": 0.0}
+    real = {"stage": "aligned", "local_blocks": 12, "clamp_to_dsm": True}
+    cfg = OmegaConf.create(
+        {"target_gsd": GSD, "dtm_approx": approx, "dtm_real": real, "max_ndsm_height": 16.0}
+    )
     return sources, dsm, dtm, cfg, tmp_path / "prep"
 
 
@@ -81,18 +89,20 @@ def test_dtm_ndsm_recovers_true_object_height(scene):
     assert ndsm[30, 30] == pytest.approx(1.0, abs=1e-5)
 
 
-def test_minimum_filter_leaves_slope_residual(scene):
-    """Contrast: without a DTM the sloped terrain bleeds into the nDSM."""
+def test_dtm_approx_follows_the_slope(scene):
+    """Without a DTM the approximation keeps the slope as terrain and finds the object."""
     sources, dsm, _dtm, cfg, prep = scene
     _, ndsm_path = prepare_inputs(sources, dsm, None, cfg, prep, need_ndsm=True)
     ndsm = _read(ndsm_path)
 
-    # the minimum filter cannot remove the slope: flat ground is not 0
-    assert ndsm[5, 60] > 0.01
+    assert "_da" in ndsm_path.name
+    # normalised to the 10 m ceiling: sloped ground stays near 0, the object near 1
+    assert ndsm[5, 60] < 0.05
+    assert ndsm[30, 30] > 0.8
 
 
-def test_dtm_and_minimum_filter_use_distinct_caches(scene):
-    """A DTM run must not be served from a minimum-filter cache entry."""
+def test_dtm_and_dtm_approx_use_distinct_caches(scene):
+    """A DTM run must not be served from a dtm_approx cache entry."""
     sources, dsm, dtm, cfg, prep = scene
     _, lm_path = prepare_inputs(sources, dsm, None, cfg, prep, need_ndsm=True)
     _, dtm_path = prepare_inputs(sources, dsm, dtm, cfg, prep, need_ndsm=True)
@@ -118,9 +128,32 @@ def test_dtm_without_dsm_is_rejected(scene):
 def test_dtm_grid_mismatch_is_resampled_not_rejected(scene, tmp_path):
     """An external DTM on a coarser grid is reprojected onto the target grid."""
     sources, dsm, _dtm, cfg, prep = scene
-    coarse = np.tile(np.linspace(100.0, 140.0, W // 4, dtype=np.float32), (H // 4, 1))
+    coarse = np.tile(np.linspace(100.0, 101.0, W // 4, dtype=np.float32), (H // 4, 1))
     coarse_dtm = _write(tmp_path / "dtm_coarse.tif", coarse, gsd=GSD * 4)
 
     _, ndsm_path = prepare_inputs(sources, dsm, coarse_dtm, cfg, prep, need_ndsm=True)
     with rasterio.open(ndsm_path) as src:
         assert (src.height, src.width) == (H, W)
+
+
+def test_ndsm_channel_dtm_approx_ignores_a_given_dtm(scene):
+    """Channel from dtm_approx (as trained) even though a DTM is configured."""
+    sources, dsm, dtm, cfg, prep = scene
+    _, approx_path = prepare_inputs(sources, dsm, None, cfg, prep, need_ndsm=True)
+    cfg.ndsm_channel = "dtm_approx"
+    _, path = prepare_inputs(sources, dsm, dtm, cfg, prep, need_ndsm=True)
+    assert path == approx_path
+
+
+def test_ndsm_channel_dtm_without_dtm_is_rejected(scene):
+    sources, dsm, _dtm, cfg, prep = scene
+    cfg.ndsm_channel = "dtm"
+    with pytest.raises(ValueError, match="ndsm_channel: dtm needs a dtm"):
+        prepare_inputs(sources, dsm, None, cfg, prep, need_ndsm=True)
+
+
+def test_flat_dtm_keys_point_to_dtm_real(scene):
+    sources, dsm, dtm, cfg, prep = scene
+    cfg.dtm_stage = "plane"
+    with pytest.raises(ValueError, match="moved into preprocess.dtm_real"):
+        prepare_inputs(sources, dsm, dtm, cfg, prep, need_ndsm=True)

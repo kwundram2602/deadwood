@@ -1,4 +1,5 @@
 # tests/test_preprocess_config.py
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -10,6 +11,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 CONFIG_PATH = os.path.join(
     os.path.dirname(__file__), "..", "configs", "preprocess", "preprocess.yaml"
+)
+TIMESERIES_CONFIG_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "configs",
+    "preprocess",
+    "use_timeseries",
+    "all_dsm_dates_shuffle.yaml",
 )
 
 
@@ -27,13 +36,12 @@ def test_config_rasterize_section():
 def test_config_dsm_mask_section():
     cfg = OmegaConf.load(CONFIG_PATH)
     d = cfg.dsm_mask
-    assert len(list(d.windows)) > 0
-    assert d.gradient_threshold is None
+    assert d.method == "dtm" or d.dtm_approx is not None
     assert d.height_threshold > 0
     assert 0.0 < d.nodata_resolve_threshold < 1.0
-    assert d.method in ("local_min", "dtm", "gradient", "both")
+    assert d.method in ("dtm_approx", "dtm")
     if d.method == "dtm":
-        assert d.dtm is not None, "method: dtm requires an external dtm: path"
+        assert d.dtm_real.path, "method: dtm requires dtm_real.path"
 
 
 def test_config_tiling_section():
@@ -45,17 +53,15 @@ def test_config_tiling_section():
 
 
 def test_omegaconf_null_becomes_none():
-    """null in the real config must deserialize to None — critical for gradient_threshold / raster_dir."""
+    """null in the real config must deserialize to None — critical for raster_dir."""
     cfg = OmegaConf.load(CONFIG_PATH)
-    assert cfg.dsm_mask.gradient_threshold is None
     assert cfg.rasterize.raster_dir is None
 
 
 def test_omegaconf_list_is_iterable():
-    """ListConfig must support list() conversion — used by rasterize (crowns) and dsm_mask (windows)."""
-    cfg = OmegaConf.create({"crowns": ["a.gpkg", "b.gpkg"], "windows": [150, 350, 700]})
+    """ListConfig must support list() conversion — used by rasterize (crowns)."""
+    cfg = OmegaConf.create({"crowns": ["a.gpkg", "b.gpkg"]})
     assert list(cfg.crowns) == ["a.gpkg", "b.gpkg"]
-    assert list(cfg.windows) == [150, 350, 700]
 
 
 def test_run_propagates_dsm_paths_to_tiling(tmp_path, monkeypatch):
@@ -79,12 +85,9 @@ def test_run_propagates_dsm_paths_to_tiling(tmp_path, monkeypatch):
         "  dsm: dummy_dsm.tif\n"
         "  out: masks/crown_mask_final.tif\n"
         "  out_dsm: ndsm/dsm_ndsm.tif\n"
-        "  method: local_min\n"
-        "  combine: or\n"
-        "  windows: [150, 350, 700]\n"
+        "  method: dtm_approx\n"
+        "  dtm_approx: {cell: 0.5, max_window: 30.0}\n"
         "  height_threshold: 2.0\n"
-        "  gradient_sigma: 3.0\n"
-        "  gradient_threshold: null\n"
         "  max_ndsm_height: 50.0\n"
         "  nodata_resolve_threshold: 0.7\n"
         "tiling:\n"
@@ -151,12 +154,9 @@ def test_run_does_not_propagate_null_out_dsm(tmp_path, monkeypatch):
         "  dsm: dummy_dsm.tif\n"
         "  out: masks/crown_mask_final.tif\n"
         "  out_dsm: null\n"
-        "  method: gradient\n"
-        "  combine: or\n"
-        "  windows: [150, 350, 700]\n"
+        "  method: dtm_approx\n"
+        "  dtm_approx: {cell: 0.5, max_window: 30.0}\n"
         "  height_threshold: 2.0\n"
-        "  gradient_sigma: 3.0\n"
-        "  gradient_threshold: null\n"
         "  max_ndsm_height: 50.0\n"
         "  nodata_resolve_threshold: 0.7\n"
         "tiling:\n"
@@ -200,3 +200,66 @@ def test_run_does_not_propagate_null_out_dsm(tmp_path, monkeypatch):
         tiling_args = mock_tile.call_args[0][0]
         assert tiling_args.mask == "masks/crown_mask_final_gr_s3.0.tif"
         assert tiling_args.dsm == "ndsm/explicit_dsm_path.tif"  # unchanged from config
+
+
+def test_run_timeseries_runs_each_date_and_splits_by_date(tmp_path, monkeypatch):
+    """Every selected date runs stages 1a–2 with its own paths; the split gets date -> split."""
+    monkeypatch.chdir(tmp_path)
+    for d in ("20260226", "20260313", "20260126"):
+        (tmp_path / "om").mkdir(exist_ok=True)
+        (tmp_path / "dsm").mkdir(exist_ok=True)
+        (tmp_path / "om" / f"{d}_X_OM_coreg.tif").touch()
+        (tmp_path / "dsm" / f"{d}_X_DSM_coreg.tif").touch()
+
+    cfg = OmegaConf.load(TIMESERIES_CONFIG_PATH)
+    cfg.timeseries.om_dir = "om"
+    cfg.timeseries.dsm_dir = "dsm"
+    cfg.timeseries.work_dir = "work"
+    cfg.timeseries.dates = [20260226, 20260313]
+    cfg.timeseries.max_dates = 2
+    cfg.tiling.out = "out/crown_patches_ts"
+    cfg.split.input = "out/crown_patches_ts"
+    cfg.split.output = "out/crown_patches_ts_split"
+    cfg.split.strategy = "by_date"
+    cfg.split.dates = {"train": [20260226], "val": [20260313], "test": []}
+    config_file = tmp_path / "timeseries.yaml"
+    OmegaConf.save(cfg, config_file)
+
+    seen = []
+
+    def fake_dsm_main(args):
+        args.out = args.mask.replace("intermediate", "final")
+
+    def fake_tile_main(args):
+        seen.append(dict(prefix=args.prefix, image=args.image, mask=args.mask, out=args.out))
+        os.makedirs(args.out, exist_ok=True)
+        with open(os.path.join(args.out, "channels.json"), "w") as f:
+            f.write('{"names": ["red", "green"]}')
+        return 5
+
+    with (
+        patch("scripts.preprocess.rasterize_main"),
+        patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main),
+        patch("scripts.preprocess.tile_main", side_effect=fake_tile_main),
+        patch("scripts.preprocess.split_patches") as mock_split,
+        patch("scripts.preprocess.load_manifest", return_value=["red", "green"]),
+        patch(
+            "scripts.preprocess.compute_channel_stats",
+            return_value={"names": ["red", "green", "ndsm"], "mean": [0.0] * 3, "std": [1.0] * 3},
+        ),
+    ):
+        from scripts.preprocess import run
+
+        (tmp_path / cfg.split.output).mkdir(parents=True)
+        run(str(config_file))
+
+    # dates: [20260226, 20260313] with max_dates 2 — 20260126 is not selected
+    assert [s["prefix"] for s in seen] == ["20260226", "20260313"]
+    assert seen[0]["mask"] == "work/20260226/masks/crown_mask_final.tif"
+    assert seen[1]["out"] == "out/crown_patches_ts/20260313"
+    kwargs = mock_split.call_args.kwargs
+    assert kwargs["strategy"] == "by_date"
+    assert kwargs["date_splits"] == {"20260226": "train", "20260313": "val"}
+    records = json.loads((tmp_path / "out" / "crown_patches_ts" / "dates.json").read_text())
+    assert [(r["date"], r["tiles"]) for r in records] == [("20260226", 5), ("20260313", 5)]
+    assert (tmp_path / "out" / "crown_patches_ts" / "channels.json").exists()

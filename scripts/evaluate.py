@@ -12,6 +12,7 @@ CLI flags override config values when provided:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 import os
@@ -28,6 +29,7 @@ from models.model import build_model
 from scripts.train import _make_experiment_id
 from training.losses import CombinedLoss
 from training.metrics import MetricAccumulator
+from training.scene_errors import SPLITS, evaluate_scene_errors
 from utils.device import get_device
 from utils.nodata import valid_target
 from utils.viz import plot_final_bars_multi, plot_samples
@@ -173,6 +175,31 @@ def main() -> None:
                     f.write(f"    {k}: {v:.4f}\n")
             f.write("\n")
     print(f"\nSaved results to {txt_path}")
+
+    # Per-scene MSE / binary error and error maps (training/scene_errors.py)
+    se_cfg = eval_cfg.get("scene_errors", OmegaConf.create({}))
+    if se_cfg.get("enabled", True):
+        print("\nScene errors (MSE + error maps) ...")
+        stats_path = data_root / "train_stats.json"
+        norm_stats = (
+            spec.norm_stats(json.loads(stats_path.read_text())) if stats_path.exists() else None
+        )
+        evaluate_scene_errors(
+            model,
+            data_root,
+            spec,
+            norm_stats,
+            device,
+            out_dir / "scene_errors",
+            splits=[str(s) for s in se_cfg.get("splits", SPLITS)],
+            threshold=t0,
+            target_threshold=tt0,
+            batch_size=int(cfg.dataset.batch_size),
+            num_workers=int(cfg.dataset.num_workers),
+            amp=bool(OmegaConf.select(cfg, "train.amp", default=True)),
+            vmax=float(se_cfg.get("vmax", 0.25)),
+            checkpoint=str(weights_path),
+        )
 
 
 if __name__ == "__main__":

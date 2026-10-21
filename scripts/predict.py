@@ -145,15 +145,20 @@ def prepare_inputs(
 
     Sources: (path, bands, names) tuples — resampled to target_gsd, scaled to
     [0,1], stacked with band descriptions (rasterize stage). DSM (only when
-    need_ndsm): reproject to the same grid, then nDSM = DSM - DTM when an
-    external DTM is given (apply_dsm_mask's `method: dtm`) or DSM - multi-scale
-    minimum filter otherwise (`method: local_min`), normalised to [0,1] the
+    need_ndsm): reproject to the same grid, then nDSM = DSM - terrain, with
+    the terrain from `preprocess.ndsm_channel` — the same choice as
+    dsm_mask.ndsm_channel at training time: 'dtm' (external DTM, co-registered)
+    or 'dtm_approx' (DSM only, same `dtm_approx` block). The co-registration
+    settings of 'dtm' live in `preprocess.dtm_real`. Unset, it is 'dtm'
+    when a DTM is given and 'dtm_approx' otherwise. Normalised to [0,1] the
     same way in both cases (dsm_mask stage). Prepared rasters are cached in
     prep_dir with param-tagged names and reused on the next run.
     """
     from explore_and_process.apply_dsm_mask import (
+        DtmApproxParams,
+        DtmRealParams,
         detect_ground_dtm,
-        detect_ground_local_min,
+        detect_ground_dtm_approx,
         normalize_ndsm,
         resample_raster,
     )
@@ -186,21 +191,38 @@ def prepare_inputs(
 
     if raw_dsm is None:
         raise ValueError("model uses 'ndsm' but no dsm is set (config dsm: or --dsm)")
-    windows = [int(x) for x in prep_cfg.windows]
     max_h = float(prep_cfg.max_ndsm_height)
-    w_tag = "-".join(str(x) for x in windows)
-    # These three shape the co-registered DTM and therefore the nDSM, so they
-    # must match what apply_dsm_mask used at training time — and they go into
-    # the cache tag, or a stage change silently reuses the previous nDSM.
-    dtm_stage = str(prep_cfg.get("dtm_stage", "aligned"))
-    dtm_local_blocks = int(prep_cfg.get("dtm_local_blocks", 12))
-    dtm_clamp_to_dsm = bool(prep_cfg.get("dtm_clamp_to_dsm", True))
-    # Tag mirrors apply_dsm_mask.py so a DTM run never reuses a local_min cache
-    method_tag = (
-        f"dtm_{dtm_stage}_b{dtm_local_blocks}{'' if dtm_clamp_to_dsm else '_noclamp'}"
-        if raw_dtm is not None
-        else f"w{w_tag}"
-    )
+    moved = [k for k in ("dtm_stage", "dtm_local_blocks", "dtm_clamp_to_dsm") if k in prep_cfg]
+    if moved:
+        raise ValueError(
+            f"preprocess keys {moved} moved into preprocess.dtm_real "
+            "(stage / local_blocks / clamp_to_dsm)"
+        )
+    # Tag mirrors apply_dsm_mask.py so a DTM run never reuses a dtm_approx
+    # cache; the approx hash covers every parameter of the approximation
+    channel = str(prep_cfg.get("ndsm_channel", None) or ("dtm" if raw_dtm else "dtm_approx"))
+    if channel not in ("dtm", "dtm_approx"):
+        raise ValueError(f"preprocess.ndsm_channel is {channel!r}; expected dtm | dtm_approx")
+    if channel == "dtm" and raw_dtm is None:
+        raise ValueError("preprocess.ndsm_channel: dtm needs a dtm (config dtm: or --dtm)")
+    if channel == "dtm_approx" and raw_dtm is not None:
+        print(f"ndsm_channel: dtm_approx — the DTM ({raw_dtm.name}) is ignored")
+        raw_dtm = None
+    # The co-registration (dtm_real) or approximation (dtm_approx) settings
+    # shape the nDSM, so they must match the training preprocessing — and they
+    # go into the cache tag, or a changed setting silently reuses the old nDSM.
+    real = approx = None
+    if channel == "dtm":
+        real = DtmRealParams.from_cfg(prep_cfg.get("dtm_real"), need_path=False)
+        if real.path:
+            raise ValueError(
+                "preprocess.dtm_real.path is not used by predict — set the DTM "
+                "with dtm: or --dtm"
+            )
+        method_tag = f"dtm{real.tag()}"
+    else:
+        approx = DtmApproxParams.from_cfg(prep_cfg.get("dtm_approx"))
+        method_tag = f"da{approx.digest()}"
     dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_{method_tag}_max{max_h:g}.tif"
     if dsm_out.exists():
         print(f"Prep cache hit: {dsm_out.name}")
@@ -208,20 +230,21 @@ def prepare_inputs(
         dsm = resample_raster(str(raw_dsm), h, w, transform, crs)
         # height_threshold only shapes the (discarded) ground confidence;
         # the nDSM itself is just dsm - ground
-        if raw_dtm is not None:
+        if real is not None and raw_dtm is not None:
             print(f"Computing nDSM (external DTM {raw_dtm.name})...")
             dtm = resample_raster(str(raw_dtm), h, w, transform, crs)
             _, _, ndsm, _ = detect_ground_dtm(
                 dsm,
                 dtm,
                 height_threshold=1.0,
-                stage=dtm_stage,
-                clamp_to_dsm=dtm_clamp_to_dsm,
-                local_blocks=dtm_local_blocks,
+                stage=real.stage,
+                clamp_to_dsm=real.clamp_to_dsm,
+                local_blocks=real.local_blocks,
             )
         else:
-            print(f"Computing nDSM (minimum filter windows {windows} px)...")
-            _, _, ndsm = detect_ground_local_min(dsm, windows, height_threshold=1.0)
+            assert approx is not None
+            print(f"Computing nDSM (dtm_approx {approx})...")
+            _, _, ndsm, _ = detect_ground_dtm_approx(dsm, gsd, approx, height_threshold=1.0)
         ndsm_norm = normalize_ndsm(ndsm, dsm, max_h)
         profile = dict(
             driver="GTiff", dtype="float32", width=w, height=h, count=1,

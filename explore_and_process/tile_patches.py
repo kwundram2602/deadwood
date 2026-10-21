@@ -7,7 +7,8 @@ for training. Patches with a noData fraction above --nodata_thresh are skipped.
 All three inputs must share the same grid (transform + shape). Run
 rasterize_crowns.py and apply_dsm_mask.py first to ensure this.
 
-Output naming per patch (zero-padded row/col index):
+Output naming per patch (zero-padded row/col index; optional `prefix`,
+e.g. the acquisition date, is prepended as <prefix>_<row>_<col>):
   <row>_<col>.tif       — multi-band image  (float32, [0,1], NaN outside footprint)
   <row>_<col>_mask.tif  — 1-band soft mask  (float32, 0-1 / 255 unlabelled / -1 outside)
   <row>_<col>_dsm.tif   — 1-band nDSM       (float32, [0,1])
@@ -82,6 +83,8 @@ def main(args):
     logger.info("Config:\n%s", OmegaConf.to_yaml(args))
 
     out_dir = args.out
+    # Time-series runs prefix every stem with the acquisition date (YYYYMMDD)
+    prefix = args.get("prefix", None)
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
         print(f"[INFO] Cleared existing patch directory: {out_dir}")
@@ -127,6 +130,8 @@ def main(args):
                 pt = patch_transform(transform, row_off, col_off, args.size)
 
                 stem = f"{str(r).zfill(pad_rows)}_{str(c).zfill(pad_cols)}"
+                if prefix:
+                    stem = f"{prefix}_{stem}"
                 write_patch(os.path.join(args.out, f"{stem}.tif"),
                             img_data, pt, crs, nodata=np.nan)
                 write_patch(os.path.join(args.out, f"{stem}_mask.tif"),
@@ -147,6 +152,7 @@ def main(args):
     print(f"  Skipped (unlabelled >{args.nodata_thresh*100:.0f}%): {skipped_mask}")
     print(f"  Skipped (outside footprint >{args.img_nodata_thresh*100:.0f}%): {skipped_img}")
     print(f"Output: {args.out}")
+    return kept
 
 
 if __name__ == "__main__":

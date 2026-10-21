@@ -279,6 +279,18 @@ def build_mask(
     )
 
 
+def unlabelled_mask(footprint):
+    """Polygon-free stage-1a mask: MASK_UNLABELLED inside the footprint, MASK_OUTSIDE outside.
+
+    Used with use_polygons: false. Every label then comes from stage 1b,
+    where apply_soft_blend resolves confident ground and confident crown
+    pixels and leaves the gray zone at MASK_UNLABELLED.
+    """
+    mask = np.full(footprint.shape, MASK_UNLABELLED, dtype=np.float32)
+    mask[~footprint] = MASK_OUTSIDE
+    return mask
+
+
 def read_scaled_bands(path, bands, h, w):
     """Read selected bands, resample to (h, w), scale uint16-range to [0,1]."""
     with rasterio.open(path) as src:
@@ -403,20 +415,24 @@ def main(args):
         footprint = scene_footprint(specs, h, w)
         print(f"  {int(footprint.sum()):,} / {footprint.size:,} px inside the footprint")
 
-        print("\nBuilding crown mask...")
-        mask = build_mask(
-            args.crowns,
-            ref,
-            h,
-            w,
-            transform,
-            args.sigma,
-            args.nodata_threshold,
-            footprint=footprint,
-            soft_floor=args.get("soft_floor", None),
-            erode=float(args.get("erode", 0.0) or 0.0),
-            round_radius=float(args.get("round_radius", 0.0) or 0.0),
-        )  # args.crowns is a list
+        if args.get("use_polygons", True):
+            print("\nBuilding crown mask...")
+            mask = build_mask(
+                args.crowns,
+                ref,
+                h,
+                w,
+                transform,
+                args.sigma,
+                args.nodata_threshold,
+                footprint=footprint,
+                soft_floor=args.get("soft_floor", None),
+                erode=float(args.get("erode", 0.0) or 0.0),
+                round_radius=float(args.get("round_radius", 0.0) or 0.0),
+            )  # args.crowns is a list
+        else:
+            print("\nuse_polygons: false — mask is unlabelled; labels come from DSM + DTM")
+            mask = unlabelled_mask(footprint)
         write_tif(args.out_mask, mask, transform, crs, nodata=MASK_RASTER_NODATA)
         print(f"Mask saved: {args.out_mask}")
 

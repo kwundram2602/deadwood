@@ -21,6 +21,7 @@ def build_model(cfg: DictConfig, device: torch.device, spec: ChannelSpec) -> nn.
     model = unet(weights=weights, classes=cfg.model.num_classes, **extra)
 
     if spec.in_channels != 3 or spec.pretrained_assignment != _IDENTITY_RGB:
+        print(f"Adapting first conv to {spec.in_channels} input channels")
         _adapt_first_conv(model.encoder, spec.in_channels, spec.pretrained_assignment)
 
     frozen_names = list(cfg.model.get("frozen_pretrained_channels") or [])
