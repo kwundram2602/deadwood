@@ -766,7 +766,7 @@ def test_main_builds_mask_from_dtm_and_channel_from_dtm_approx(tmp_path):
         "crown_resolve_threshold": 0.3,
         "preserve_crown_threshold": None,
     })
-    main(cfg)
+    compare = main(cfg)
 
     assert "_dtm_ht0.7" in Path(cfg.out).name  # mask labelled by the DTM
     assert Path(cfg.out_dsm).stem.endswith("_da")  # channel from dtm_approx
@@ -786,3 +786,104 @@ def test_main_builds_mask_from_dtm_and_channel_from_dtm_approx(tmp_path):
 
     raw = sorted(p.name for p in (tmp_path / "ndsm_in_m").rglob("*.tif"))
     assert raw == ["dsm_ndsm_da_raw_m.tif", "dsm_ndsm_dtm_raw_m.tif"]
+
+    # Both nDSMs exist, so they are compared in [0,1]
+    assert compare is not None and compare["n_valid"] == n * n
+    written = sorted(p.name for p in Path(compare["dir"]).iterdir())
+    assert written == [
+        "dsm_ndsm_err_da_minus_dtm.png",
+        "dsm_ndsm_err_da_minus_dtm.tif",
+        "dsm_ndsm_err_da_minus_dtm_m.tif",
+        "ndsm_compare.json",
+    ]
+    with rasterio.open(Path(compare["dir"]) / "dsm_ndsm_err_da_minus_dtm.tif") as src:
+        error = src.read(1)
+    assert np.mean(error.astype(np.float64) ** 2) == pytest.approx(compare["mse"], rel=1e-5)
+    with rasterio.open(Path(compare["dir"]) / "dsm_ndsm_err_da_minus_dtm_m.tif") as src:
+        error_m = src.read(1)
+    assert np.mean(error_m.astype(np.float64) ** 2) == pytest.approx(compare["mse_m"], rel=1e-5)
+
+    # Rebuilt from the saved raw nDSMs alone, the comparison is the same
+    from explore_and_process.apply_dsm_mask import recompare_ndsm
+
+    again = recompare_ndsm(str(tmp_path), 16.0)
+    assert again["dir"] == compare["dir"]
+    for key in ("mse", "bias", "mse_m", "p95_abs_m", "n_valid", "ceiling_da"):
+        assert again[key] == pytest.approx(compare[key], rel=1e-6)
+
+
+def _flat_scene(n=50):
+    dsm = np.full((n, n), 100.0, dtype=np.float32)
+    ndsm = np.zeros((n, n), dtype=np.float32)
+    ndsm[:, n // 2 :] = 10.0  # half the scene is 10 m canopy, so p95 = 10 m
+    return dsm, ndsm
+
+
+def test_compare_ndsm_identical_ndsms_have_zero_error():
+    from explore_and_process.apply_dsm_mask import compare_ndsm
+
+    dsm, ndsm = _flat_scene()
+    cmp = compare_ndsm(ndsm, ndsm.copy(), dsm, 16.0)
+    m = cmp.metrics
+    assert m["mse"] == 0.0 and m["bias"] == 0.0 and m["mse_m"] == 0.0 and m["p95_abs_m"] == 0.0
+    assert np.all(cmp.error == 0.0) and np.all(cmp.error_m == 0.0)
+
+
+def test_compare_ndsm_scales_each_ndsm_with_its_own_ceiling():
+    from explore_and_process.apply_dsm_mask import compare_ndsm
+
+    dsm, ndsm_dtm = _flat_scene()
+    # dtm_approx sees the canopy at 5 m: scaled by its own ceiling it is
+    # identical in [0,1], the metre MSE is not
+    m = compare_ndsm(ndsm_dtm, ndsm_dtm / 2.0, dsm, 16.0).metrics
+    assert m["ceiling_dtm"] == pytest.approx(10.0)
+    assert m["ceiling_da"] == pytest.approx(5.0)
+    assert m["mse"] == pytest.approx(0.0)
+    # in metres the halved canopy is visible: half the pixels 5 m too low
+    assert m["mse_m"] == pytest.approx(0.5 * 5.0**2)
+    assert m["rmse_m"] == pytest.approx(np.sqrt(0.5 * 5.0**2))
+    assert m["mae_m"] == pytest.approx(2.5)
+    assert m["bias_m"] == pytest.approx(-2.5)
+    assert m["p95_abs_m"] == pytest.approx(5.0)
+
+
+def test_compare_ndsm_known_offset():
+    from explore_and_process.apply_dsm_mask import compare_ndsm
+
+    dsm, ndsm_dtm = _flat_scene()
+    ndsm_da = ndsm_dtm.copy()
+    ndsm_da[:, : ndsm_da.shape[1] // 2] = 2.0  # ground lifted by 0.2 of the 10 m ceiling
+    cmp = compare_ndsm(ndsm_dtm, ndsm_da, dsm, 16.0)
+    m, error = cmp.metrics, cmp.error
+    assert m["bias"] == pytest.approx(0.5 * 0.2)
+    assert m["bias_m"] == pytest.approx(0.5 * 2.0)
+    assert m["mse"] == pytest.approx(0.5 * 0.2**2)
+    assert m["mae"] == pytest.approx(0.5 * 0.2)
+    assert error.max() == pytest.approx(0.2)
+
+
+def test_compare_ndsm_excludes_pixels_without_height_data():
+    from explore_and_process.apply_dsm_mask import compare_ndsm
+
+    dsm, ndsm_dtm = _flat_scene(10)
+    ndsm_da = ndsm_dtm.copy()
+    dsm[0, 0] = np.nan
+    ndsm_dtm[1, 1] = np.nan  # external DTM gap
+    ndsm_da[2, 2] = np.nan
+    ndsm_da[3, 3] = 7.0  # the only real difference
+    cmp = compare_ndsm(ndsm_dtm, ndsm_da, dsm, 16.0)
+    m, error = cmp.metrics, cmp.error
+    assert m["n_valid"] == 100 - 3
+    for arr in (error, cmp.error_m):
+        assert np.isnan(arr[0, 0]) and np.isnan(arr[1, 1]) and np.isnan(arr[2, 2])
+        assert np.count_nonzero(arr[np.isfinite(arr)]) == 1
+    assert cmp.error_m[3, 3] == pytest.approx(7.0)
+
+
+def test_recompare_ndsm_needs_both_raw_ndsms(tmp_path):
+    from explore_and_process.apply_dsm_mask import recompare_ndsm
+
+    (tmp_path / "ndsm_in_m" / "20260101_000000").mkdir(parents=True)
+    (tmp_path / "ndsm_in_m" / "20260101_000000" / "dsm_ndsm_da_raw_m.tif").touch()
+    with pytest.raises(FileNotFoundError, match="both raw nDSMs"):
+        recompare_ndsm(str(tmp_path), 16.0)

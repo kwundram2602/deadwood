@@ -12,6 +12,7 @@
 #   dsm_mask.dsm                          = the date's DSM (same YYYYMMDD prefix)
 #   intermediate rasters                  -> <timeseries.work_dir>/<date>/
 #   tiles                                 -> <tiling.out>/<date>/<date>_<rr>_<cc>{,_mask,_dsm}.tif
+#   nDSM comparison per date              -> <tiling.out>/ndsm_compare.csv
 # The DTM is static and shared by all dates.
 #
 timeseries:
@@ -89,6 +90,8 @@ dsm_mask:
   # ndsm_channel null -> same as method. Mask from dtm + channel from
   # dtm_approx: best labels, and a channel that also exists where prediction
   # has no DTM (predict config: preprocess.ndsm_channel must match).
+  # method != ndsm_channel: both nDSMs are scaled to [0,1] and compared (MSE,
+  # error map dtm_approx - dtm) in process_out/ndsm_compare/<run_id>/.
   method: dtm
   ndsm_channel: dtm_approx
   # DSM-only terrain approximation (method: dtm_approx): progressive
@@ -135,7 +138,7 @@ tiling:
   image: null
   # tiles root; one subfolder per date
   out: out/crown_patches_ts_alldsm
-  size: 512
+  size: 512 # 1024
   # skip patches with > this fraction of noData pixels in the mask (== 255)
   nodata_thresh: 0.8
   # skip patches with > this fraction of all-zero pixels across all MS bands (sensor gaps / edge padding)

@@ -73,6 +73,8 @@ dsm_mask:
   # ndsm_channel null -> same as method. Mask from dtm + channel from
   # dtm_approx: best labels, and a channel that also exists where prediction
   # has no DTM (predict config: preprocess.ndsm_channel must match).
+  # method != ndsm_channel: both nDSMs are scaled to [0,1] and compared (MSE,
+  # error map dtm_approx - dtm) in process_out/ndsm_compare/<run_id>/.
   method: dtm
   ndsm_channel: dtm_approx
   # DSM-only terrain approximation (method: dtm_approx): progressive

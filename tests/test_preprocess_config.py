@@ -229,6 +229,8 @@ def test_run_timeseries_runs_each_date_and_splits_by_date(tmp_path, monkeypatch)
 
     def fake_dsm_main(args):
         args.out = args.mask.replace("intermediate", "final")
+        return {"mse": 0.01, "rmse": 0.1, "bias": -0.02, "rmse_m": 0.3, "mae_m": 0.2, "bias_m": -0.1,
+                "p95_abs_m": 0.6, "n_valid": 4}
 
     def fake_tile_main(args):
         seen.append(dict(prefix=args.prefix, image=args.image, mask=args.mask, out=args.out))
@@ -263,3 +265,51 @@ def test_run_timeseries_runs_each_date_and_splits_by_date(tmp_path, monkeypatch)
     records = json.loads((tmp_path / "out" / "crown_patches_ts" / "dates.json").read_text())
     assert [(r["date"], r["tiles"]) for r in records] == [("20260226", 5), ("20260313", 5)]
     assert (tmp_path / "out" / "crown_patches_ts" / "channels.json").exists()
+    assert records[0]["ndsm_compare"]["mse"] == 0.01
+    rows = (tmp_path / "out" / "crown_patches_ts" / "ndsm_compare.csv").read_text().splitlines()
+    assert rows[0] == "date,mse,rmse,bias,rmse_m,mae_m,bias_m,p95_abs_m,n_valid"
+    assert rows[1:] == ["20260226,0.01,0.1,-0.02,0.3,0.2,-0.1,0.6,4", "20260313,0.01,0.1,-0.02,0.3,0.2,-0.1,0.6,4"]
+
+
+def test_ndsm_compare_only_rebuilds_comparison_and_runs_nothing_else(tmp_path, monkeypatch):
+    """--ndsm_compare_only re-reads each date's raw nDSMs and refreshes the CSV and dates.json."""
+    monkeypatch.chdir(tmp_path)
+    for d in ("20260226", "20260313"):
+        (tmp_path / "om").mkdir(exist_ok=True)
+        (tmp_path / "dsm").mkdir(exist_ok=True)
+        (tmp_path / "om" / f"{d}_X_OM_coreg.tif").touch()
+        (tmp_path / "dsm" / f"{d}_X_DSM_coreg.tif").touch()
+    cfg = OmegaConf.load(TIMESERIES_CONFIG_PATH)
+    cfg.timeseries.om_dir, cfg.timeseries.dsm_dir, cfg.timeseries.work_dir = "om", "dsm", "work"
+    cfg.timeseries.dates = None
+    cfg.tiling.out = "out/ts"
+    config_file = tmp_path / "timeseries.yaml"
+    OmegaConf.save(cfg, config_file)
+    (tmp_path / "out" / "ts").mkdir(parents=True)
+    (tmp_path / "out" / "ts" / "dates.json").write_text(
+        json.dumps([{"date": "20260226", "tiles": 5, "ndsm_compare": {"mse": 9.0}}])
+    )
+
+    def fake_recompare(process_out, max_h):
+        return {"rmse": 0.1, "bias": 0.0, "rmse_m": 0.3, "mae_m": 0.2, "bias_m": -0.1, "p95_abs_m": 0.6,
+                "dir": f"{process_out}/ndsm_compare/r"}
+
+    with (
+        patch("scripts.preprocess.recompare_ndsm", side_effect=fake_recompare) as mock_recompare,
+        patch("scripts.preprocess.rasterize_main") as mock_rasterize,
+        patch("scripts.preprocess.dsm_main") as mock_dsm,
+        patch("scripts.preprocess.split_patches") as mock_split,
+    ):
+        from scripts.preprocess import run
+
+        run(str(config_file), ndsm_compare_only=True)
+
+    assert [c.args[0] for c in mock_recompare.call_args_list] == [
+        os.path.join("work", "20260226"),
+        os.path.join("work", "20260313"),
+    ]
+    assert not (mock_rasterize.called or mock_dsm.called or mock_split.called)
+    rows = (tmp_path / "out" / "ts" / "ndsm_compare.csv").read_text().splitlines()
+    assert rows[0] == "date,rmse,bias,rmse_m,mae_m,bias_m,p95_abs_m,dir" and len(rows) == 3
+    record = json.loads((tmp_path / "out" / "ts" / "dates.json").read_text())[0]
+    assert record["tiles"] == 5 and record["ndsm_compare"]["rmse_m"] == 0.3

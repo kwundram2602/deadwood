@@ -23,6 +23,10 @@ model's input channel comes from `ndsm_channel` (dtm_approx | dtm, default:
 same as `method`). Masks from the external DTM with an input channel from
 dtm_approx is the setup for scenes where prediction has no DTM: the labels
 use the best terrain available, the channel uses what inference will have.
+When both nDSMs are computed, they are compared (error metrics and error maps
+dtm_approx − dtm, scaled to [0,1] like the channel and in metres) in
+process_out/ndsm_compare/<run_id>/; recompare_ndsm rebuilds that from the saved
+raw nDSMs without re-running the stage.
 
 Ground pixels soft-blend into the crown mask: crown pixels (0–1) are
 multiplied by (1 − ground_conf); noData pixels are resolved to ground
@@ -46,6 +50,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import logging
 import os
 import warnings
@@ -114,6 +119,17 @@ def _smoothstep_confidence(
     return (1.0 - (3 * t**2 - 2 * t**3)).astype(np.float32)
 
 
+def ndsm_ceiling(ndsm: np.ndarray, max_ndsm_height: float) -> tuple[float, float]:
+    """Scaling ceiling of an nDSM: (min(p95, max_ndsm_height), p95).
+
+    p95 is taken over the positive heights only; without any, it falls back
+    to max_ndsm_height.
+    """
+    valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
+    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else max_ndsm_height
+    return min(p95, max_ndsm_height), p95
+
+
 def normalize_ndsm(
     ndsm: np.ndarray, dsm: np.ndarray, max_ndsm_height: float
 ) -> np.ndarray:
@@ -122,15 +138,203 @@ def normalize_ndsm(
     Same procedure at train and predict time: pixels above the ceiling
     saturate to 1, DSM noData pixels become 0.
     """
-    valid_pos = ndsm[~np.isnan(ndsm) & (ndsm > 0)]
-    p95 = float(np.percentile(valid_pos, 95)) if valid_pos.size > 0 else max_ndsm_height
-    ceiling = min(p95, max_ndsm_height)
+    ceiling, p95 = ndsm_ceiling(ndsm, max_ndsm_height)
     print(f"nDSM ceiling: {ceiling:.2f} m  (p95={p95:.2f} m, cap={max_ndsm_height} m)")
     ndsm_norm = np.clip(ndsm, 0.0, ceiling) / ceiling
     # nDSM is NaN wherever the DSM *or* the external DTM has a gap — both mean
     # "no height information", and neither may leak a NaN into the channel.
     ndsm_norm[np.isnan(ndsm) | np.isnan(dsm)] = 0.0
     return ndsm_norm.astype(np.float32)
+
+
+@dataclass(frozen=True)
+class NdsmComparison:
+    """compare_ndsm's result: both scaled nDSMs, the two error maps, the metrics."""
+
+    norm_dtm: np.ndarray  # external-DTM nDSM in [0,1]
+    norm_da: np.ndarray  # dtm_approx nDSM in [0,1]
+    error: np.ndarray  # norm_da - norm_dtm in [-1,1], NaN outside the valid pixels
+    error_m: np.ndarray  # raw nDSM difference dtm_approx - dtm in m, NaN outside the valid pixels
+    metrics: dict
+
+
+def _error_metrics(diff: np.ndarray, suffix: str = "") -> dict:
+    """MSE, RMSE, MAE and bias (mean error) of a 1-D error sample, keys with `suffix`."""
+    if not diff.size:
+        return {f"{k}{suffix}": float("nan") for k in ("mse", "rmse", "mae", "bias")}
+    mse = float(np.mean(diff**2))
+    return {
+        f"mse{suffix}": mse,
+        f"rmse{suffix}": float(np.sqrt(mse)),
+        f"mae{suffix}": float(np.mean(np.abs(diff))),
+        f"bias{suffix}": float(np.mean(diff)),
+    }
+
+
+def compare_ndsm(
+    ndsm_dtm: np.ndarray,
+    ndsm_da: np.ndarray,
+    dsm: np.ndarray,
+    max_ndsm_height: float,
+) -> NdsmComparison:
+    """How far the dtm_approx nDSM channel is from the external-DTM one.
+
+    Twice: scaled exactly as the model input is (`normalize_ndsm`, each with
+    its own ceiling), so the error is in the units the network sees; and in
+    metres, where the separate ceilings cannot hide a height difference.
+    Pixels without height data in the DSM or in either nDSM are left out:
+    `normalize_ndsm` sets them to 0 in both, which would count as a perfect
+    match.
+
+    Metrics: mse, rmse, mae, bias on [0,1]; the same with suffix _m in m
+    (mse_m in m^2) plus p95_abs_m, the 95th percentile of |error| in m;
+    n_valid and both ceilings (m).
+    """
+    norm_dtm = normalize_ndsm(ndsm_dtm, dsm, max_ndsm_height)
+    norm_da = normalize_ndsm(ndsm_da, dsm, max_ndsm_height)
+    valid = np.isfinite(dsm) & np.isfinite(ndsm_dtm) & np.isfinite(ndsm_da)
+
+    error = np.full(dsm.shape, np.nan, dtype=np.float32)
+    error[valid] = norm_da[valid] - norm_dtm[valid]
+    error_m = np.full(dsm.shape, np.nan, dtype=np.float32)
+    error_m[valid] = ndsm_da[valid] - ndsm_dtm[valid]
+    diff_m = error_m[valid].astype(np.float64)
+    metrics = {
+        **_error_metrics(error[valid].astype(np.float64)),
+        **_error_metrics(diff_m, "_m"),
+        "p95_abs_m": float(np.percentile(np.abs(diff_m), 95)) if diff_m.size else float("nan"),
+        "n_valid": int(valid.sum()),
+        "ceiling_dtm": ndsm_ceiling(ndsm_dtm, max_ndsm_height)[0],
+        "ceiling_da": ndsm_ceiling(ndsm_da, max_ndsm_height)[0],
+    }
+    return NdsmComparison(norm_dtm, norm_da, error, error_m, metrics)
+
+
+def _plot_ndsm_compare(
+    ndsm_dtm: np.ndarray,
+    ndsm_da: np.ndarray,
+    cmp: NdsmComparison,
+    path: str,
+    max_side: int = 1500,
+) -> None:
+    """Quicklook: both nDSMs and the signed error map, top row [0,1], bottom row m."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    m = cmp.metrics
+    step = max(1, int(np.ceil(max(cmp.error.shape) / max_side)))
+    no_data = np.isnan(cmp.error[::step, ::step])
+
+    def show(arr):
+        return np.ma.masked_where(no_data, arr[::step, ::step])
+
+    height_max = max(m["ceiling_dtm"], m["ceiling_da"])
+    finite_m = cmp.error_m[np.isfinite(cmp.error_m)]
+    # Colour range of the metre error: 99th percentile of |error|, at least 0.5 m
+    err_lim = max(0.5, float(np.percentile(np.abs(finite_m), 99))) if finite_m.size else 1.0
+    rows = [
+        (
+            [
+                (show(cmp.norm_dtm), "nDSM dtm [0,1]", "viridis", 0.0, 1.0),
+                (show(cmp.norm_da), "nDSM dtm_approx [0,1]", "viridis", 0.0, 1.0),
+                (show(cmp.error), "dtm_approx − dtm [0,1]", "RdBu_r", -1.0, 1.0),
+            ],
+            f"[0,1]:  MSE {m['mse']:.4f}  RMSE {m['rmse']:.3f}  MAE {m['mae']:.3f}  "
+            f"bias {m['bias']:+.3f}  |  ceiling dtm {m['ceiling_dtm']:.2f} m, "
+            f"dtm_approx {m['ceiling_da']:.2f} m",
+        ),
+        (
+            [
+                (show(ndsm_dtm), "nDSM dtm (m)", "viridis", 0.0, height_max),
+                (show(ndsm_da), "nDSM dtm_approx (m)", "viridis", 0.0, height_max),
+                (show(cmp.error_m), "dtm_approx − dtm (m)", "RdBu_r", -err_lim, err_lim),
+            ],
+            f"metres:  MSE {m['mse_m']:.3f} m²  RMSE {m['rmse_m']:.3f} m  MAE {m['mae_m']:.3f} m  "
+            f"bias {m['bias_m']:+.3f} m  p95 |err| {m['p95_abs_m']:.2f} m",
+        ),
+    ]
+    fig = Figure(figsize=(18, 12.5), layout="constrained")
+    FigureCanvasAgg(fig)
+    for subfig, (panels, title) in zip(fig.subfigures(2, 1), rows):
+        for ax, (arr, name, cmap, vmin, vmax) in zip(subfig.subplots(1, 3), panels):
+            im = ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
+            ax.set_title(name)
+            ax.set_axis_off()
+            subfig.colorbar(im, ax=ax, shrink=0.8)
+        subfig.suptitle(title)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    fig.savefig(path, dpi=100)
+    print(f"  Saved nDSM comparison quicklook: {path}")
+
+
+def write_ndsm_compare(
+    ndsm_dtm: np.ndarray,
+    ndsm_da: np.ndarray,
+    dsm: np.ndarray,
+    max_ndsm_height: float,
+    compare_dir: str,
+    stem: str,
+    profile: dict,
+) -> dict:
+    """compare_ndsm plus its outputs in `compare_dir`; returns the metrics.
+
+    Writes <stem>_err_da_minus_dtm.tif ([0,1]), <stem>_err_da_minus_dtm_m.tif (m),
+    <stem>_err_da_minus_dtm.png and ndsm_compare.json.
+    """
+    cmp = compare_ndsm(ndsm_dtm, ndsm_da, dsm, max_ndsm_height)
+    err_stem = os.path.join(compare_dir, f"{stem}_err_da_minus_dtm")
+    nan = float("nan")
+    _save_float_tif(cmp.error, f"{err_stem}.tif", profile, label="nDSM error map [0,1]", nodata=nan)
+    _save_float_tif(cmp.error_m, f"{err_stem}_m.tif", profile, label="nDSM error map (m)", nodata=nan)
+    _plot_ndsm_compare(ndsm_dtm, ndsm_da, cmp, f"{err_stem}.png")
+    metrics = {**cmp.metrics, "dir": compare_dir}
+    with open(os.path.join(compare_dir, "ndsm_compare.json"), "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(
+        f"nDSM compare [0,1]: MSE={metrics['mse']:.5f}  RMSE={metrics['rmse']:.4f}  "
+        f"MAE={metrics['mae']:.4f}  bias={metrics['bias']:+.4f}  over {metrics['n_valid']:,} px\n"
+        f"nDSM compare (m):   RMSE={metrics['rmse_m']:.3f} m  MAE={metrics['mae_m']:.3f} m  "
+        f"bias={metrics['bias_m']:+.3f} m  p95 |err|={metrics['p95_abs_m']:.2f} m"
+    )
+    return metrics
+
+
+def recompare_ndsm(process_out_dir: str, max_ndsm_height: float, run_id: str | None = None) -> dict:
+    """Rebuild the nDSM comparison of a finished stage-1b run, without re-running it.
+
+    Reads both raw nDSMs (m) apply_dsm_mask wrote to ndsm_in_m/<run_id>/
+    (default: the latest run that has both) and rewrites
+    ndsm_compare/<run_id>/. Their NaN pixels are the DSM gaps (plus DTM gaps
+    for the dtm one), so the DSM itself is not needed.
+    """
+    runs_dir = os.path.join(process_out_dir, "ndsm_in_m")
+    runs = sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []
+
+    def pair(run: str) -> tuple[str, str] | None:
+        files = os.listdir(os.path.join(runs_dir, run))
+        da = [f for f in files if f.endswith("_da_raw_m.tif")]
+        dtm = [f for f in files if f.endswith("_dtm_raw_m.tif")]
+        return (da[0], dtm[0]) if len(da) == 1 and len(dtm) == 1 else None
+
+    candidates = [run_id] if run_id else [r for r in reversed(runs) if pair(r)]
+    if not candidates or not (files := pair(candidates[0])):
+        raise FileNotFoundError(f"no run with both raw nDSMs (*_da_raw_m.tif, *_dtm_raw_m.tif) in {runs_dir}")
+    run = candidates[0]
+    da_file, dtm_file = files
+
+    def read(name: str) -> tuple[np.ndarray, dict]:
+        with rasterio.open(os.path.join(runs_dir, run, name)) as src:
+            return src.read(1).astype(np.float32), src.profile.copy()
+
+    ndsm_da, profile = read(da_file)
+    ndsm_dtm, _ = read(dtm_file)
+    dsm_valid = np.where(np.isfinite(ndsm_da) | np.isfinite(ndsm_dtm), 0.0, np.nan).astype(np.float32)
+    stem = da_file[: -len("_da_raw_m.tif")]
+    print(f"Re-comparing nDSMs of run {run} in {process_out_dir}")
+    return write_ndsm_compare(
+        ndsm_dtm, ndsm_da, dsm_valid, max_ndsm_height,
+        os.path.join(process_out_dir, "ndsm_compare", run), stem, profile,
+    )
 
 
 def height_data_valid(ndsm: np.ndarray | None, dsm: np.ndarray) -> np.ndarray:
@@ -877,7 +1081,9 @@ def validate_method(args) -> tuple[str, str]:
     return method, channel
 
 
-def main(args):
+def main(args) -> dict | None:
+    """Stage 1b; returns the nDSM comparison metrics (see compare_ndsm) when
+    both nDSMs were computed, else None."""
     logger.info("Config:\n%s", OmegaConf.to_yaml(args))
 
     # --- Run ID (timestamp) groups all outputs of this run -------------------
@@ -1097,6 +1303,22 @@ def main(args):
         with rasterio.open(ndsm_m_path, "w", **dsm_profile_m) as dst:
             dst.write(ndsm_out[np.newaxis])
         print(f"Saved raw nDSM {name} (m): {ndsm_m_path}")
+
+    # --- Compare both nDSMs in the model's [0,1] scale ------------------------
+    # Only when both were computed anyway (method != ndsm_channel): how far the
+    # DSM-only channel is from the one the external DTM would give.
+    if "dtm" not in results or "dtm_approx" not in results:
+        return None
+    print("\nComparing nDSMs (dtm_approx vs. dtm, scaled to [0,1] and in m)...")
+    return write_ndsm_compare(
+        results["dtm"][1],
+        results["dtm_approx"][1],
+        dsm,
+        args.max_ndsm_height,
+        os.path.join(process_out_dir, "ndsm_compare", run_id),
+        ndsm_base,
+        profile,
+    )
 
 
 if __name__ == "__main__":
