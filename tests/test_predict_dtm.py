@@ -157,3 +157,30 @@ def test_flat_dtm_keys_point_to_dtm_real(scene):
     cfg.dtm_stage = "plane"
     with pytest.raises(ValueError, match="moved into preprocess.dtm_real"):
         prepare_inputs(sources, dsm, dtm, cfg, prep, need_ndsm=True)
+
+
+def test_shared_dtm_approx_is_aligned_like_a_dtm(scene, tmp_path, monkeypatch):
+    """dtm_approx_source.path: nDSM = DSM - (geoid-converted, co-registered shared raster)."""
+    import explore_and_process.vertical_datum as V
+    from explore_and_process.vertical_datum import DatumCheck, HeightSystem
+
+    sources, dsm, dtm, cfg, prep = scene
+    with rasterio.open(dtm) as src:
+        ground = src.read(1)
+    shared = _write(tmp_path / "shared.tif", ground + 13.8)  # the terrain in another height system
+
+    def hs(system):
+        return HeightSystem(system, 0.3, 0.3, 0.3 - 13.8, 1.0, 0.3)
+
+    monkeypatch.setattr(V, "check_pair", lambda a, b, cache: DatumCheck(hs("orthometric"), hs("ellipsoidal"), 13.8, "EGM2008"))
+    monkeypatch.setattr(V, "undulation_grid", lambda shape, transform, crs: np.full(shape, 13.8, np.float32))
+    cfg.ndsm_channel = "dtm_approx"
+    cfg.dtm_real.surface = "quadratic"
+    cfg.dtm_approx_source = {"path": str(shared)}
+    cfg.datum_check = {"convert": True, "cache": None}
+
+    _, ndsm_path = prepare_inputs(sources, dsm, None, cfg, prep, need_ndsm=True)
+    ndsm = _read(ndsm_path)
+    assert "dashared" in ndsm_path.name and "_q_" in ndsm_path.name and "_geoid" in ndsm_path.name
+    assert ndsm[0, 0] == pytest.approx(0.0, abs=1e-3)
+    assert ndsm[30, 30] == pytest.approx(1.0, abs=1e-3)

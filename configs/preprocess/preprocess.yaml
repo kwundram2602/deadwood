@@ -68,6 +68,19 @@ dsm_mask:
     # Guard: coregistered DTM never above DSM (nDSM >= 0). The number of clamped
     # pixels is logged first — it measures the remaining block-fit error.
     clamp_to_dsm: true
+    # Global surface of the first stage: plane (offset + tilt) | quadratic (plus
+    # doming of a photogrammetric block without ground control, 1.84 m on 20250719).
+    # Also used for a shared dtm_approx (dtm_approx_source).
+    surface: quadratic
+  # Height systems of DSM and terrain (external DTM, shared dtm_approx) against
+  # Copernicus GLO-30, orthometric vs. ellipsoidal; reported in the log and
+  # dates.json. enabled: the check before stage 1b; convert: stage 1b converts
+  # the terrain into the DSM's height system by the geoid before the
+  # co-registration (no fit). Needs network once per raster (cached).
+  datum_check:
+    enabled: true
+    convert: true
+    cache: datafiles/process_out/vertical_datum.json
   # method builds the mask (ground truth); ndsm_channel builds the nDSM the
   # model gets as input. Both: dtm_approx (DSM only) | dtm (external DTM).
   # ndsm_channel null -> same as method. Mask from dtm + channel from
@@ -81,14 +94,31 @@ dsm_mask:
   # morphological filter on a coarse grid, see apply_dsm_mask.approximate_dtm.
   # A feature counts as terrain when its flanks are no steeper than about
   # max_slope + 2*dh0/window_step (embankments stay ground, crowns are removed).
+  # Values from the dtm_approx sweeps on 20250719 and 20260313
+  # (experiments/exp_logs.md, out/dtm_approx_sweep/): vs. the external-DTM nDSM
+  # rmse_m 0.174 (20250719) / 0.255 (20260313), previously 0.314 on 20260313.
   dtm_approx:
-    cell: 0.5           # m, coarse-grid cell size the morphology runs on
-    percentile: 5       # per-cell DSM percentile = robust minimum (ignores pits)
+    cell: 1.0           # m, coarse-grid cell size the morphology runs on (was 0.5)
+    percentile: 1       # per-cell DSM percentile = robust minimum (ignores pits) (was 5)
     max_window: 30.0    # m, widest object (canopy patch) to remove
-    window_step: 1.0    # m, growth of the opening window per step
+    window_step: 1.0    # m, growth of the opening window per step; at least 2 x cell (2 m here)
     max_slope: 0.5      # tan of the steepest flank still counted as terrain (~27 deg)
-    dh0: 0.2            # m, height tolerance per step for DSM noise
-    smooth_sigma: 1.0   # m, Gaussian smoothing of the terrain surface
+    dh0: 0.1            # m, height tolerance per step for DSM noise (was 0.2)
+    smooth_sigma: 2.0   # m, Gaussian smoothing of the terrain surface (was 1.0)
+    # Wall filter: elongated, smooth object regions (walls, dams) go back to
+    # terrain, growth on them stays object (keep_smooth_elongated). The best
+    # roughness threshold is scene-dependent: 0.15 on 20250719, 0.2 on 20260313.
+    keep_min_elongation: 5.0  # 0 = filter off
+    keep_max_roughness: 0.15  # m, DSM std within a cell
+    keep_group_roughness: 0.0 # m, looser grouping threshold; 0 = keep_max_roughness
+  # One terrain for all dates instead of a dtm_approx per date (leaf-on dates
+  # show no ground under closed canopy). Built once with the dtm_approx block
+  # above from the source date's DSM, then per date converted by the geoid and
+  # co-registered like the external DTM (dtm_real stage / surface / blocks).
+  # Predict needs the same raster: preprocess.dtm_approx_source.path.
+  dtm_approx_source:
+    date: null  # needs a timeseries section; use path for a single scene
+    path: null  # raster built by a time-series run, e.g. <work_dir>/dtm_approx_shared/<date>_dtm_approx_<digest>.tif
   height_threshold: 0.7 # nDSM below this (m) counts as ground
   # Smoothstep ramp width (m) above height_threshold: ground_conf goes 1 → 0 over [ht, ht + height_ramp].
   # Narrower = more bimodal labels. null → ramp = height_threshold (legacy, 0 at 2*ht)

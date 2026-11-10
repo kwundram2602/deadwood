@@ -1,0 +1,29 @@
+# Cross-check on 20260313 (stage-1b reference, blockwise aligned) of the best
+# setting found on 20250719 (out/dtm_approx_sweep/20250719/20261021-234142/:
+# cell 1, keep_max_roughness 0.15 -> rmse_m 0.174, wall 0.46, rest 0.152).
+# Compare with round 4 on this scene (20261021-192205): recommendation
+# cell 0.5 / max 0.1 / group 0.12 -> rmse_m 0.247, wall 0.570, rest 0.225.
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep_r5_check.yaml
+sweep:
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20260313
+  reference: stage1b
+  reference_run: null
+  out_dir: out/dtm_approx_sweep
+  metric: rmse_m
+  zones:
+    wall: datafiles/dtm_approx_zones/20260313_wall.gpkg
+  baseline:
+    cell: 1.0
+    smooth_sigma: 2.0
+    percentile: 1
+    dh0: 0.1
+    keep_min_elongation: 5.0
+    keep_max_roughness: 0.15
+    keep_group_roughness: 0.0
+  # Baseline + 5 runs.
+  values:
+    cell: [0.5]
+    keep_max_roughness: [0.1, 0.2]
+    dh0: [0.05, 0.2]

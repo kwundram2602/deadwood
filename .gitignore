@@ -25,6 +25,7 @@ datafiles/raster
 datafiles/raster_tiles
 datafiles/raster_merged
 datafiles/process_out
+datafiles/proj
 datafiles/dtm
 datafiles/DSM_domAligned
 configs/user/

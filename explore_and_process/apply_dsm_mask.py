@@ -7,7 +7,9 @@ Ground detection supports two methods (dsm_mask.method):
 
   dtm_approx — terrain approximated from the DSM alone by a progressive
                morphological filter (see approximate_dtm; written to
-               process_out/dtm_approx/<run_id>/):
+               process_out/dtm_approx/<run_id>/<mask>_terrain.tif, or
+               <mask>_terrain_aligned.tif for a shared dtm_approx
+               co-registered to this date's DSM):
                  nDSM = DSM - approximate_dtm(DSM)
                  pixels where nDSM < height_threshold  =>  ground = 0.0
 
@@ -81,6 +83,8 @@ logger = logging.getLogger(__name__)
 # residual warp on top. Both are written to disk; `dtm_real.stage` picks the one the
 # nDSM and the mask are built on.
 DTM_STAGES: tuple[str, ...] = ("plane", "aligned")
+# Global surface of the first stage: plane, or plane + second-order terms (doming)
+SURFACES: tuple[str, ...] = ("plane", "quadratic")
 
 
 def resample_raster(path, h, w, transform, crs):
@@ -423,12 +427,15 @@ class DtmRealParams:
                   plane = global offset + tilt, aligned = plus blockwise warp
     local_blocks: blocks per axis of the residual-warp correction
     clamp_to_dsm: keep the co-registered DTM from rising above the DSM
+    surface:      global fit of the first stage, SURFACES: plane = offset +
+                  tilt, quadratic = plus doming
     """
 
     path: str | None = None
     stage: str = "aligned"
     local_blocks: int = 12
     clamp_to_dsm: bool = True
+    surface: str = "plane"
 
     @classmethod
     def from_cfg(cls, cfg, need_path: bool = True) -> "DtmRealParams":
@@ -444,6 +451,7 @@ class DtmRealParams:
             stage=str(raw.get("stage", cls.stage)),
             local_blocks=int(raw.get("local_blocks", cls.local_blocks)),
             clamp_to_dsm=bool(raw.get("clamp_to_dsm", cls.clamp_to_dsm)),
+            surface=str(raw.get("surface", cls.surface)),
         )
         if need_path and not params.path:
             raise ValueError("dtm_real.path is not set")
@@ -451,11 +459,14 @@ class DtmRealParams:
             raise ValueError(f"dtm_real.stage is {params.stage!r}; expected one of {DTM_STAGES}")
         if params.local_blocks < 1:
             raise ValueError("dtm_real.local_blocks must be >= 1")
+        if params.surface not in SURFACES:
+            raise ValueError(f"dtm_real.surface is {params.surface!r}; expected one of {SURFACES}")
         return params
 
     def tag(self) -> str:
         """Filename tag: runs that differ in co-registration must not share names."""
-        return f"_{self.stage}_b{self.local_blocks}{'' if self.clamp_to_dsm else '_noclamp'}"
+        quad = "_q" if self.surface == "quadratic" else ""
+        return f"_{self.stage}{quad}_b{self.local_blocks}{'' if self.clamp_to_dsm else '_noclamp'}"
 
 
 def _block_percentile(dsm: np.ndarray, f: int, q: float) -> np.ndarray:
@@ -673,6 +684,43 @@ def approximate_dtm(dsm: np.ndarray, gsd: float, params: DtmApproxParams) -> np.
     return dtm
 
 
+def build_shared_dtm_approx(
+    om_path: str,
+    dsm_path: str,
+    target_gsd: float,
+    params: DtmApproxParams,
+    out_path: str,
+) -> str:
+    """The dtm_approx terrain of one date, written once for all dates of a run.
+
+    The grid is the one stage 1a builds from that date's OM (target_grid at
+    target_gsd), so it matches the stage-1b grid of every date on the same
+    footprint; other grids are resampled when the raster is used. The heights
+    stay in the source DSM's height system — stage 1b converts them by the
+    geoid and co-registers them to each date's DSM like the external DTM.
+    Reused when `out_path` exists (its name carries the parameter digest).
+    """
+    if os.path.exists(out_path):
+        print(f"Shared dtm_approx reused: {out_path}")
+        return out_path
+    from explore_and_process.rasterize_crowns import target_grid
+
+    with rasterio.open(om_path) as src:
+        h, w, transform = target_grid(src, target_gsd)
+        crs = src.crs
+    print(f"Building shared dtm_approx from {dsm_path} ({h} x {w} at {target_gsd} m, {params})")
+    dsm = resample_raster(dsm_path, h, w, transform, crs)
+    terrain = approximate_dtm(dsm, abs(transform.a), params)
+    profile = {
+        "driver": "GTiff", "dtype": "float32", "count": 1, "height": h, "width": w,
+        "crs": crs, "transform": transform, "compress": "lzw",
+    }  # fmt: skip
+    _save_float_tif(terrain, out_path, profile, label="shared dtm_approx", nodata=float("nan"))
+    with rasterio.open(out_path, "r+") as dst:
+        dst.update_tags(SOURCE_DSM=dsm_path, SOURCE_OM=om_path, DTM_APPROX=repr(params))
+    return out_path
+
+
 def detect_ground_dtm_approx(
     dsm: np.ndarray,
     gsd: float,
@@ -812,6 +860,38 @@ def _clamp_to_dsm(
     return stage, n_above, max_above
 
 
+def robust_lstsq(
+    design: np.ndarray, values: np.ndarray, min_keep: int, iterations: int = 3
+) -> tuple[np.ndarray, np.ndarray]:
+    """Least squares through ground candidates, re-fitted on a MAD-trimmed subset.
+
+    Each pass drops the points further than 2.5 robust sigma from the median
+    residual, so candidates that sit on canopy rather than ground stop pulling
+    the surface up. Stops early once the subset no longer changes or would
+    shrink below `min_keep`; the last fit is then kept as it is.
+
+    The one estimator behind both the scene-wide plane of `align_dtm_stages` and
+    the per-crown ring plane in `dsm_overview.stats`.
+
+    Returns:
+        coef: the coefficients of the last fit, one per column of `design`
+        keep: boolean mask over `values` of the points that fit used
+    """
+    keep = np.ones(values.shape, dtype=bool)
+    coef = np.zeros(design.shape[1])
+    for _ in range(iterations):
+        coef, *_ = np.linalg.lstsq(design[keep], values[keep], rcond=None)
+        resid = values - design @ coef
+        centre = np.median(resid)
+        mad = 1.4826 * np.median(np.abs(resid - centre))
+        tol = max(2.5 * mad, 0.25)  # 0.25 m floor: real ground is rough
+        new_keep = np.abs(resid - centre) <= tol
+        if new_keep.sum() < min_keep or np.array_equal(new_keep, keep):
+            break
+        keep = new_keep
+    return coef, keep
+
+
 def align_dtm_stages(
     dsm: np.ndarray,
     dtm: np.ndarray,
@@ -827,8 +907,15 @@ def align_dtm_stages(
     local_max_correction: float = 1.0,
     local_smooth_sigma: float = 1.0,
     local_ground_band: float = 0.5,
+    surface: str = "plane",
 ) -> tuple[dict[str, np.ndarray], dict[str, dict]]:
     """Vertically co-register an external DTM to the DSM, both stages at once.
+
+    `surface` sets the global fit of the first stage (still named "plane"):
+    "plane" = a + b·x + c·y, "quadratic" = the plane plus d·x² + e·x·y + f·y²
+    — the bowl ("doming") a photogrammetric block without ground control bends
+    into. A quadratic bends once over the whole scene, so local shapes stay; the
+    blockwise warp of "aligned" is applied on top in both cases.
 
     A DTM flown on a different date, or referenced to a different vertical
     datum, sits at a constant offset (and often a slight tilt) from the DSM.
@@ -886,38 +973,37 @@ def align_dtm_stages(
         and (cx.max() - cx.min()) >= 2.0 * min_extent
     )
 
+    if surface not in SURFACES:
+        raise ValueError(f"surface is {surface!r}; expected one of {SURFACES}")
+
+    def terms(x, y):
+        base = [x, y, np.ones_like(x)]
+        return base + [x * x, x * y, y * y] if surface == "quadratic" else base
+
+    dome = 0.0
     if spread_ok:
-        mode = "plane"
-        keep = np.ones(cd.shape, dtype=bool)
-        coef = None
+        mode = surface
         # Blocks lying entirely inside a canopy patch contribute candidates that
         # are metres too high. Two robust re-fits drop them.
-        for _ in range(3):
-            design = np.column_stack(
-                [cx[keep], cy[keep], np.ones(int(keep.sum()), dtype=np.float32)]
-            )
-            coef, *_ = np.linalg.lstsq(design, cd[keep], rcond=None)
-            resid = cd - (coef[0] * cx + coef[1] * cy + coef[2])
-            centre = np.median(resid)
-            mad = 1.4826 * np.median(np.abs(resid - centre))
-            tol = max(2.5 * mad, 0.25)  # 0.25 m floor: real ground is rough
-            new_keep = np.abs(resid - centre) <= tol
-            if new_keep.sum() < min_candidates or np.array_equal(new_keep, keep):
-                break
-            keep = new_keep
-        surface = coef[0] * xx + coef[1] * yy + coef[2]
+        coef, keep = robust_lstsq(np.column_stack(terms(cx, cy)), cd, min_candidates)
+        global_fit = (coef[0] * xx + coef[1] * yy + coef[2]).astype(np.float32)
+        if surface == "quadratic":
+            second = (coef[3] * xx * xx + coef[4] * xx * yy + coef[5] * yy * yy).astype(np.float32)
+            dome = float(np.ptp(second))
+            global_fit = global_fit + second
         tilt = (abs(coef[0]) + abs(coef[1])) * 2.0  # metres across the full extent
         n_used = int(keep.sum())
     else:
         mode = "constant"
         pool = cd if cd.size else diff[np.isfinite(diff)]
-        surface = np.full((h, w), float(np.median(pool)), dtype=np.float32)
+        global_fit = np.full((h, w), float(np.median(pool)), dtype=np.float32)
         tilt = 0.0
         n_used = int(pool.size)
+    surface_fit = global_fit
 
     # Plausibility check on the plane alone: a datum blunder shows up here, and
     # the local refinement is bounded to +-local_max_correction anyway.
-    peak = float(np.nanmax(np.abs(surface)))
+    peak = float(np.nanmax(np.abs(surface_fit)))
     if peak > max_shift:
         raise ValueError(
             f"DSM/DTM vertical mismatch of {peak:.2f} m exceeds max_shift="
@@ -926,7 +1012,7 @@ def align_dtm_stages(
         )
 
     local, n_local_blocks = _local_ground_residual(
-        diff - surface,
+        diff - surface_fit,
         blocks=local_blocks,
         quantile=local_quantile,
         min_valid_frac=local_min_valid_frac,
@@ -938,8 +1024,8 @@ def align_dtm_stages(
     stages: dict[str, np.ndarray] = {}
     infos: dict[str, dict] = {}
     for name, correction, local_rms, n_blocks in (
-        ("plane", surface, 0.0, 0),
-        ("aligned", surface + local, float(np.sqrt(np.mean(local**2))), n_local_blocks),
+        ("plane", surface_fit, 0.0, 0),
+        ("aligned", surface_fit + local, float(np.sqrt(np.mean(local**2))), n_local_blocks),
     ):
         stage = (dtm + correction).astype(dtm.dtype)
         stage, n_above, max_above = _clamp_to_dsm(stage, dsm, clamp_to_dsm)
@@ -950,6 +1036,7 @@ def align_dtm_stages(
                 np.nanmean(np.where(np.isfinite(diff), correction, np.nan))
             ),
             "tilt": float(tilt),
+            "dome": dome,
             "n_candidates": n_used,
             "local_rms": local_rms,
             "local_blocks": n_blocks,
@@ -984,6 +1071,7 @@ def detect_ground_dtm(
     stage: str = "aligned",
     clamp_to_dsm: bool = True,
     local_blocks: int = 12,
+    surface: str = "plane",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """Ground detection using an external DTM: nDSM = DSM - DTM.
 
@@ -993,8 +1081,8 @@ def detect_ground_dtm(
     stage the nDSM is built on; both are returned either way so the caller can
     write them out and compare.
 
-    Prediction time must pass the same `stage`, `clamp_to_dsm` and
-    `local_blocks` as training did, or the two nDSMs disagree.
+    Prediction time must pass the same `stage`, `clamp_to_dsm`,
+    `local_blocks` and `surface` as training did, or the two nDSMs disagree.
 
     Returns:
         binary:     bool array, True where pixel is ground
@@ -1010,11 +1098,13 @@ def detect_ground_dtm(
         max_shift=max_shift,
         clamp_to_dsm=clamp_to_dsm,
         local_blocks=local_blocks,
+        surface=surface,
     )
     info = infos[stage]
+    dome = f", dome {info['dome']:.2f} m" if info["mode"] == "quadratic" else ""
     print(
         f"  DTM alignment ({info['mode']}, stage={stage}): mean shift "
-        f"{info['mean_shift']:+.2f} m, tilt {info['tilt']:.2f} m "
+        f"{info['mean_shift']:+.2f} m, tilt {info['tilt']:.2f} m{dome} "
         f"across scene, {info['n_candidates']:,} ground candidates"
     )
     if stage == "aligned":
@@ -1206,13 +1296,29 @@ def main(args) -> dict | None:
     approx = DtmApproxParams.from_cfg(args.dtm_approx) if "dtm_approx" in used else None
     if channel != method:
         print(f"Mask from '{method}', nDSM input channel from '{channel}'")
+    # A shared dtm_approx raster (built once from another date's DSM) is aligned
+    # to this DSM exactly like the external DTM: geoid, then the dtm_real stages
+    shared_path = (args.get("dtm_approx_source", None) or {}).get("path", None)
+    shared_path = str(shared_path) if shared_path and "dtm_approx" in used else None
+    align = real or DtmRealParams.from_cfg(args.get("dtm_real", None) or {}, need_path=False)
+    datum_cfg = args.get("datum_check", None)
+    convert = datum_cfg is not None and bool(datum_cfg.get("convert", True))
+
+    def harmonised(terrain: np.ndarray, terrain_path: str) -> np.ndarray:
+        """Terrain in this DSM's height system (geoid only), if datum_check.convert."""
+        if not convert:
+            return terrain
+        from explore_and_process.vertical_datum import harmonise
+
+        out, _ = harmonise(terrain, args.dsm, terrain_path, (h, w), transform, crs, datum_cfg.get("cache", None))
+        return out
 
     # --- Build output filename suffix ----------------------------------------
     if method == "dtm":
         mask_suffix = f"_dtm_ht{args.height_threshold}"
     else:
         assert approx is not None
-        mask_suffix = f"{approx.tag()}_ht{args.height_threshold}"
+        mask_suffix = f"{approx.tag()}{'_shared' if shared_path else ''}_ht{args.height_threshold}"
 
     height_ramp = args.get("height_ramp", None)
     crown_resolve_threshold = args.get("crown_resolve_threshold", None)
@@ -1239,7 +1345,7 @@ def main(args) -> dict | None:
     mask_dir, mask_file = os.path.dirname(args.out), os.path.basename(args.out)
     args.out = os.path.join(mask_dir, run_id, mask_file)
 
-    ndsm_tags = {"dtm": "_dtm", "dtm_approx": "_da"}
+    ndsm_tags = {"dtm": "_dtm", "dtm_approx": "_da_shared" if shared_path else "_da"}
     ndsm_base = os.path.splitext(os.path.basename(args.out_dsm or "dsm_ndsm.tif"))[0]
     if args.out_dsm:
         channel_tag = ndsm_tags[channel] + (real.tag() if channel == "dtm" and real else "")
@@ -1274,7 +1380,7 @@ def main(args) -> dict | None:
     results: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     if real is not None:
         print("Resampling external DTM to mask grid...")
-        dtm = resample_raster(real.path, h, w, transform, crs)
+        dtm = harmonised(resample_raster(real.path, h, w, transform, crs), real.path)
         print(f"\n[dtm] external DTM  height_threshold={args.height_threshold} m  ramp={height_ramp}")
         _, conf, nd, dtm_stages = detect_ground_dtm(
             dsm,
@@ -1284,20 +1390,39 @@ def main(args) -> dict | None:
             stage=real.stage,
             clamp_to_dsm=real.clamp_to_dsm,
             local_blocks=real.local_blocks,
+            surface=real.surface,
         )
         results["dtm"] = (conf, nd)
     if "dtm_approx" in used:
         assert approx is not None
-        print(f"\n[dtm_approx] {approx}  height_threshold={args.height_threshold} m  ramp={height_ramp}")
-        _, conf, nd, approx_dtm = detect_ground_dtm_approx(
-            dsm, abs(transform.a), approx, args.height_threshold, height_ramp
-        )
+        if shared_path:
+            print(f"\n[dtm_approx] shared terrain {shared_path}, aligned like the DTM "
+                  f"(stage={align.stage}, surface={align.surface})  height_threshold={args.height_threshold} m")
+            shared = harmonised(resample_raster(shared_path, h, w, transform, crs), shared_path)
+            _, conf, nd, shared_stages = detect_ground_dtm(
+                dsm,
+                shared,
+                args.height_threshold,
+                height_ramp,
+                stage=align.stage,
+                clamp_to_dsm=align.clamp_to_dsm,
+                local_blocks=align.local_blocks,
+                surface=align.surface,
+            )
+            approx_dtm = shared_stages[align.stage]
+        else:
+            print(f"\n[dtm_approx] {approx}  height_threshold={args.height_threshold} m  ramp={height_ramp}")
+            _, conf, nd, approx_dtm = detect_ground_dtm_approx(
+                dsm, abs(transform.a), approx, args.height_threshold, height_ramp
+            )
         results["dtm_approx"] = (conf, nd)
+        # The terrain itself, not a mask: per-date approximation, or the shared one co-registered here
+        terrain_suffix = "_terrain_aligned" if shared_path else "_terrain"
         _save_float_tif(
             approx_dtm,
-            os.path.join(process_out_dir, "dtm_approx", run_id, f"{mask_stem}_dtm_approx.tif"),
+            os.path.join(process_out_dir, "dtm_approx", run_id, f"{mask_stem}{terrain_suffix}.tif"),
             profile,
-            label="approximated DTM",
+            label="co-registered shared dtm_approx" if shared_path else "approximated DTM",
             nodata=float("nan"),
         )
 

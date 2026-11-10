@@ -1,0 +1,18 @@
+# Raw DSMs of every date side by side: where do their heights stop agreeing?
+# uv run python scripts/dsm_overview_timeseries.py --config configs/dsm_overview/dsm_overview_timeseries.yaml
+timeseries:
+  # Grid only — its extent and CRS at `resolution_m` below. null = the first
+  # date's DSM; any raster of the scene works, e.g. a crown mask.
+  reference: null
+  # The same DSMs preprocess' time-series run feeds apply_dsm_mask, as they
+  # are on disk: no geoid conversion, no co-registration.
+  dsm_dir: datafiles/DSM_domAligned
+  pattern: "*_DSM_coreg.tif"
+  # null = every date matching `pattern`. A list restricts the run; unquoted
+  # YYYYMMDD parses as YAML int, which run_timeseries_overview coerces to str.
+  dates: null
+  # Pixel size of the common grid. Offsets are metres, the DSMs 3.7 cm: at
+  # 0.5 m one date is ~0.5 million pixels, and every date's DSM is averaged
+  # into it. Statistics only use pixels valid on every date.
+  resolution_m: 0.5
+  out_dir: out/dsm_overview/timeseries

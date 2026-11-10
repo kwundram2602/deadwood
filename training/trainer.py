@@ -8,8 +8,7 @@ from tqdm import tqdm
 from training.losses import CombinedLoss, MaskedBCELoss
 from training.metrics import MetricAccumulator
 from utils.history import plot_history, save_history_csv
-
-NODATA: int = 255
+from utils.nodata import valid_target
 
 
 def train(
@@ -179,7 +178,7 @@ def _run_epoch(
                 loss.backward()
                 optimizer.step()
 
-            n_valid = int((masks != NODATA).sum().item())
+            n_valid = int(valid_target(masks).sum().item())
             accumulator.update(logits.detach().float(), masks, loss.item(), n_valid, parts_float)
 
     return accumulator.compute(threshold=threshold, target_threshold=target_threshold)

@@ -1,10 +1,10 @@
 model_name: crown_ts_rgb_ms
-run_tag: 20_10       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
+run_tag: 31_10       # optional suffix appended to experiment_id, e.g. "v2" or "ablation_lr"
 output_dir: experiments   # absolute output root; outputs go to <output_dir>/<experiment_id>/
 debug: false        # true → print full model key tree (all submodule keys + param counts) before training
 
 dataset:
-  path: out/crown_patches_ts_alldsm_split    # from configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  path: out/crown_patches_ts_alldsm_split_dtm_gt   # from configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
   # Model input channels by name, in order. Spectral names come from the
   # preprocess channels.json; 'ndsm' adds the DSM-derived channel.
   # Examples:
@@ -12,7 +12,7 @@ dataset:
   #   RGB + nDSM:      [red, green, blue, ndsm]
   #   MS4 + nDSM:      [green_ms, red_ms, rededge, nir, ndsm]
   #   Full merge:      [red, green, blue, green_ms, red_ms, rededge, nir, ndsm]
-  input_channels: [red, green, blue, green_ms, red_ms, rededge, nir]
+  input_channels: [red, green, blue, rededge, nir]
   batch_size: 4
   num_workers: 4
 
@@ -45,7 +45,7 @@ fine_tune:
   epochs: 30
   lr: 0.00005
   weight_decay: 0.001     # stronger regularisation for small dataset (was 0.0001)
-  unfreeze_keys: ["layer1","layer4.2"]   # encoder submodule paths, e.g. ["layer4.2"] for just the last bottleneck (~4.5M params); ["layer4"] = old unfreeze_blocks: 1
+  unfreeze_keys: ["layer4"]   # encoder submodule paths, e.g. ["layer4.2"] for just the last bottleneck (~4.5M params); ["layer4"] = old unfreeze_blocks: 1
   encoder_lr_scale: 0.1   # encoder LR = lr * encoder_lr_scale (differential learning rates)
   optimizer: adamw
   scheduler: step         # stable decay; cos restarts spike LR mid-finetuning
@@ -74,8 +74,8 @@ loss:
 # sigmoid thresholds for binary metrics (precision/recall/F1/IoU)
 # GT binarisation thresholds — pixels above this count as crown
 metrics:
-  thresholds: [0.6,0.8,0.9]     #preds   
-  target_thresholds: [0.6, 0.8, 0.9] #targets
+  thresholds: [0.8,0.9]     #preds   
+  target_thresholds: [0.8, 0.9] #targets
 
 # Standalone evaluation (scripts/evaluate.py)
 evaluate:

@@ -2,10 +2,26 @@
 
 dtm_approx runs on its own here: the scene's DSM goes in, `approximate_dtm`
 builds the terrain, and nDSM = DSM - terrain is compared against a fixed
-reference, the external-DTM nDSM that stage 1b (apply_dsm_mask) already wrote
-to <process_out>/ndsm_in_m/<run>/*_dtm_raw_m.tif. Its grid is the scene grid;
-the DSM is resampled onto it exactly as stage 1b does. No mask, tiling or
-co-registration is recomputed.
+reference nDSM from the external DTM (sweep.reference):
+
+  stage1b  the nDSM stage 1b (apply_dsm_mask) already wrote to
+           <process_out>/ndsm_in_m/<run>/*_dtm_raw_m.tif, DTM co-registered
+           onto the DSM; its grid is the scene grid
+  geoid    DSM - DTM with the DTM converted into the DSM's height system by
+           the geoid alone (vertical_datum, no fit), on the stage-1b grid
+           derived from the date's OM like stage 1a does — for dates without
+           a stage-1b run. A tilt between the surveys stays in the reference.
+  geoid_plane  as geoid, then the remaining offset and tilt are removed with
+           stage 1b's plane stage (align_dtm_stages, no blockwise warp).
+  geoid_quadratic  as geoid, then offset, tilt and doming (the bowl a
+           photogrammetric block without ground control bends into) are
+           removed with one quadratic surface through the ground candidates
+           (fit_quadratic_surface); local shapes such as walls stay.
+           The fits only shape the sweep's reference, never the pipeline.
+
+The DSM is resampled onto the grid exactly as stage 1b does. No mask or
+tiling is computed. The height systems of DSM and DTM are checked in both
+modes and recorded in meta.json.
 
 Search: one parameter at a time around the baseline (the preprocess config's
 dsm_mask.dtm_approx block). Every run is scored with `compare_ndsm`; the
@@ -49,11 +65,14 @@ from explore_and_process.apply_dsm_mask import (
     DtmApproxParams,
     _plot_ndsm_compare,
     _save_float_tif,
+    align_dtm_stages,
     approximate_dtm,
     compare_ndsm,
     resample_raster,
 )
+from explore_and_process.rasterize_crowns import target_grid
 from explore_and_process.timeseries import select_dates
+from explore_and_process.vertical_datum import check_pair, to_dsm_system, undulation_grid
 
 PARAM_NAMES: tuple[str, ...] = tuple(f.name for f in fields(DtmApproxParams))
 METRIC_KEYS = (
@@ -83,6 +102,15 @@ class Scene:
     dsm_path: str
     reference_path: str
     zones: dict[str, np.ndarray] = field(default_factory=dict)  # name -> pixel mask
+    datum: dict | None = None  # vertical_datum.DatumCheck.to_dict(), None if the check failed
+    reference_mode: str = "stage1b"
+
+
+@dataclass(frozen=True)
+class SceneInputs:
+    dsm: str
+    om: str | None  # orthomosaic that defines the stage-1b grid (time series), None otherwise
+    process_out: Path  # stage-1b output folder of the scene
 
 
 def zone_metrics(error_m: np.ndarray, zones: dict[str, np.ndarray]) -> dict:
@@ -114,8 +142,9 @@ def _rasterize_zones(paths: dict, shape: tuple[int, int], transform, crs) -> dic
             [(geom, 1) for geom in gdf.geometry if geom is not None and not geom.is_empty],
             out_shape=shape, transform=transform, fill=0, dtype="uint8",
         ).astype(bool)
-        if not mask.any():
-            raise ValueError(f"sweep.zones.{name}: {path} does not overlap the scene")
+        if not mask.any():  # e.g. a smoke-test crop
+            print(f"  [WARN] zone {name}: {path} does not overlap the scene, left out")
+            continue
         zones[str(name)] = mask
         print(f"  zone {name}: {int(mask.sum()):,} px from {path}")
     return zones
@@ -157,11 +186,12 @@ def _latest_reference(process_out: Path, run_id: str | None) -> Path:
     )
 
 
-def scene_inputs(prep_cfg: DictConfig, date: str | None) -> tuple[str, Path]:
-    """(DSM path, stage-1b process_out folder) of one scene of a preprocess config.
+def scene_inputs(prep_cfg: DictConfig, date: str | None) -> SceneInputs:
+    """DSM, OM and stage-1b process_out folder of one scene of a preprocess config.
 
-    Time-series configs pick the date's DSM from timeseries.dsm_dir; a
-    single-scene config uses dsm_mask.dsm and the folder above the mask.
+    Time-series configs pick the date's DSM and OM from timeseries.dsm_dir /
+    om_dir; a single-scene config uses dsm_mask.dsm, rasterize.reference and
+    the folder above the mask.
     """
     if prep_cfg.get("timeseries", None) is not None:
         if date is None:
@@ -169,9 +199,34 @@ def scene_inputs(prep_cfg: DictConfig, date: str | None) -> tuple[str, Path]:
         ts = OmegaConf.merge(prep_cfg.timeseries, {"dates": [str(date)], "max_dates": None})
         assert isinstance(ts, DictConfig)
         (scene,) = select_dates(ts)
-        return str(scene.dsm), Path(str(prep_cfg.timeseries.work_dir)) / scene.date
+        return SceneInputs(str(scene.dsm), str(scene.om), Path(str(prep_cfg.timeseries.work_dir)) / scene.date)
     mask = os.path.abspath(str(prep_cfg.dsm_mask.mask))
-    return str(prep_cfg.dsm_mask.dsm), Path(os.path.dirname(os.path.dirname(mask)))
+    reference = prep_cfg.get("rasterize", {}).get("reference", None)
+    return SceneInputs(
+        str(prep_cfg.dsm_mask.dsm),
+        None if reference is None else str(reference),
+        Path(os.path.dirname(os.path.dirname(mask))),
+    )
+
+
+def _centre_window(height: int, width: int, window_px: int | None) -> Window:
+    if window_px is None:
+        return Window(0, 0, width, height)
+    size_r, size_c = min(window_px, height), min(window_px, width)
+    return Window((width - size_c) // 2, (height - size_r) // 2, size_c, size_r)
+
+
+def _datum_check(dsm_path: str, dtm_path: str | None, cache: str | None) -> dict | None:
+    """Height-system check of DSM and DTM for meta.json; a failure is logged, not raised."""
+    if dtm_path is None:
+        return None
+    try:
+        check = check_pair(dsm_path, dtm_path, cache)
+    except Exception as exc:  # check only
+        print(f"  vertical datum check failed: {type(exc).__name__}: {exc}")
+        return None
+    print(f"  vertical datum: {check.summary()}")
+    return check.to_dict()
 
 
 def load_scene(
@@ -181,6 +236,8 @@ def load_scene(
     reference_run: str | None = None,
     window_px: int | None = None,
     zones: dict | None = None,
+    dtm_path: str | None = None,
+    datum_cache: str | None = None,
 ) -> Scene:
     """Reference nDSM and the DSM resampled onto its grid.
 
@@ -190,10 +247,7 @@ def load_scene(
     """
     ref_path = _latest_reference(process_out, reference_run)
     with rasterio.open(ref_path) as src:
-        window = Window(0, 0, src.width, src.height)
-        if window_px is not None:
-            size_r, size_c = min(window_px, src.height), min(window_px, src.width)
-            window = Window((src.width - size_c) // 2, (src.height - size_r) // 2, size_c, size_r)
+        window = _centre_window(src.height, src.width, window_px)
         reference = src.read(1, window=window).astype(np.float32)
         transform = window_transform(window, src.transform)
         profile = src.profile.copy()
@@ -203,7 +257,89 @@ def load_scene(
     print(f"Scene {date}: grid {h} x {w} at {abs(transform.a):.3f} m, reference {ref_path}")
     dsm = resample_raster(dsm_path, h, w, transform, crs)
     masks = _rasterize_zones(zones or {}, (h, w), transform, crs)
-    return Scene(date, dsm, reference, abs(transform.a), profile, dsm_path, str(ref_path), masks)
+    datum = _datum_check(dsm_path, dtm_path, datum_cache)
+    return Scene(date, dsm, reference, abs(transform.a), profile, dsm_path, str(ref_path), masks, datum)
+
+
+def fit_quadratic_surface(
+    dsm: np.ndarray,
+    dtm: np.ndarray,
+    blocks: int = 32,
+    clamp_to_dsm: bool = True,
+) -> tuple[np.ndarray, dict]:
+    """DTM lifted onto the DSM's ground by a quadratic surface (offset, tilt, doming).
+
+    The first stage of align_dtm_stages with surface="quadratic" — the same fit
+    the pipeline uses with dtm_real.surface: quadratic, without the blockwise
+    warp. Returns the corrected DTM and {"mean_shift", "tilt", "dome",
+    "n_candidates", "n_above_dsm"}.
+    """
+    stages, infos = align_dtm_stages(dsm, dtm, blocks=blocks, clamp_to_dsm=clamp_to_dsm, surface="quadratic")
+    info = infos["plane"]
+    keys = ("mean_shift", "tilt", "dome", "n_candidates", "n_above_dsm")
+    return stages["plane"], {k: info[k] for k in keys}
+
+
+def load_scene_geoid(
+    dsm_path: str,
+    om_path: str,
+    dtm_path: str,
+    target_gsd: float,
+    date: str,
+    window_px: int | None = None,
+    zones: dict | None = None,
+    datum_cache: str | None = None,
+    fit: str = "none",
+    clamp_to_dsm: bool = True,
+) -> Scene:
+    """Scene whose reference is DSM - DTM, the DTM converted by the geoid.
+
+    fit "none": geoid only. "plane": afterwards the plane stage of stage 1b's
+    co-registration (offset + tilt; the blockwise warp is not applied).
+    "quadratic": afterwards fit_quadratic_surface (offset + tilt + doming).
+    clamp_to_dsm as in dtm_real.
+    The grid is the one stage 1a would build from the OM (target_grid at
+    target_gsd), so results line up with stage-1b runs of the same date.
+    Raises if a height system is unknown: the conversion is then undefined.
+    """
+    with rasterio.open(om_path) as src:
+        h, w, transform = target_grid(src, target_gsd)
+        crs = src.crs
+    window = _centre_window(h, w, window_px)
+    transform = window_transform(window, transform)
+    h, w = int(window.height), int(window.width)
+    print(f"Scene {date}: grid {h} x {w} at {abs(transform.a):.3f} m from {om_path}, geoid-only reference")
+    dsm = resample_raster(dsm_path, h, w, transform, crs)
+    dtm = resample_raster(dtm_path, h, w, transform, crs)
+    check = check_pair(dsm_path, dtm_path, datum_cache)  # required here: no conversion without it
+    print(f"  vertical datum: {check.summary()}")
+    datum = check.to_dict()
+    dtm = to_dsm_system(dtm, check, undulation_grid((h, w), transform, crs))
+    if fit not in ("none", "plane", "quadratic"):
+        raise ValueError(f"fit is {fit!r}; expected none, plane or quadratic")
+    mode = "geoid" if fit == "none" else f"geoid_{fit}"
+    if fit == "plane":
+        stages, infos = align_dtm_stages(dsm, dtm, clamp_to_dsm=clamp_to_dsm)
+        dtm, plane = stages["plane"], infos["plane"]
+        print(f"  plane after geoid: shift {plane['mean_shift']:+.2f} m, tilt {plane['tilt']:.2f} m "
+              f"({plane['mode']}, {plane['n_candidates']:,} ground candidates)")
+        datum = {**datum, "plane_after_geoid": plane}
+    elif fit == "quadratic":
+        dtm, quad = fit_quadratic_surface(dsm, dtm, clamp_to_dsm=clamp_to_dsm)
+        print(f"  quadratic after geoid: shift {quad['mean_shift']:+.2f} m, tilt {quad['tilt']:.2f} m, "
+              f"dome {quad['dome']:.2f} m ({quad['n_candidates']:,} ground candidates)")
+        datum = {**datum, "quadratic_after_geoid": quad}
+    reference = (dsm - dtm).astype(np.float32)
+    reference[~(np.isfinite(dsm) & np.isfinite(dtm))] = np.nan
+    profile = {
+        "driver": "GTiff", "dtype": "float32", "count": 1, "height": h, "width": w,
+        "crs": crs, "transform": transform, "nodata": float("nan"),
+    }  # fmt: skip
+    masks = _rasterize_zones(zones or {}, (h, w), transform, crs)
+    return Scene(
+        date, dsm, reference, abs(transform.a), profile, dsm_path,
+        f"{mode}: {dsm_path} - {dtm_path}", masks, datum, mode,
+    )  # fmt: skip
 
 
 def run_one(scene: Scene, params: DtmApproxParams, max_ndsm_height: float):
@@ -288,6 +424,8 @@ def _meta(scene: Scene, n_runs: int, started: datetime) -> dict:
         "date": scene.date,
         "dsm": scene.dsm_path,
         "reference": scene.reference_path,
+        "reference_mode": scene.reference_mode,
+        "vertical_datum": scene.datum,
         "grid": list(scene.dsm.shape),
         "gsd_m": scene.gsd,
         "n_runs": n_runs,

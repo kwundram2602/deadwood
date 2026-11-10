@@ -1,0 +1,92 @@
+# Full-scene prediction of the time-series fullstack model over a folder of
+# dates (OM + DSM paired by their leading YYYYMMDD), starting with 20250417.
+# Run from deadwood/ as working directory; all paths are relative to --working_dir.
+#
+# Usage:
+#   uv run python scripts/predict.py --config configs/predict/predict_ts_fullstack_20250417.yaml --working_dir .
+#   ... --dates 20250417,20250512   # other dates without editing the config
+#
+# CLI flags override config values when provided:
+#   --dtm --weights --threshold --out --dates   (--image / --dsm: single-scene only)
+#
+# Model: configs/train_config/use_timeseries/crown_fullstack.yaml (run 2010),
+# data: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml.
+# The model was trained on tiles of 20260226 + 20260313 (random split), so a
+# map of one of those dates is not an independent evaluation; 20250417 and
+# every other date are unseen.
+
+# Trained checkpoint (.pt). Architecture is inferred from the checkpoint.
+weights: experiments/crown_ts_rgb_ms__OAM_RGB_RESNET50_TCD__bce0.3_dice1__3110/ft_best.pt
+
+# Model input channels manifest. null → <weights_dir>/channels.json
+# (written by scripts/train.py next to the checkpoint).
+channels: null
+
+# Per-channel normalisation stats the model was trained with
+# (the train config's dataset.path + /train_stats.json).
+stats: out/crown_patches_ts_alldsm_split_dtm_gt/train_stats.json
+
+# Scenes to predict. Per date the OM becomes preprocess.sources[0].path and
+# the DSM becomes dsm: (both stay null below).
+timeseries:
+  om_dir: datafiles/OM_domAligned
+  om_pattern: "*_OM_coreg.tif"
+  dsm_dir: datafiles/DSM_domAligned
+  dsm_pattern: "*_DSM_coreg.tif"
+  # Dates to predict (YYYYMMDD). null -> every date with both OM and DSM, sorted.
+  dates: [20240815]
+  # Keep only the first N of the dates above. null -> no cap.
+  max_dates: null
+
+# # Raw absolute-elevation DSM — set per date by timeseries:.
+# dsm: null
+
+# # External DTM — not used: the model was trained on the dtm_approx nDSM.
+# dtm: null
+
+# # Pre-stacked scene image. ! Only used when preprocess.enabled is false !
+# image: null
+
+# Preprocessing of raw inputs — must match the preprocess config the training
+# data was built with (all_dsm_dates_shuffle.yaml).
+preprocess:
+  enabled: true
+  target_gsd: 0.05
+  sources:
+    - path: null  # set per date by timeseries:
+      bands: [1, 2, 3, 6, 7]
+      names: [red, green, blue, rededge, nir]  
+  # = dsm_mask.ndsm_channel of the training data
+  ndsm_channel: dtm_approx
+  # Shared dtm_approx of the training run (built from 20250719, listed in
+  # out/crown_patches_ts_alldsm/dates.json). nDSM = DSM - this raster, aligned
+  # like a DTM (dtm_real below, geoid step via datum_check). With a shared
+  # raster the dtm_approx parameter block is not read, so it is left out.
+  dtm_approx_source:
+    path: datafiles/process_out/timeseries/dtm_approx_shared/20250719_dtm_approx_559c46d1.tif
+  # = dsm_mask.datum_check: convert the terrain into each date's DSM height
+  # system (decided per DSM, cached; the shared dtm_approx is orthometric)
+  datum_check:
+    enabled: false
+    convert: false
+    cache: datafiles/process_out/vertical_datum.json
+  # = dsm_mask.dtm_real of the training run, without path
+  dtm_real:
+    stage: aligned
+    local_blocks: 6
+    clamp_to_dsm: true
+    surface: quadratic
+  max_ndsm_height: 16.0   # dsm_mask.max_ndsm_height — nDSM [0,1] ceiling cap
+  dir: null               # prep cache; null → datafiles/process_out/predict_prep
+
+# Binarization threshold for the crown probability [0,1] → {0,1}
+threshold: 0.9
+
+# Sliding-window tiling
+tile_size: 512
+overlap: 0.5
+batch_size: 8
+
+# Outputs (file names carry the date: <OM stem>_stack_..._prob.tif etc.)
+out: null             # output dir; null → <weights_dir>/predict
+quicklook: true       # write Pseudo-RGB | probability | binary preview PNG

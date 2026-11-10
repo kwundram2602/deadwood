@@ -135,7 +135,11 @@ def test_predict_config_has_required_keys(cfg_path):
     from omegaconf import OmegaConf
 
     pcfg = OmegaConf.load(cfg_path)
-    for key in ("weights", "channels", "dsm", "dtm", "stats", "threshold", "tile_size", "overlap"):
+    keys = ["weights", "channels", "stats", "threshold", "tile_size", "overlap"]
+    if "timeseries" not in pcfg:
+        # a folder run sets dsm per date; dtm is optional there
+        keys += ["dsm", "dtm"]
+    for key in keys:
         assert key in pcfg, f"{cfg_path.name} missing key: {key}"
     p = pcfg.preprocess
     assert p.enabled is True
@@ -154,9 +158,25 @@ def test_predict_sources_match_preprocess_sources(cfg_path):
     never different bands, names, or ordering than the data was built with."""
     from omegaconf import OmegaConf
 
+    pcfg = OmegaConf.load(cfg_path)
+    if "timeseries" in pcfg:
+        # Folder run: the OM path is set per date, so only bands and names are
+        # fixed — they must match the time-series training sources.
+        assert pcfg.preprocess.sources[0].path is None
+        ts_prep = OmegaConf.load(
+            ROOT / "configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml"
+        )
+        (_, train_bands, train_names), = _triples(ts_prep.rasterize.sources)
+        (_, bands, names), = _triples(pcfg.preprocess.sources)
+        pairs = dict(zip(train_bands, train_names))
+        assert all(pairs.get(b) == n for b, n in zip(bands, names)), (
+            f"{cfg_path.name}: bands/names differ from the time-series sources"
+        )
+        return
+
     prep = OmegaConf.load(ROOT / "configs/preprocess/preprocess.yaml")
     train = _triples(prep.rasterize.sources)
-    pred = _triples(OmegaConf.load(cfg_path).preprocess.sources)
+    pred = _triples(pcfg.preprocess.sources)
 
     unknown = [t for t in pred if t not in train]
     assert not unknown, f"{cfg_path.name}: sources absent from preprocess.yaml: {unknown}"
@@ -387,3 +407,104 @@ def test_build_model_from_real_checkpoint():
     with torch.no_grad():
         out = model(torch.zeros(1, 5, 64, 64))
     assert out.shape == (1, 1, 64, 64)
+
+
+# ------------------------------------------------------------- folder run
+def _folder_cfg(om_dates, dsm_dates, root, dates=None, **overrides):
+    from omegaconf import OmegaConf
+
+    (root / "om").mkdir()
+    (root / "dsm").mkdir()
+    for d in om_dates:
+        (root / "om" / f"{d}_Airport_OM_coreg.tif").touch()
+    for d in dsm_dates:
+        (root / "dsm" / f"{d}_Airport_DSM_coreg.tif").touch()
+    cfg = {
+        "dsm": None,
+        "timeseries": {
+            "om_dir": "om",
+            "om_pattern": "*_OM_coreg.tif",
+            "dsm_dir": "dsm",
+            "dsm_pattern": "*_DSM_coreg.tif",
+            "dates": dates,
+            "max_dates": None,
+        },
+        "preprocess": {
+            "enabled": True,
+            "sources": [{"path": None, "bands": [1, 2, 3], "names": ["red", "green", "blue"]}],
+        },
+    }
+    cfg.update(overrides)
+    return OmegaConf.create(cfg)
+
+
+def test_resolve_scenes_pairs_selected_dates(tmp_path):
+    from scripts.predict import resolve_scenes
+
+    cfg = _folder_cfg(["20250417", "20260313"], ["20250417", "20260313"], tmp_path, dates=[20250417])
+    (scene,) = resolve_scenes(cfg, tmp_path)
+    assert scene.date == "20250417"
+    assert scene.om == tmp_path / "om" / "20250417_Airport_OM_coreg.tif"
+    assert scene.dsm == tmp_path / "dsm" / "20250417_Airport_DSM_coreg.tif"
+
+
+def test_resolve_scenes_all_dates_with_om_and_dsm(tmp_path):
+    from scripts.predict import resolve_scenes
+
+    cfg = _folder_cfg(["20230824", "20250417", "20260313"], ["20250417", "20260313"], tmp_path)
+    assert [s.date for s in resolve_scenes(cfg, tmp_path)] == ["20250417", "20260313"]
+
+
+def test_resolve_scenes_dates_override(tmp_path):
+    from scripts.predict import resolve_scenes
+
+    cfg = _folder_cfg(["20250417", "20260313"], ["20250417", "20260313"], tmp_path, dates=[20250417])
+    assert [s.date for s in resolve_scenes(cfg, tmp_path, ["20260313"])] == ["20260313"]
+
+
+def test_resolve_scenes_missing_date_raises(tmp_path):
+    from scripts.predict import resolve_scenes
+
+    cfg = _folder_cfg(["20250417"], ["20250417"], tmp_path, dates=[20250417, 20260313])
+    with pytest.raises(ValueError, match="20260313"):
+        resolve_scenes(cfg, tmp_path)
+
+
+def test_resolve_scenes_rejects_fixed_paths(tmp_path):
+    from scripts.predict import resolve_scenes
+
+    cfg = _folder_cfg(["20250417"], ["20250417"], tmp_path, dsm="dsm/x.tif")
+    with pytest.raises(ValueError, match="dsm"):
+        resolve_scenes(cfg, tmp_path)
+    cfg.dsm = None
+    cfg.preprocess.sources[0].path = "om/x.tif"
+    with pytest.raises(ValueError, match="sources"):
+        resolve_scenes(cfg, tmp_path)
+
+
+def test_prepare_scene_uses_the_dates_om(tmp_path):
+    """Folder run: sources[0].path is null and the date's OM is stacked instead."""
+    import argparse
+
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from scripts.predict import prepare_scene
+
+    om = tmp_path / "20250417_Airport_OM_coreg.tif"
+    with rasterio.open(
+        om, "w", driver="GTiff", height=16, width=16, count=3, dtype="float32",
+        crs="EPSG:32736", transform=from_origin(0, 0, 0.05, 0.05),
+    ) as dst:
+        dst.write(np.full((3, 16, 16), 0.5, np.float32))
+
+    cfg = _folder_cfg([], [], tmp_path)
+    cfg.preprocess.target_gsd = 0.05
+    cfg.preprocess.dir = "prep"
+    args = argparse.Namespace(image=None)
+    image, ndsm, names, _, _ = prepare_scene(
+        cfg, args, tmp_path, ["red", "green", "blue"], None, None, om_path=om
+    )
+    assert image.exists() and image.name.startswith("20250417_Airport_OM_coreg_stack")
+    assert ndsm is None
+    assert names == ["red", "green", "blue"]

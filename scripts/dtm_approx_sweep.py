@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from explore_and_process.apply_dsm_mask import DtmApproxParams  # noqa: E402
 from explore_and_process.dtm_approx_sweep import (  # noqa: E402
     load_scene,
+    load_scene_geoid,
     one_at_a_time,
     run_sweep,
     scene_inputs,
@@ -50,20 +51,32 @@ def main() -> None:
     runs = one_at_a_time(baseline, dict(sw["values"]))  # validates before any raster is read
     date = None if sw.get("date") is None else str(sw.date)
 
-    dsm_path, process_out = scene_inputs(prep, date)
+    inputs = scene_inputs(prep, date)
     out_root = Path(str(sw.out_dir)) / ("smoke" if args.smoke else "")
     if args.smoke:
         runs = runs[:SMOKE_RUNS]
     print(f"{len(runs)} run(s): {', '.join(r.name for r in runs)}")
 
-    scene = load_scene(
-        dsm_path,
-        process_out,
-        date or "scene",
-        reference_run=sw.get("reference_run"),
-        window_px=SMOKE_WINDOW_PX if args.smoke else None,
-        zones=dict(sw.zones) if sw.get("zones") else None,
-    )
+    mode = str(sw.get("reference", "stage1b"))
+    dtm_path = str(prep.dsm_mask.dtm_real.path) if prep.dsm_mask.get("dtm_real") else None
+    datum_cache = (prep.dsm_mask.get("datum_check") or {}).get("cache")
+    common = {
+        "window_px": SMOKE_WINDOW_PX if args.smoke else None,
+        "zones": dict(sw.zones) if sw.get("zones") else None,
+        "datum_cache": datum_cache,
+    }
+    if mode == "stage1b":
+        scene = load_scene(inputs.dsm, inputs.process_out, date or "scene",
+                           reference_run=sw.get("reference_run"), dtm_path=dtm_path, **common)
+    elif mode in ("geoid", "geoid_plane", "geoid_quadratic"):
+        if inputs.om is None or dtm_path is None:
+            raise ValueError(f"sweep.reference {mode} needs the scene's OM and dsm_mask.dtm_real.path")
+        clamp = bool(prep.dsm_mask.dtm_real.get("clamp_to_dsm", True))
+        scene = load_scene_geoid(inputs.dsm, inputs.om, dtm_path, float(prep.rasterize.target_gsd),
+                                 date or "scene", fit=mode.removeprefix("geoid").lstrip("_") or "none",
+                                 clamp_to_dsm=clamp, **common)
+    else:
+        raise ValueError(f"sweep.reference is {mode!r}; expected stage1b, geoid, geoid_plane or geoid_quadratic")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     resolved = cast(dict, OmegaConf.to_container(cfg, resolve=True))
     resolved |= {"baseline_dtm_approx": asdict(baseline), "smoke": args.smoke}

@@ -51,6 +51,7 @@ class MetricAccumulator:
                 self._parts_sum[name] = self._parts_sum.get(name, 0.0) + val * n_valid_pixels
 
     def compute(self, threshold: float = 0.5, target_threshold: float = 0.5) -> dict[str, float]:
+        # Fallback when nothing valid was collected: loss mean only, all scores 0.
         _zero = {
             "loss": self._loss_sum / self._n_valid if self._n_valid > 0 else 0.0,
             "acc": 0.0,
@@ -65,8 +66,10 @@ class MetricAccumulator:
         if not self._probs:
             return _zero
 
+        # Pool all pixels of the epoch/split; scores are global, not per-patch means.
         probs = np.concatenate(self._probs)
         tgts = np.concatenate(self._targets)
+        # Keep labelled pixels only (target in [0, 1]); drops outside/unlabelled sentinels.
         valid = valid_target(tgts)
 
         if not valid.any():
@@ -74,25 +77,29 @@ class MetricAccumulator:
 
         probs_v = probs[valid]
         tgts_v = tgts[valid]
+        # Binarise soft targets and predicted probabilities for the confusion matrix.
         t_bin = tgts_v > target_threshold
         preds = probs_v >= threshold
 
+        # Pixel confusion matrix for the positive (crown) class.
         tp = int((preds & t_bin).sum())
         fp = int((preds & ~t_bin).sum())
         fn = int((~preds & t_bin).sum())
         tn = int((~preds & ~t_bin).sum())
         total = tp + fp + fn + tn
 
-        acc = (tp + tn) / total if total > 0 else 0.0
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
-        iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+        acc = (tp + tn) / total if total > 0 else 0.0  # share of correct pixels
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0  # predicted crown that is crown
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0  # crown that was found
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0  # = Dice on binary masks
+        iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0  # Jaccard of crown class
 
+        # Threshold-free Jaccard on probabilities vs soft targets (same form as SoftIoULoss).
         inter = float((probs_v * tgts_v).sum())
         union = float((probs_v + tgts_v - probs_v * tgts_v).sum())
         soft_iou = (inter + _EPS) / (union + _EPS)
 
+        # Average precision over all thresholds; undefined unless both classes occur.
         has_pos = t_bin.sum() > 0
         has_neg = (~t_bin).sum() > 0
         auc_pr = (
@@ -101,6 +108,7 @@ class MetricAccumulator:
             else 0.0
         )
 
+        # Loss terms are means weighted by valid pixels per batch.
         result = {
             "loss": self._loss_sum / self._n_valid if self._n_valid > 0 else 0.0,
             "acc": acc,

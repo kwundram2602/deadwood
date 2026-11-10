@@ -1,0 +1,36 @@
+# dtm_approx sweep on 20250719, 8 days before the LiDAR DTM (20250727): the
+# reference nDSM is close to change-free. No stage-1b run exists for this date,
+# so the reference is DSM - DTM with the DTM converted into the DSM's height
+# system by the geoid, then offset, tilt and doming removed by one quadratic
+# surface through the ground (no blockwise warp, local shapes stay).
+# Datum check (2026-10-21): DSM orthometric (EGM2008), DTM ellipsoidal.
+# geoid only: bias_m -1.47 for every run (smoke 20261021-203604);
+# geoid + plane: bowl-shaped residual -0.5 / +0.2 m (20261021-204500).
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep_20250719.yaml
+sweep:
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20250719
+  reference: geoid_quadratic  # stage1b | geoid | geoid_plane | geoid_quadratic
+  reference_run: null  # stage1b only
+  out_dir: out/dtm_approx_sweep
+  metric: rmse_m
+  zones:
+    wall: datafiles/dtm_approx_zones/20260313_wall.gpkg
+  # Recommendation of round 4 on 20260313 (rmse_m 0.247, wall bias +0.006).
+  baseline:
+    smooth_sigma: 2.0
+    percentile: 1
+    dh0: 0.1
+    keep_min_elongation: 5.0
+    keep_max_roughness: 0.1
+    keep_group_roughness: 0.12
+  # Baseline + 12 runs, about 40 s each.
+  values:
+    keep_min_elongation: [0.0]   # wall filter off
+    smooth_sigma: [1.0, 3.0]
+    percentile: [0, 5]
+    dh0: [0.05, 0.15, 0.2]
+    max_window: [20.0, 40.0]
+    cell: [1.0]
+    keep_group_roughness: [0.0]  # group = max (round-3 behaviour)

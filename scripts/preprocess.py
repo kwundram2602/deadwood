@@ -22,8 +22,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from omegaconf import OmegaConf
 
 from data.channels import load_manifest
+from explore_and_process.apply_dsm_mask import (
+    DtmApproxParams,
+    build_shared_dtm_approx,
+    recompare_ndsm,
+)
 from explore_and_process.apply_dsm_mask import main as dsm_main
-from explore_and_process.apply_dsm_mask import recompare_ndsm
 from explore_and_process.rasterize_crowns import main as rasterize_main
 from explore_and_process.tile_patches import main as tile_main
 from explore_and_process.timeseries import (
@@ -32,19 +36,70 @@ from explore_and_process.timeseries import (
     validate_label_cfg,
     validate_timeseries_cfg,
 )
+from explore_and_process.vertical_datum import check_pair
 from utils.data import assign_dates, compute_channel_stats, split_patches
 
 logger = logging.getLogger(__name__)
 
 
-def run_scene(cfg) -> tuple[int, dict | None]:
+def check_datum(dsm_mask) -> dict | None:
+    """Height systems of the scene's DSM and the external DTM (check only, nothing is fitted).
+
+    Runs when the external DTM is used (method or ndsm_channel 'dtm') and
+    dsm_mask.datum_check.enabled is true. A datum mix or an unknown height
+    system is reported, not corrected: stage 1b's co-registration absorbs the
+    offset up to max_shift. A failing check (no network, unreadable raster)
+    only warns.
+    """
+    dc = dsm_mask.get("datum_check", None)
+    used = {str(dsm_mask.get("method")), str(dsm_mask.get("ndsm_channel", None) or dsm_mask.get("method"))}
+    if dc is None or not dc.get("enabled", False) or "dtm" not in used:
+        return None
+    try:
+        check = check_pair(dsm_mask.dsm, dsm_mask.dtm_real.path, dc.get("cache", None))
+    except Exception as exc:  # check only: never stops the pipeline
+        print(f"[WARN] vertical datum check failed: {type(exc).__name__}: {exc}")
+        return None
+    level = "WARN" if check.mixed or "unknown" in (check.dsm.system, check.dtm.system) else "INFO"
+    print(f"[{level}] vertical datum: {check.summary()}")
+    # stage 1b converts the terrain by the geoid when the systems differ and convert is on
+    return {**check.to_dict(), "geoid_conversion": check.mixed and bool(dc.get("convert", True))}
+
+
+def shared_dtm_approx(cfg) -> str | None:
+    """Path of the shared dtm_approx raster of a time-series run, built once if needed.
+
+    dsm_mask.dtm_approx_source.path wins; else .date builds the terrain from that
+    date's DSM (OM grid, dsm_mask.dtm_approx parameters) into
+    <timeseries.work_dir>/dtm_approx_shared/. The date need not be one of the
+    selected dates. None: every date approximates its own terrain (as before).
+    """
+    source = cfg.dsm_mask.get("dtm_approx_source", None) or {}
+    if source.get("path", None):
+        if not os.path.exists(str(source.path)):
+            raise FileNotFoundError(f"dsm_mask.dtm_approx_source.path {source.path} does not exist")
+        return str(source.path)
+    if source.get("date", None) is None:
+        return None
+    date = str(source.date)
+    ts = OmegaConf.merge(cfg.timeseries, {"dates": [date], "max_dates": None})
+    (scene,) = select_dates(ts)
+    params = DtmApproxParams.from_cfg(cfg.dsm_mask.dtm_approx)
+    out = os.path.join(str(cfg.timeseries.work_dir), "dtm_approx_shared", f"{date}_dtm_approx_{params.digest()}.tif")
+    return build_shared_dtm_approx(str(scene.om), str(scene.dsm), float(cfg.rasterize.target_gsd), params, out)
+
+
+def run_scene(cfg) -> tuple[int, dict | None, dict | None]:
     """Stages 1a, 1b and 2 for one scene.
 
-    Returns the number of kept tiles and the nDSM comparison metrics of stage
-    1b (dtm_approx vs. dtm in [0,1]; None unless both nDSMs were computed).
+    Returns the number of kept tiles, the nDSM comparison metrics of stage 1b
+    (None unless both nDSMs were computed) and the vertical datum check (None
+    when it did not run).
     """
     print("=== Stage 1a: rasterize_crowns ===")
     rasterize_main(cfg.rasterize)
+
+    datum = check_datum(cfg.dsm_mask)
 
     print("\n=== Stage 1b: apply_dsm_mask ===")
     compare = dsm_main(cfg.dsm_mask)
@@ -55,7 +110,7 @@ def run_scene(cfg) -> tuple[int, dict | None]:
         cfg.tiling.dsm = cfg.dsm_mask.out_dsm
 
     print("\n=== Stage 2: tile_patches ===")
-    return tile_main(cfg.tiling), compare
+    return tile_main(cfg.tiling), compare, datum
 
 
 def write_ndsm_compare_csv(rows: list[dict], path: Path) -> None:
@@ -84,6 +139,11 @@ def run_timeseries(cfg) -> dict[str, str]:
     validate_timeseries_cfg(cfg, dates)
     print(f"[INFO] Time series: {len(scenes)} date(s): {', '.join(dates)}")
 
+    shared = shared_dtm_approx(cfg)
+    if shared is not None:
+        # date_config copies cfg, so every date gets the path
+        cfg.dsm_mask.dtm_approx_source = {"date": cfg.dsm_mask.dtm_approx_source.get("date"), "path": shared}
+
     tiles_root = Path(cfg.tiling.out)
     if tiles_root.exists():
         shutil.rmtree(tiles_root)
@@ -94,7 +154,7 @@ def run_timeseries(cfg) -> dict[str, str]:
     for scene in scenes:
         print(f"\n##### Date {scene.date} #####")
         dcfg = date_config(cfg, scene)
-        kept, compare = run_scene(dcfg)
+        kept, compare, datum = run_scene(dcfg)
         records.append({
             "date": scene.date,
             "om": str(scene.om),
@@ -103,6 +163,8 @@ def run_timeseries(cfg) -> dict[str, str]:
             "ndsm": str(dcfg.dsm_mask.out_dsm),
             "tiles": kept,
             "ndsm_compare": compare,
+            "vertical_datum": datum,
+            "dtm_approx_shared": shared,
         })
         if compare is not None:
             compare_rows.append({"date": scene.date, **compare})
@@ -171,6 +233,9 @@ def run(config_path: str, ndsm_compare_only: bool = False) -> None:
     if cfg.get("timeseries", None) is not None:
         date_splits = run_timeseries(cfg)
     else:
+        source = cfg.dsm_mask.get("dtm_approx_source", None) or {}
+        if source.get("date", None) is not None and not source.get("path", None):
+            raise ValueError("dsm_mask.dtm_approx_source.date needs a timeseries section; set .path instead")
         run_scene(cfg)
         date_splits = None
 

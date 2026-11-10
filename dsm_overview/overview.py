@@ -12,10 +12,13 @@ from pathlib import Path
 
 from deadwood_spectral.grid import load_reference_grid
 from deadwood_spectral.masks import EXCLUDE_COVERAGE, load_crowns
+from deadwood_spectral.plots import _save
 from dsm_overview.plot3d import DEFAULT_AZIM, DEFAULT_ELEV, plot_dem_overview
 from dsm_overview.stats import aoi_stats, stats_table
 from dsm_overview.surfaces import load_surfaces, load_surfaces_from_stages
+from dsm_overview.timeseries import coarse_grid, height_table, load_stack, timeseries_figure
 from dsm_overview.window import aoi_from_bounds, scene_aoi
+from explore_and_process.timeseries import _by_date
 
 logger = logging.getLogger(__name__)
 
@@ -140,3 +143,50 @@ def run_scene_overview(
             label=label,
         )
     }
+
+
+def run_timeseries_overview(
+    reference: str | Path | None,
+    dsm_dir: str | Path,
+    out_dir: str | Path,
+    pattern: str = "*_DSM_coreg.tif",
+    dates: Sequence[str] | None = None,
+    resolution_m: float = 0.5,
+) -> dict[str, Path]:
+    """Every date's raw DSM side by side: one CSV row per date, one figure.
+
+    No DTM, no crown, no fit — the raw DSMs against each other, so survey
+    offsets and height-system switches between campaigns stay visible. See
+    `dsm_overview.timeseries` for what the two views measure.
+
+    `reference` only sets extent and CRS of the common grid. None takes them
+    from the first date's DSM: the footprints roughly agree, and the pixels
+    valid on every date are all that is counted anyway.
+    """
+    found = _by_date(dsm_dir, pattern)
+    if not found:
+        raise ValueError(f"no DSM matching {pattern!r} in {dsm_dir}")
+    if dates is not None:
+        # str for the same reason as tree_ids above: an unquoted YAML date list
+        # parses as int.
+        dates = sorted(str(d) for d in dates)
+        missing = [d for d in dates if d not in found]
+        if missing:
+            raise ValueError(
+                f"no DSM matching {pattern!r} in {dsm_dir} for date(s): {', '.join(missing)}"
+            )
+        found = {d: found[d] for d in dates}
+
+    reference = next(iter(found.values())) if reference is None else reference
+    grid = coarse_grid(load_reference_grid(reference), resolution_m)
+    logger.info("grid from %s", reference)
+    logger.info("%d date(s) on a %s grid at %g m", len(found), grid.shape, resolution_m)
+    table = height_table(list(found), load_stack(found, grid))
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {"stats_csv": out_dir / "dsm_heights.csv"}
+    table.to_csv(outputs["stats_csv"], index=False, float_format="%.3f")
+    logger.info("wrote %s (%d rows)", outputs["stats_csv"], len(table))
+    outputs["plot"] = _save(timeseries_figure(table), out_dir / "dsm_heights.png")
+    return outputs

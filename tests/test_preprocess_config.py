@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -222,6 +223,7 @@ def test_run_timeseries_runs_each_date_and_splits_by_date(tmp_path, monkeypatch)
     cfg.split.output = "out/crown_patches_ts_split"
     cfg.split.strategy = "by_date"
     cfg.split.dates = {"train": [20260226], "val": [20260313], "test": []}
+    cfg.dsm_mask.dtm_approx_source = {"date": None, "path": None}  # shared terrain: own test
     config_file = tmp_path / "timeseries.yaml"
     OmegaConf.save(cfg, config_file)
 
@@ -313,3 +315,101 @@ def test_ndsm_compare_only_rebuilds_comparison_and_runs_nothing_else(tmp_path, m
     assert rows[0] == "date,rmse,bias,rmse_m,mae_m,bias_m,p95_abs_m,dir" and len(rows) == 3
     record = json.loads((tmp_path / "out" / "ts" / "dates.json").read_text())[0]
     assert record["tiles"] == 5 and record["ndsm_compare"]["rmse_m"] == 0.3
+
+
+def test_check_datum_only_reports_and_never_raises(monkeypatch):
+    import scripts.preprocess as P
+
+    cfg = OmegaConf.create({
+        "method": "dtm", "ndsm_channel": "dtm_approx", "dsm": "a.tif",
+        "dtm_real": {"path": "b.tif"}, "datum_check": {"enabled": True, "cache": None},
+    })
+
+    class Check:
+        mixed = True
+        dsm = dtm = type("H", (), {"system": "orthometric"})()
+
+        def summary(self):
+            return "mix"
+
+        def to_dict(self):
+            return {"mixed": True}
+
+    monkeypatch.setattr(P, "check_pair", lambda dsm, dtm, cache: Check())
+    assert P.check_datum(cfg) == {"mixed": True, "geoid_conversion": True}
+
+    def boom(*a):
+        raise OSError("no network")
+
+    monkeypatch.setattr(P, "check_pair", boom)
+    assert P.check_datum(cfg) is None  # warned, not raised
+    cfg.method = cfg.ndsm_channel = "dtm_approx"
+    assert P.check_datum(cfg) is None  # no external DTM involved
+
+
+
+def test_shared_dtm_approx_is_built_once_and_reaches_every_date(tmp_path, monkeypatch):
+    """dtm_approx_source.date builds one raster from that date (not a selected one) for all dates."""
+    monkeypatch.chdir(tmp_path)
+    for d in ("20250719", "20260226", "20260313"):
+        for kind in ("OM", "DSM"):
+            (tmp_path / kind.lower()).mkdir(exist_ok=True)
+            (tmp_path / kind.lower() / f"{d}_X_{kind}_coreg.tif").touch()
+    cfg = OmegaConf.load(TIMESERIES_CONFIG_PATH)
+    cfg.timeseries.om_dir, cfg.timeseries.dsm_dir, cfg.timeseries.work_dir = "om", "dsm", "work"
+    cfg.timeseries.dates = [20260226, 20260313]
+    cfg.tiling.out = cfg.split.input = "out/ts"
+    cfg.split.output = "out/ts_split"
+    cfg.split.strategy = "random"
+    cfg.dsm_mask.dtm_approx_source = {"date": 20250719, "path": None}
+    config_file = tmp_path / "ts.yaml"
+    OmegaConf.save(cfg, config_file)
+
+    built, seen = [], []
+
+    def fake_build(om, dsm, gsd, params, out):
+        built.append((Path(om).name, Path(dsm).name, out))
+        return out
+
+    def fake_dsm_main(args):
+        seen.append(args.dtm_approx_source.path)
+        args.out = args.mask.replace("intermediate", "final")
+
+    def fake_tile_main(args):
+        os.makedirs(args.out, exist_ok=True)
+        with open(os.path.join(args.out, "channels.json"), "w") as f:
+            f.write('{"names": ["red"]}')
+        return 1
+
+    with (
+        patch("scripts.preprocess.build_shared_dtm_approx", side_effect=fake_build),
+        patch("scripts.preprocess.check_datum", return_value=None),
+        patch("scripts.preprocess.rasterize_main"),
+        patch("scripts.preprocess.dsm_main", side_effect=fake_dsm_main),
+        patch("scripts.preprocess.tile_main", side_effect=fake_tile_main),
+        patch("scripts.preprocess.split_patches"),
+        patch("scripts.preprocess.load_manifest", return_value=["red"]),
+        patch("scripts.preprocess.compute_channel_stats",
+              return_value={"names": ["red"], "mean": [0.0], "std": [1.0]}),
+    ):
+        from scripts.preprocess import run
+
+        (tmp_path / "out" / "ts_split").mkdir(parents=True)
+        run(str(config_file))
+
+    assert len(built) == 1 and built[0][:2] == ("20250719_X_OM_coreg.tif", "20250719_X_DSM_coreg.tif")
+    assert built[0][2].startswith(os.path.join("work", "dtm_approx_shared", "20250719_dtm_approx_"))
+    assert seen == [built[0][2]] * 2
+    records = json.loads((tmp_path / "out" / "ts" / "dates.json").read_text())
+    assert {r["dtm_approx_shared"] for r in records} == {built[0][2]}
+
+
+def test_single_scene_rejects_source_date_without_path(tmp_path):
+    cfg = OmegaConf.load(CONFIG_PATH)
+    cfg.dsm_mask.dtm_approx_source = {"date": 20250719, "path": None}
+    config_file = tmp_path / "p.yaml"
+    OmegaConf.save(cfg, config_file)
+    from scripts.preprocess import run
+
+    with pytest.raises(ValueError, match="needs a timeseries section"):
+        run(str(config_file))

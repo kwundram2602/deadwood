@@ -15,6 +15,7 @@ from rasterio.windows import transform as window_transform
 from deadwood_spectral.grid import ReferenceGrid
 from dsm_overview.surfaces import STAGES, Surfaces
 from dsm_overview.window import Aoi, crop, rasterize_geometry
+from explore_and_process.apply_dsm_mask import robust_lstsq
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +85,9 @@ def _ring_ground_level(
     actually under the crown. Fitting a plane and evaluating it at the crown
     centroid follows the slope instead of averaging across it.
 
-    The re-fit loop mirrors `apply_dsm_mask.align_dtm_to_dsm`'s ground-plane
-    estimator one scale down: MAD-trim against a plane over 2-3 iterations
-    rather than a single quantile, so the package uses one idea at two
-    scales. Falls back to `percentile(DSM[ring], GROUND_QUANTILE)` — today's
+    The fit is `apply_dsm_mask.robust_lstsq`, the same MAD-trimmed estimator
+    behind `align_dtm_stages`' scene-wide plane, applied one scale down — one
+    idea at two scales, and one implementation of it. Falls back to `percentile(DSM[ring], GROUND_QUANTILE)` — today's
     behaviour — when the ring does not offer enough ground candidates to
     constrain a plane; the caller must surface that fallback, since a silent
     one reintroduces exactly the bias this function exists to remove.
@@ -119,19 +119,8 @@ def _ring_ground_level(
     xx = cols.astype(np.float64) * (2.0 / max(w - 1, 1)) - 1.0
     values = values.astype(np.float64)
 
-    keep = np.ones(values.shape, dtype=bool)
-    coef = np.array([0.0, 0.0, np.median(values)])
-    for _ in range(3):
-        design = np.column_stack([xx[keep], yy[keep], np.ones(int(keep.sum()))])
-        coef, *_ = np.linalg.lstsq(design, values[keep], rcond=None)
-        resid = values - (coef[0] * xx + coef[1] * yy + coef[2])
-        centre = np.median(resid)
-        mad = 1.4826 * np.median(np.abs(resid - centre))
-        tol = max(2.5 * mad, 0.25)  # 0.25 m floor: real ground is rough
-        new_keep = np.abs(resid - centre) <= tol
-        if new_keep.sum() < MIN_PLANE_PIXELS or np.array_equal(new_keep, keep):
-            break
-        keep = new_keep
+    design = np.column_stack([xx, yy, np.ones_like(xx)])
+    coef, _ = robust_lstsq(design, values, MIN_PLANE_PIXELS)
 
     # crown centroid in the same normalised pixel-coordinate frame
     col, row = ~affine * centroid_xy

@@ -21,6 +21,12 @@ Outputs (written to out:, default <weights_dir>/predict/):
     <scene>_pred_t<T>.tif   uint8 0/1 crown mask,             noData = 255
     <scene>_quicklook.png   Pseudo-RGB | probability | binary preview
 
+Folder run: with a ``timeseries:`` block (om_dir/om_pattern, dsm_dir/dsm_pattern,
+dates, max_dates — the keys of the preprocess time series) the OM and DSM of
+every selected date are paired by their leading YYYYMMDD and predicted one
+after another with the model loaded once. Each date's OM replaces
+preprocess.sources[0].path and its DSM replaces dsm:, so both stay null.
+
 Usage:
     uv run python scripts/predict.py \\
         --config configs/predict/predict.yaml \\
@@ -28,6 +34,7 @@ Usage:
 
 CLI flags override config values when provided:
     --image --dsm --dtm --weights --threshold --out
+    --dates 20250417,20260313   (folder run only: overrides timeseries.dates)
 """
 
 import argparse
@@ -212,17 +219,32 @@ def prepare_inputs(
     # shape the nDSM, so they must match the training preprocessing — and they
     # go into the cache tag, or a changed setting silently reuses the old nDSM.
     real = approx = None
-    if channel == "dtm":
-        real = DtmRealParams.from_cfg(prep_cfg.get("dtm_real"), need_path=False)
+    # A shared dtm_approx raster (dtm_approx_source.path, from the training
+    # preprocessing) is aligned to this DSM like the external DTM
+    shared = (prep_cfg.get("dtm_approx_source", None) or {}).get("path", None)
+    shared = Path(str(shared)) if shared and channel == "dtm_approx" else None
+    if channel == "dtm" or shared is not None:
+        real = DtmRealParams.from_cfg(prep_cfg.get("dtm_real", None) or {}, need_path=False)
         if real.path:
             raise ValueError(
                 "preprocess.dtm_real.path is not used by predict — set the DTM "
                 "with dtm: or --dtm"
             )
+    if channel == "dtm":
+        assert real is not None
         method_tag = f"dtm{real.tag()}"
+    elif shared is not None:
+        assert real is not None
+        st = shared.stat()
+        shared_tag = hashlib.md5(f"{shared.resolve()}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:8]
+        method_tag = f"dashared{shared_tag}{real.tag()}"
     else:
         approx = DtmApproxParams.from_cfg(prep_cfg.get("dtm_approx"))
         method_tag = f"da{approx.digest()}"
+    datum_cfg = prep_cfg.get("datum_check", None)
+    convert = datum_cfg is not None and bool(datum_cfg.get("convert", True))
+    if convert:
+        method_tag += "_geoid"
     dsm_out = prep_dir / f"{raw_dsm.stem}_ndsm_{gsd_tag}_{method_tag}_max{max_h:g}.tif"
     if dsm_out.exists():
         print(f"Prep cache hit: {dsm_out.name}")
@@ -230,9 +252,14 @@ def prepare_inputs(
         dsm = resample_raster(str(raw_dsm), h, w, transform, crs)
         # height_threshold only shapes the (discarded) ground confidence;
         # the nDSM itself is just dsm - ground
-        if real is not None and raw_dtm is not None:
-            print(f"Computing nDSM (external DTM {raw_dtm.name})...")
-            dtm = resample_raster(str(raw_dtm), h, w, transform, crs)
+        terrain_path = raw_dtm if channel == "dtm" else shared
+        if real is not None and terrain_path is not None:
+            print(f"Computing nDSM ({'external DTM' if channel == 'dtm' else 'shared dtm_approx'} {terrain_path.name})...")
+            dtm = resample_raster(str(terrain_path), h, w, transform, crs)
+            if convert:
+                from explore_and_process.vertical_datum import harmonise
+
+                dtm, _ = harmonise(dtm, raw_dsm, terrain_path, (h, w), transform, crs, datum_cfg.get("cache", None))
             _, _, ndsm, _ = detect_ground_dtm(
                 dsm,
                 dtm,
@@ -240,6 +267,7 @@ def prepare_inputs(
                 stage=real.stage,
                 clamp_to_dsm=real.clamp_to_dsm,
                 local_blocks=real.local_blocks,
+                surface=real.surface,
             )
         else:
             assert approx is not None
@@ -489,74 +517,68 @@ def save_quicklook(
     print(f"Saved {save_path}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Predict crown mask for a full scene")
-    parser.add_argument("--config", required=True, help="Path to configs/predict/*.yaml")
-    parser.add_argument("--working_dir", default=".")
-    parser.add_argument(
-        "--image",
-        default=None,
-        help="Override: pre-stacked scene GeoTIFF (preprocess.enabled: false)",
-    )
-    parser.add_argument("--dsm", default=None, help="Override: aligned nDSM GeoTIFF")
-    parser.add_argument(
-        "--dtm",
-        default=None,
-        help="Override: external DTM GeoTIFF; nDSM becomes DSM-DTM instead of "
-        "DSM minus a minimum filter (requires preprocess.enabled)",
-    )
-    parser.add_argument("--weights", default=None, help="Override: .pt checkpoint")
-    parser.add_argument("--threshold", type=float, default=None, help="Override: binarization threshold")
-    parser.add_argument("--out", default=None, help="Override: output dir")
-    args = parser.parse_args()
+def resolve_scenes(pcfg, root: Path, dates_override: list[str] | None = None) -> list:
+    """Date scenes of a folder run (``timeseries:`` block): OM + DSM per date.
 
-    from utils.device import get_device
+    OM and DSM are paired by the leading YYYYMMDD of their filenames, the same
+    way the training time series does it (timeseries.select_dates). Every
+    date's OM becomes ``preprocess.sources[0].path`` and its DSM ``dsm``, so
+    both must be left null in the config, and there is exactly one source.
+    """
+    from explore_and_process.timeseries import select_dates
 
-    pcfg = OmegaConf.load(args.config)
-    root = Path(args.working_dir).resolve()
-
-    threshold = args.threshold if args.threshold is not None else float(pcfg.get("threshold", 0.5))
-
-    weights_str = args.weights or pcfg.get("weights", None)
-    if not weights_str:
-        raise ValueError("weights must be set (predict config or --weights)")
-    weights_path = Path(weights_str)
-    if not weights_path.is_absolute():
-        weights_path = root / weights_path
-
-    tile_size = int(pcfg.get("tile_size", 512))
-    overlap = float(pcfg.get("overlap", 0.5))
-    if not 0 <= overlap < 1:
-        raise ValueError(f"overlap must be in [0, 1), got {overlap}")
-    stride = max(1, int(tile_size * (1 - overlap)))
-    batch_size = int(pcfg.get("batch_size", 8))
-
-    # --- resolve channels the model was trained with -----------------------
-    channels_str = pcfg.get("channels", None)
-    channels_path = (
-        root / channels_str if channels_str else weights_path.parent / "channels.json"
-    )
-    if not channels_path.exists():
+    ts = pcfg.timeseries
+    prep_cfg = pcfg.get("preprocess", None)
+    if prep_cfg is None or not prep_cfg.get("enabled", False):
+        raise ValueError("timeseries: needs preprocess.enabled: true")
+    if len(prep_cfg.sources) != 1:
         raise ValueError(
-            f"Channel manifest not found: {channels_path}\n"
-            "scripts/train.py writes channels.json next to the checkpoint; "
-            "for other checkpoints set 'channels:' explicitly."
+            f"timeseries: needs exactly one preprocess source (the OM), got {len(prep_cfg.sources)}"
         )
-    input_channels = load_manifest(channels_path)
-    print(f"Model input channels: {input_channels}")
-    need_ndsm = NDSM in input_channels
+    if prep_cfg.sources[0].get("path", None) is not None:
+        raise ValueError("timeseries: sets preprocess.sources[0].path per date — leave it null")
+    if pcfg.get("dsm", None) is not None:
+        raise ValueError("timeseries: sets dsm per date — leave it null")
 
-    dsm_str = args.dsm or pcfg.get("dsm", None)
-    dsm_path = root / dsm_str if dsm_str else None
-    dtm_str = args.dtm or pcfg.get("dtm", None)
-    dtm_path = root / dtm_str if dtm_str else None
+    sel = OmegaConf.create(
+        {
+            "om_dir": str(root / ts.om_dir),
+            "om_pattern": str(ts.om_pattern),
+            "dsm_dir": str(root / ts.dsm_dir),
+            "dsm_pattern": str(ts.dsm_pattern),
+            "dates": dates_override if dates_override is not None else ts.get("dates", None),
+            "max_dates": ts.get("max_dates", None),
+        }
+    )
+    return select_dates(sel)
+
+
+def prepare_scene(
+    pcfg,
+    args,
+    root: Path,
+    input_channels: list[str],
+    dsm_path: Path | None,
+    dtm_path: Path | None,
+    om_path: Path | None = None,
+) -> tuple[Path, Path | None, list[str], ChannelSpec, dict | None]:
+    """Stack (and nDSM) of one scene → (image, ndsm, stack_names, spec, norm_stats).
+
+    *om_path* replaces preprocess.sources[0].path (folder run); None keeps the
+    configured sources.
+    """
+    need_ndsm = NDSM in input_channels
 
     # --- build / load the scene stack --------------------------------------
     prep_cfg = pcfg.get("preprocess", None)
     if prep_cfg is not None and prep_cfg.get("enabled", False):
         sources = [
-            (str(root / s.path), [int(b) for b in s.bands], [str(n) for n in s.names])
-            for s in prep_cfg.sources
+            (
+                str(om_path if i == 0 and om_path is not None else root / s.path),
+                [int(b) for b in s.bands],
+                [str(n) for n in s.names],
+            )
+            for i, s in enumerate(prep_cfg.sources)
         ]
         stack_names = [n for _, _, names in sources for n in names]
         prep_dir_str = prep_cfg.get("dir", None)
@@ -603,9 +625,28 @@ def main() -> None:
         norm_stats = None
         print("[WARN] stats not set — predicting without normalisation. "
               "If the model was trained with train_stats.json this will degrade results.")
+    return image_path, dsm_path, stack_names, spec, norm_stats
 
-    device = get_device()
-    model = build_model_from_checkpoint(weights_path, device)
+
+def predict_and_write(
+    model: torch.nn.Module,
+    device: torch.device,
+    pcfg,
+    args,
+    root: Path,
+    weights_path: Path,
+    threshold: float,
+    tile_size: int,
+    stride: int,
+    batch_size: int,
+    image_path: Path,
+    dsm_path: Path | None,
+    stack_names: list[str],
+    spec: ChannelSpec,
+    norm_stats: dict | None,
+) -> None:
+    """Sliding-window prediction of one prepared scene; writes prob, binary
+    mask and quicklook."""
     ckpt_in = model.encoder.conv1.in_channels
     if ckpt_in != spec.in_channels:
         raise ValueError(
@@ -648,6 +689,104 @@ def main() -> None:
             valid_mask=valid_mask,
         )
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Predict crown mask for a full scene")
+    parser.add_argument("--config", required=True, help="Path to configs/predict/*.yaml")
+    parser.add_argument("--working_dir", default=".")
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Override: pre-stacked scene GeoTIFF (preprocess.enabled: false)",
+    )
+    parser.add_argument("--dsm", default=None, help="Override: aligned nDSM GeoTIFF")
+    parser.add_argument(
+        "--dtm",
+        default=None,
+        help="Override: external DTM GeoTIFF; nDSM becomes DSM-DTM instead of "
+        "DSM minus a minimum filter (requires preprocess.enabled)",
+    )
+    parser.add_argument("--weights", default=None, help="Override: .pt checkpoint")
+    parser.add_argument("--threshold", type=float, default=None, help="Override: binarization threshold")
+    parser.add_argument("--out", default=None, help="Override: output dir")
+    parser.add_argument(
+        "--dates",
+        default=None,
+        help="Override: comma-separated YYYYMMDD list for timeseries.dates (folder run)",
+    )
+    args = parser.parse_args()
+
+    from utils.device import get_device
+
+    pcfg = OmegaConf.load(args.config)
+    root = Path(args.working_dir).resolve()
+
+    threshold = args.threshold if args.threshold is not None else float(pcfg.get("threshold", 0.5))
+
+    weights_str = args.weights or pcfg.get("weights", None)
+    if not weights_str:
+        raise ValueError("weights must be set (predict config or --weights)")
+    weights_path = Path(weights_str)
+    if not weights_path.is_absolute():
+        weights_path = root / weights_path
+
+    tile_size = int(pcfg.get("tile_size", 512))
+    overlap = float(pcfg.get("overlap", 0.5))
+    if not 0 <= overlap < 1:
+        raise ValueError(f"overlap must be in [0, 1), got {overlap}")
+    stride = max(1, int(tile_size * (1 - overlap)))
+    batch_size = int(pcfg.get("batch_size", 8))
+
+    # --- resolve channels the model was trained with -----------------------
+    channels_str = pcfg.get("channels", None)
+    channels_path = (
+        root / channels_str if channels_str else weights_path.parent / "channels.json"
+    )
+    if not channels_path.exists():
+        raise ValueError(
+            f"Channel manifest not found: {channels_path}\n"
+            "scripts/train.py writes channels.json next to the checkpoint; "
+            "for other checkpoints set 'channels:' explicitly."
+        )
+    input_channels = load_manifest(channels_path)
+    print(f"Model input channels: {input_channels}")
+
+    dtm_str = args.dtm or pcfg.get("dtm", None)
+    dtm_path = root / dtm_str if dtm_str else None
+
+    # --- scenes: one configured scene, or one per date of a folder run ------
+    if pcfg.get("timeseries", None) is not None:
+        if args.image or args.dsm:
+            raise ValueError("--image / --dsm cannot be combined with a timeseries: folder run")
+        dates = [d.strip() for d in args.dates.split(",")] if args.dates else None
+        scenes = [(s.date, s.om, s.dsm) for s in resolve_scenes(pcfg, root, dates)]
+        print(f"Folder run: {len(scenes)} date(s): {', '.join(d for d, _, _ in scenes)}")
+    else:
+        if args.dates:
+            raise ValueError("--dates needs a timeseries: block in the predict config")
+        dsm_str = args.dsm or pcfg.get("dsm", None)
+        scenes = [(None, None, root / dsm_str if dsm_str else None)]
+
+    # All scenes are prepared before the model is loaded, so a bad input of
+    # any date fails before the first (long) inference.
+    prepared = []
+    for i, (date, om_path, dsm_path) in enumerate(scenes, start=1):
+        if date is not None:
+            print(f"\n=== prepare {date} ({i}/{len(scenes)}) ===")
+        prepared.append(
+            prepare_scene(pcfg, args, root, input_channels, dsm_path, dtm_path, om_path=om_path)
+        )
+
+    device = get_device()
+    model = build_model_from_checkpoint(weights_path, device)
+
+    for i, ((date, _, _), scene) in enumerate(zip(scenes, prepared), start=1):
+        if date is not None:
+            print(f"\n=== predict {date} ({i}/{len(scenes)}) ===")
+        predict_and_write(
+            model, device, pcfg, args, root, weights_path,
+            threshold, tile_size, stride, batch_size, *scene,
+        )
 
 if __name__ == "__main__":
     main()

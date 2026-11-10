@@ -1,0 +1,31 @@
+# dtm_approx sweep on 20250719 around cell = 1 m, the best run of
+# out/dtm_approx_sweep/20250719/20261021-224022/ (rmse_m 0.190, wall bias +0.31).
+# The wall filter was tuned on 0.5 m cells; per-cell roughness and elongation
+# (in cells) scale with the cell size, so its thresholds are searched again.
+# At cell 1 the window step is rounded up to one cell (1 m), so
+# dh = dh0 + max_slope * 1 m = 0.6 m at dh0 0.1 — dh0 is searched as well.
+#
+#   uv run python scripts/dtm_approx_sweep.py --config configs/dtm_approx_sweep/sweep_20250719_cell1.yaml
+sweep:
+  preprocess_config: configs/preprocess/use_timeseries/all_dsm_dates_shuffle.yaml
+  date: 20250719
+  reference: geoid_quadratic
+  reference_run: null
+  out_dir: out/dtm_approx_sweep
+  metric: rmse_m
+  zones:
+    wall: datafiles/dtm_approx_zones/20260313_wall.gpkg
+  baseline:
+    cell: 1.0
+    smooth_sigma: 2.0
+    percentile: 1
+    dh0: 0.1
+    keep_min_elongation: 5.0
+    keep_max_roughness: 0.1
+    keep_group_roughness: 0.0   # = keep_max_roughness; varied below
+  # Baseline + 13 runs, about 20 s each at 1 m cells.
+  values:
+    dh0: [0.0, 0.05, 0.2, 0.3]
+    keep_max_roughness: [0.15, 0.2, 0.25]
+    keep_group_roughness: [0.12, 0.15, 0.2]
+    keep_min_elongation: [3.0, 4.0, 7.0]

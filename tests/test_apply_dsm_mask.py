@@ -999,3 +999,105 @@ def test_group_roughness_below_max_is_rejected():
     with pytest.raises(ValueError, match="keep_group_roughness"):
         DtmApproxParams.from_cfg({"keep_max_roughness": 0.2, "keep_group_roughness": 0.1})
     assert DtmApproxParams.from_cfg({"keep_max_roughness": 0.1, "keep_group_roughness": 0.15}).keep_group_roughness == 0.15
+
+
+def test_dtm_real_surface_is_validated_and_tagged():
+    from explore_and_process.apply_dsm_mask import DtmRealParams
+
+    assert DtmRealParams.from_cfg({}, need_path=False).surface == "plane"
+    quad = DtmRealParams.from_cfg({"surface": "quadratic", "local_blocks": 6}, need_path=False)
+    assert quad.tag() == "_aligned_q_b6"
+    assert DtmRealParams.from_cfg({"local_blocks": 6}, need_path=False).tag() == "_aligned_b6"  # unchanged
+    with pytest.raises(ValueError, match="surface"):
+        DtmRealParams.from_cfg({"surface": "cubic"}, need_path=False)
+
+
+def test_main_aligns_a_shared_dtm_approx_like_a_dtm(tmp_path, monkeypatch):
+    """Shared terrain in another height system (+N) and tilted: geoid, then the fit, recover the heights."""
+    import rasterio
+    from omegaconf import OmegaConf
+    from rasterio.transform import from_origin
+
+    import explore_and_process.vertical_datum as V
+    from explore_and_process.apply_dsm_mask import main
+    from explore_and_process.vertical_datum import DatumCheck, HeightSystem
+
+    n, gsd = 400, 0.1
+    transform = from_origin(500000, 5400000, gsd, gsd)
+    rows, cols = np.meshgrid(np.arange(n) * gsd, np.arange(n) * gsd, indexing="ij")
+    ground = (100.0 + 0.05 * cols).astype(np.float32)
+    tree = (rows - 20.0) ** 2 + (cols - 20.0) ** 2 <= 3.0**2
+    dsm = ground + np.where(tree, 10.0, 0.0).astype(np.float32)
+    shared = (ground + 13.8 + 0.01 * rows).astype(np.float32)  # other system + 0.4 m tilt
+
+    def write(path, arr, nodata=None):
+        with rasterio.open(path, "w", driver="GTiff", dtype="float32", width=n, height=n, count=1,
+                           crs="EPSG:32636", transform=transform, nodata=nodata) as dst:
+            dst.write(arr[np.newaxis].astype(np.float32))
+        return str(path)
+
+    def hs(system):
+        return HeightSystem(system, 0.3, 0.3, 0.3 - 13.8, 1.0, 0.3)
+
+    monkeypatch.setattr(V, "check_pair", lambda a, b, cache: DatumCheck(hs("orthometric"), hs("ellipsoidal"), 13.8, "EGM2008"))
+    monkeypatch.setattr(V, "undulation_grid", lambda shape, transform, crs: np.full(shape, 13.8, np.float32))
+
+    (tmp_path / "masks").mkdir()
+    cfg = OmegaConf.create({
+        "mask": write(tmp_path / "masks" / "m.tif", np.full((n, n), 255.0), nodata=-1.0),
+        "dsm": write(tmp_path / "dsm.tif", dsm),
+        "dtm_real": {"stage": "plane", "local_blocks": 4, "surface": "quadratic"},
+        "dtm_approx_source": {"date": 20250719, "path": write(tmp_path / "shared.tif", shared)},
+        "datum_check": {"enabled": True, "convert": True, "cache": None},
+        "out": None, "out_dsm": None, "method": "dtm_approx", "ndsm_channel": "dtm_approx",
+        "dtm_approx": {"cell": 0.5, "max_window": 12.0},
+        "height_threshold": 0.7, "height_ramp": 1.0, "max_ndsm_height": 16.0,
+        "nodata_resolve_threshold": 0.5, "crown_resolve_threshold": 0.3, "preserve_crown_threshold": None,
+    })
+    main(cfg)
+
+    assert "_shared" in Path(cfg.out).name and Path(cfg.out_dsm).stem.endswith("_da_shared")
+    raw = next((tmp_path / "ndsm_in_m").rglob("*_da_shared_raw_m.tif"))
+    with rasterio.open(raw) as src:
+        ndsm = src.read(1)
+    assert np.abs(ndsm[~tree]).max() < 0.05  # datum and tilt gone
+    assert np.median(ndsm[tree]) == pytest.approx(10.0, abs=0.05)
+
+
+# --- robust_lstsq: the MAD-trimmed fit shared with dsm_overview.stats --------
+
+
+def _plane_with_canopy(n=400, canopy_frac=0.2, seed=0):
+    """Ground points on z = 1 + 0.5x - 0.3y, a share of them lifted 10 m."""
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-1.0, 1.0, n)
+    y = rng.uniform(-1.0, 1.0, n)
+    z = 1.0 + 0.5 * x - 0.3 * y + rng.normal(0.0, 0.02, n)
+    canopy = np.zeros(n, dtype=bool)
+    canopy[: int(canopy_frac * n)] = True
+    z[canopy] += 10.0
+    return np.column_stack([x, y, np.ones(n)]), z, canopy
+
+
+def test_robust_lstsq_drops_canopy_and_recovers_the_plane():
+    from explore_and_process.apply_dsm_mask import robust_lstsq
+
+    design, z, canopy = _plane_with_canopy()
+    coef, keep = robust_lstsq(design, z, min_keep=30)
+
+    assert coef == pytest.approx([0.5, -0.3, 1.0], abs=0.02)
+    assert not keep[canopy].any()
+    assert keep[~canopy].mean() > 0.95
+
+
+def test_robust_lstsq_keeps_every_point_when_the_trim_would_go_below_min_keep():
+    from explore_and_process.apply_dsm_mask import robust_lstsq
+
+    design, z, _ = _plane_with_canopy()
+    coef, keep = robust_lstsq(design, z, min_keep=len(z))
+
+    # The first trim would drop the canopy, which min_keep forbids, so the
+    # plain least-squares fit over everything is returned.
+    plain, *_ = np.linalg.lstsq(design, z, rcond=None)
+    assert keep.all()
+    assert coef == pytest.approx(plain)

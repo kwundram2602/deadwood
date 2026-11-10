@@ -49,6 +49,14 @@ logger = logging.getLogger(__name__)
 # Geoid models to test the offset against. EGM96 is what most consumer GNSS
 # receivers and drone controllers report; EGM2008 is the modern default.
 GEOID_MODELS: dict[str, str] = {"EGM96": "EPSG:4326+5773", "EGM2008": "EPSG:4326+3855"}
+# The PROJ grid file behind each model, as named on cdn.proj.org
+GEOID_GRIDS: dict[str, str] = {"EGM96": "us_nga_egm96_15.tif", "EGM2008": "us_nga_egm08_25.tif"}
+
+# Local copies of the grids (scripts/fetch_geoid_grids.py). PROJ searches this
+# directory first, so the geoid works without network, e.g. in a sandbox.
+GRID_DIR = Path(__file__).resolve().parents[1] / "datafiles" / "proj"
+if GRID_DIR.is_dir():
+    pyproj.datadir.append_data_dir(str(GRID_DIR))
 
 # A datum offset has to match +-N this closely to count as an explanation. Loose
 # on purpose: it is meant to catch "13.8 vs 6.9", not to grade a fit.
